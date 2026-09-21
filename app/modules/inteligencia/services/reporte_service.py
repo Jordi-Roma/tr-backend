@@ -158,13 +158,13 @@ def _interpretar_por_reglas(texto: str) -> dict[str, object]:
 
 def interpretar(texto: str) -> dict[str, object]:
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
-    if AI_REPORTS_PROVIDER == "VERTEX":
+    if AI_REPORTS_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
             return interpretar_con_vertex(texto, hoy, listar_sucursales())
         except Exception as exc:
             resultado = _interpretar_por_reglas(texto)
             advertencias = list(resultado.get("advertencias") or [])
-            advertencias.append(f"Vertex no respondió; se usó interpretación local. Detalle: {exc}")
+            advertencias.append(f"{AI_REPORTS_PROVIDER.title()} no respondió; se usó interpretación local. Detalle: {exc}")
             resultado["advertencias"] = advertencias
             resultado["motor"] = "reglas_fallback"
             return resultado

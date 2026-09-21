@@ -191,7 +191,7 @@ def _interpretar_consulta_asistente(
     }:
         return tipo_reglas, _detectar_filtros(mensaje_normalizado), _extraer_terminos(mensaje_normalizado)
 
-    if AI_ASSISTANT_PROVIDER == "VERTEX":
+    if AI_ASSISTANT_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
             interpretacion = interpretar_asistente_con_vertex(
                 mensaje,
@@ -445,7 +445,7 @@ def _respuesta_requiere_login() -> AsistenteChatResponse:
 
 
 def _redactar_con_ia(mensaje: str, productos: list[dict[str, object]], respuesta_base: str, tipo: str, alternativas: list[dict[str, object]] | None = None) -> str:
-    if AI_ASSISTANT_PROVIDER == "VERTEX":
+    if AI_ASSISTANT_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
             return redactar_asistente_con_vertex(mensaje, tipo, productos, alternativas or [], respuesta_base)
         except Exception:

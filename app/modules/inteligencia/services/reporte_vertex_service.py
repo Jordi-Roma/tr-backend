@@ -2,7 +2,14 @@ import json
 import re
 from datetime import date
 
-from app.core.config import VERTEX_LOCATION, VERTEX_MODEL, VERTEX_PROJECT_ID
+from app.core.config import (
+    AI_REPORTS_PROVIDER,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    VERTEX_LOCATION,
+    VERTEX_MODEL,
+    VERTEX_PROJECT_ID,
+)
 from app.modules.inteligencia.schemas.reportes.reporte_request import ReporteRequest
 
 
@@ -103,7 +110,10 @@ def _normalizar_filtros_vertex(filtros: dict[str, object], texto: str, hoy: date
 
 
 def interpretar_con_vertex(texto: str, hoy: date, sucursales: list[dict[str, object]]) -> dict[str, object]:
-    if not VERTEX_PROJECT_ID:
+    proveedor = AI_REPORTS_PROVIDER
+    if proveedor == "GEMINI" and not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY no está configurada.")
+    if proveedor != "GEMINI" and not VERTEX_PROJECT_ID:
         raise RuntimeError("VERTEX_PROJECT_ID no está configurado.")
 
     try:
@@ -165,14 +175,22 @@ Formato exacto:
 Texto del usuario: {texto}
 """
 
-    client = genai.Client(
-        vertexai=True,
-        project=VERTEX_PROJECT_ID,
-        location=VERTEX_LOCATION,
-        http_options=types.HttpOptions(api_version="v1"),
-    )
+    if proveedor == "GEMINI":
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        modelo = GEMINI_MODEL
+        motor = "gemini"
+    else:
+        client = genai.Client(
+            vertexai=True,
+            project=VERTEX_PROJECT_ID,
+            location=VERTEX_LOCATION,
+            http_options=types.HttpOptions(api_version="v1"),
+        )
+        modelo = VERTEX_MODEL
+        motor = "vertex"
+
     response = client.models.generate_content(
-        model=VERTEX_MODEL,
+        model=modelo,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0,
@@ -183,9 +201,9 @@ Texto del usuario: {texto}
     if not data.get("interpretado"):
         return {
             "interpretado": False,
-            "advertencias": data.get("advertencias") or ["Vertex no pudo interpretar la consulta."],
+            "advertencias": data.get("advertencias") or [f"{motor.title()} no pudo interpretar la consulta."],
             "filtros": None,
-            "motor": "vertex",
+            "motor": motor,
         }
 
     filtros_data = _normalizar_filtros_vertex(data.get("filtros") or {}, texto, hoy)
@@ -194,5 +212,5 @@ Texto del usuario: {texto}
         "interpretado": True,
         "advertencias": data.get("advertencias") or [],
         "filtros": filtros.model_dump(mode="json"),
-        "motor": "vertex",
+        "motor": motor,
     }

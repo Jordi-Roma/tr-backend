@@ -2,7 +2,14 @@ import json
 import re
 from decimal import Decimal
 
-from app.core.config import VERTEX_LOCATION, VERTEX_MODEL, VERTEX_PROJECT_ID
+from app.core.config import (
+    AI_ASSISTANT_PROVIDER,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    VERTEX_LOCATION,
+    VERTEX_MODEL,
+    VERTEX_PROJECT_ID,
+)
 
 
 TIPOS_ASISTENTE = [
@@ -29,7 +36,10 @@ TIPOS_ASISTENTE = [
 
 
 def _cliente_vertex():
-    if not VERTEX_PROJECT_ID:
+    proveedor = AI_ASSISTANT_PROVIDER
+    if proveedor == "GEMINI" and not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY no está configurada.")
+    if proveedor != "GEMINI" and not VERTEX_PROJECT_ID:
         raise RuntimeError("VERTEX_PROJECT_ID no está configurado.")
     try:
         from google import genai
@@ -37,13 +47,17 @@ def _cliente_vertex():
     except ImportError as exc:
         raise RuntimeError("Falta instalar google-genai en el backend.") from exc
 
+    if proveedor == "GEMINI":
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        return client, types, GEMINI_MODEL
+
     client = genai.Client(
         vertexai=True,
         project=VERTEX_PROJECT_ID,
         location=VERTEX_LOCATION,
         http_options=types.HttpOptions(api_version="v1"),
     )
-    return client, types
+    return client, types, VERTEX_MODEL
 
 
 def _extraer_json(texto: str) -> dict[str, object]:
@@ -64,7 +78,7 @@ def interpretar_asistente_con_vertex(
     sucursal_id: int | None,
     sucursales: list[dict[str, object]],
 ) -> dict[str, object]:
-    client, types = _cliente_vertex()
+    client, types, modelo = _cliente_vertex()
     prompt = f"""
 Eres el intérprete del asistente de tienda StyleAR.
 Convierte el mensaje del cliente a intención y filtros JSON para buscar en una base de datos real.
@@ -111,7 +125,7 @@ Formato exacto:
 Mensaje: {mensaje}
 """
     response = client.models.generate_content(
-        model=VERTEX_MODEL,
+        model=modelo,
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0,
@@ -139,7 +153,7 @@ def redactar_asistente_con_vertex(
     alternativas: list[dict[str, object]],
     respuesta_base: str,
 ) -> str:
-    client, types = _cliente_vertex()
+    client, types, modelo = _cliente_vertex()
     datos = [_producto_para_prompt(row) for row in productos[:6]]
     datos_alternativas = [_producto_para_prompt(row) for row in alternativas[:4]]
     prompt = f"""
@@ -159,7 +173,7 @@ Alternativas reales: {json.dumps(datos_alternativas, ensure_ascii=False)}
 Respuesta segura base: {respuesta_base}
 """
     response = client.models.generate_content(
-        model=VERTEX_MODEL,
+        model=modelo,
         contents=prompt,
         config=types.GenerateContentConfig(temperature=0.2),
     )

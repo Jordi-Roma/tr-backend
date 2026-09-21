@@ -6,6 +6,8 @@ from fastapi import HTTPException
 
 from app.core.config import (
     AI_RECOMMENDATIONS_PROVIDER,
+    GEMINI_API_KEY,
+    GEMINI_EMBEDDING_MODEL,
     VERTEX_EMBEDDING_MODEL,
     VERTEX_LOCATION,
     VERTEX_PROJECT_ID,
@@ -18,7 +20,13 @@ from app.modules.inteligencia.repositories import recomendacion_repository as re
 
 
 OPENAI_EMBEDDING_MODEL = os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
-MODELO = VERTEX_EMBEDDING_MODEL if AI_RECOMMENDATIONS_PROVIDER == 'VERTEX' else OPENAI_EMBEDDING_MODEL
+MODELO = (
+    VERTEX_EMBEDDING_MODEL
+    if AI_RECOMMENDATIONS_PROVIDER == 'VERTEX'
+    else GEMINI_EMBEDDING_MODEL
+    if AI_RECOMMENDATIONS_PROVIDER == 'GEMINI'
+    else OPENAI_EMBEDDING_MODEL
+)
 
 
 def _texto_producto(row: dict) -> str:
@@ -29,6 +37,8 @@ def _texto_producto(row: dict) -> str:
 def _crear_embedding(texto: str) -> list[float]:
     if AI_RECOMMENDATIONS_PROVIDER == 'VERTEX':
         return _crear_embedding_vertex(texto)
+    if AI_RECOMMENDATIONS_PROVIDER == 'GEMINI':
+        return _crear_embedding_gemini(texto)
     if AI_RECOMMENDATIONS_PROVIDER != 'OPENAI':
         raise RuntimeError(f'Proveedor de recomendaciones no soportado: {AI_RECOMMENDATIONS_PROVIDER}.')
     if not os.getenv('OPENAI_API_KEY'):
@@ -69,15 +79,44 @@ def _crear_embedding_vertex(texto: str) -> list[float]:
     return [float(value) for value in values]
 
 
+def _crear_embedding_gemini(texto: str) -> list[float]:
+    if not GEMINI_API_KEY:
+        raise RuntimeError('GEMINI_API_KEY no está configurada en el backend.')
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError('Falta instalar google-genai en el backend.') from exc
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.embed_content(
+        model=GEMINI_EMBEDDING_MODEL,
+        contents=texto,
+        config=types.EmbedContentConfig(task_type='RETRIEVAL_DOCUMENT'),
+    )
+    embeddings = getattr(response, 'embeddings', None) or []
+    if embeddings:
+        values = getattr(embeddings[0], 'values', None) or []
+    else:
+        embedding = getattr(response, 'embedding', None)
+        values = getattr(embedding, 'values', None) if embedding else []
+    if not values:
+        raise RuntimeError('Gemini no devolvió embedding.')
+    return [float(value) for value in values]
+
+
 def indexar_productos() -> dict:
     if AI_RECOMMENDATIONS_PROVIDER == 'VERTEX':
         if not VERTEX_PROJECT_ID:
             raise HTTPException(status_code=503, detail='VERTEX_PROJECT_ID no está configurado en el backend.')
+    elif AI_RECOMMENDATIONS_PROVIDER == 'GEMINI':
+        if not GEMINI_API_KEY:
+            raise HTTPException(status_code=503, detail='GEMINI_API_KEY no está configurada en el backend.')
     elif AI_RECOMMENDATIONS_PROVIDER == 'OPENAI':
         if not os.getenv('OPENAI_API_KEY'):
             raise HTTPException(status_code=503, detail='La clave de OpenAI no está configurada en el backend.')
     elif AI_RECOMMENDATIONS_PROVIDER == 'RULES':
-        raise HTTPException(status_code=503, detail='Configura AI_RECOMMENDATIONS_PROVIDER=VERTEX u OPENAI para indexar recomendaciones con IA.')
+        raise HTTPException(status_code=503, detail='Configura AI_RECOMMENDATIONS_PROVIDER=GEMINI, VERTEX u OPENAI para indexar recomendaciones con IA.')
     else:
         raise HTTPException(status_code=503, detail=f'Proveedor de recomendaciones no soportado: {AI_RECOMMENDATIONS_PROVIDER}.')
     productos = repo.listar_productos_para_indice()
@@ -115,11 +154,11 @@ def _mensaje_error_embedding(exc: Exception) -> str:
     if 'credit_balance_exhausted' in texto or 'insufficient_quota' in texto or 'no credits remaining' in texto:
         return 'La cuenta de OpenAI no tiene créditos disponibles para generar embeddings.'
     if 'quota' in texto or 'resource_exhausted' in texto:
-        return 'Vertex no tiene cuota disponible para generar embeddings en este momento.'
+        return 'El proveedor de IA no tiene cuota disponible para generar embeddings en este momento.'
     if 'permission' in texto or 'permission_denied' in texto or '403' in texto:
-        return 'Vertex no tiene permisos suficientes para generar embeddings.'
+        return 'El proveedor de IA no tiene permisos suficientes para generar embeddings.'
     if 'not found' in texto or '404' in texto:
-        return 'El modelo de embeddings de Vertex no está disponible en la ubicación configurada.'
+        return 'El modelo de embeddings no está disponible o está mal configurado.'
     if 'connection error' in texto:
         return 'No se pudo conectar con el proveedor de IA para generar embeddings.'
     if exc.__class__.__name__ == 'ModuleNotFoundError':

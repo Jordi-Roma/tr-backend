@@ -1,8 +1,45 @@
+import json
 import os
+import tempfile
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _configure_google_credentials_from_env() -> None:
+    """Configura credenciales ADC de Google Cloud desde Railway.
+
+    En local Google puede usar las credenciales creadas con gcloud, pero en
+    Railway necesitamos convertir el JSON guardado en una variable de entorno
+    en un archivo temporal para que las librerías de Google lo encuentren.
+    """
+
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        return
+
+    credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not credentials_json:
+        return
+
+    try:
+        parsed_credentials = json.loads(credentials_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON no contiene un JSON válido."
+        ) from exc
+
+    credentials_path = os.path.join(
+        tempfile.gettempdir(),
+        "stylear-google-application-credentials.json",
+    )
+    with open(credentials_path, "w", encoding="utf-8") as credentials_file:
+        json.dump(parsed_credentials, credentials_file)
+
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+
+
+_configure_google_credentials_from_env()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 SECRET_KEY = os.getenv("SECRET_KEY")

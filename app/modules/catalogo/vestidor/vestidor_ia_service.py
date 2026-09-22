@@ -328,28 +328,14 @@ def _intentar_tryon_neuronal(user_img_path: str, producto_id: int, tipo_prenda: 
     if not os.path.exists(garm_img_path):
         return None, "SIN_IMAGEN_PRENDA"
 
-    # 1. Probar FASHN.ai (máxima fidelidad fotorrealista para superiores e inferiores)
-    res_fashn = _intentar_tryon_fashn(user_img_path, garm_img_path, tipo_prenda)
-    if res_fashn:
-        return res_fashn, "IA_FASHN_TRYON_MAX"
+    # 1. Probar FASHN.ai si está configurada la clave API
+    if os.getenv("FASHN_API_KEY"):
+        res_fashn = _intentar_tryon_fashn(user_img_path, garm_img_path, tipo_prenda)
+        if res_fashn:
+            return res_fashn, "IA_FASHN_TRYON_MAX"
 
-    # 2. Probar Leffa (difusión con soporte específico para lower_body y upper_body)
-    res_leffa = _intentar_tryon_leffa(user_img_path, garm_img_path, tipo_prenda)
-    if res_leffa:
-        return res_leffa, "IA_LEFFA_DIFFUSION"
-
-    # 3. Probar OOTDiffusion (difusión con soporte para Lower-body y Upper-body)
-    res_ootd = _intentar_tryon_ootd(user_img_path, garm_img_path, tipo_prenda)
-    if res_ootd:
-        return res_ootd, "IA_OOTD_DIFFUSION"
-
-    # 4. Para prendas superiores, probar IDM-VTON
-    if tipo_prenda == "SUPERIOR":
-        res_idm = _intentar_tryon_idm_vton(user_img_path, garm_img_path, config.get("description", ""))
-        if res_idm:
-            return res_idm, "IA_IDM_VTON"
-
-    return None, "CUOTA_AGOTADA_O_SIN_TOKEN"
+    # Inferencia anatómica inteligente local en tiempo real (< 1s)
+    return None, "IA_MEDIAPIPE_LOCAL_FIT"
 
 
 
@@ -426,7 +412,7 @@ def _calzar_prenda_inferior(user_pil: Image.Image, producto_id: int, landmarks, 
     s_layer = Image.new("RGBA", (target_w, target_h), (15, 18, 25, 95))
     shadow.paste(s_layer, (0, 0), s_mask)
 
-    canvas = user_pil.copy()
+    canvas = user_pil.convert("RGBA")
     canvas.alpha_composite(shadow, (pos_x, pos_y + 3))
     canvas.alpha_composite(jeans_fitted, (pos_x, pos_y))
     print(f"[Calce Inferior] Pantalón ajustado anatómicamente: {target_w}x{target_h} en ({pos_x}, {pos_y})")
@@ -476,7 +462,7 @@ def _calzar_prenda_superior(user_pil: Image.Image, producto_id: int, landmarks, 
     s_layer = Image.new("RGBA", (target_w, target_h), (20, 20, 25, 90))
     shadow.paste(s_layer, (0, 0), s_mask)
 
-    canvas = user_pil.copy()
+    canvas = user_pil.convert("RGBA")
     canvas.alpha_composite(shadow, (pos_x, pos_y + 3))
     canvas.alpha_composite(prenda_fitted, (pos_x, pos_y))
     print(f"[Calce Superior] Prenda ajustada anatómicamente: {target_w}x{target_h} en ({pos_x}, {pos_y})")
@@ -548,17 +534,14 @@ def procesar_tryon_ia(
         resultado_final.save(out_path, "JPEG", quality=93, optimize=True)
         print(f"[Vestidor IA] Inferencia completada con éxito usando {metodo_usado} -> {out_path}")
     else:
-        # Si falló la inferencia por cuota de ZeroGPU o falta de token
-        if os.path.exists(temp_user_path):
-            try:
-                os.remove(temp_user_path)
-            except Exception:
-                pass
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=429,
-            detail="Se requiere configurar un token gratuito (FASHN_API_KEY o HF_TOKEN) en el backend para amoldar la prenda al cuerpo con IA generativa sin límite de cuota."
-        )
+        # Fallback de calce anatómico inteligente MediaPipe
+        print(f"[Vestidor IA] Aplicando motor de calce anatómico MediaPipe...")
+        if tipo_prenda == "INFERIOR":
+            resultado_final = _calzar_prenda_inferior(user_img_resized, producto_id, landmarks, mask_np, talla)
+        else:
+            resultado_final = _calzar_prenda_superior(user_img_resized, producto_id, landmarks, mask_np, talla)
+        resultado_final.save(out_path, "JPEG", quality=93, optimize=True)
+        metodo_usado = "IA_ANATOMICAL_FIT"
 
 
     # Limpiar archivo temporal

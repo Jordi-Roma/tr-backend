@@ -98,7 +98,28 @@ app.include_router(asistente_router)
 from fastapi.staticfiles import StaticFiles
 import os
 os.makedirs("static/images", exist_ok=True)
+os.makedirs("static/tryon", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.on_event("startup")
+def run_db_migrations():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            ALTER TABLE producto
+            ADD COLUMN IF NOT EXISTS tipo_prenda VARCHAR(20) NOT NULL DEFAULT 'SUPERIOR',
+            ADD COLUMN IF NOT EXISTS tipo_corte VARCHAR(30) NOT NULL DEFAULT 'REGULAR_FIT',
+            ADD COLUMN IF NOT EXISTS ancho_base_cm NUMERIC(6,2) NOT NULL DEFAULT 53.0,
+            ADD COLUMN IF NOT EXISTS largo_base_cm NUMERIC(6,2) NOT NULL DEFAULT 72.0,
+            ADD COLUMN IF NOT EXISTS modelo_3d_url VARCHAR(500) NULL;
+        """)
+        conn.commit()
+        conn.close()
+        print("[Startup] Migraciones de base de datos verificadas con éxito.")
+    except Exception as e:
+        print("[Startup] Error al verificar migraciones:", e)
 
 
 @app.get("/api/v1/health")

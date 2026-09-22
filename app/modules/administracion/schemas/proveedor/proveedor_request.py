@@ -113,3 +113,14 @@ class ActualizarProveedorRequest(BaseModel):
 
         direccion = valor.strip()
         return direccion or None
+
+
+class VincularUsuarioProveedorRequest(BaseModel):
+    usuario_id: int
+
+    @field_validator("usuario_id")
+    @classmethod
+    def validar_usuario_id(cls, valor: int) -> int:
+        if valor < 1:
+            raise ValueError("El usuario no es valido.")
+        return valor

@@ -8,16 +8,27 @@ from app.modules.administracion.repositories.proveedor_repository import (
     crear_proveedor,
     desactivar_proveedor,
     listar_proveedores,
+    listar_entregas_proveedor_panel,
+    listar_productos_proveedor_panel,
+    listar_stock_proveedor_panel,
     obtener_proveedor_por_id,
     obtener_proveedor_por_nit,
+    obtener_proveedor_por_usuario,
+    desvincular_usuario_proveedor,
+    vincular_usuario_proveedor,
 )
 from app.modules.administracion.schemas.proveedor.proveedor_request import (
     ActualizarProveedorRequest,
     CrearProveedorRequest,
+    VincularUsuarioProveedorRequest,
 )
 from app.modules.administracion.schemas.proveedor.proveedor_response import (
     MensajeResponse,
+    ProveedorEntregaResponse,
+    ProveedorPerfilResponse,
+    ProveedorProductoResponse,
     ProveedorResponse,
+    ProveedorStockResponse,
 )
 
 
@@ -171,6 +182,93 @@ def reactivar_proveedor(
     return construir_proveedor_response(proveedor)
 
 
+def vincular_usuario(
+    proveedor_id: int,
+    request: VincularUsuarioProveedorRequest,
+    usuario_actual: dict[str, object],
+    direccion_ip: str | None = None,
+    user_agent: str | None = None,
+) -> ProveedorResponse:
+    if obtener_proveedor_por_id(proveedor_id) is None:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
+
+    vinculado = vincular_usuario_proveedor(proveedor_id, request.usuario_id)
+    if not vinculado:
+        raise HTTPException(status_code=404, detail="Usuario o proveedor no encontrado.")
+
+    registrar_bitacora(
+        usuario_id=int(usuario_actual["id"]),
+        accion="VINCULAR_USUARIO",
+        modulo="PROVEEDORES",
+        resultado="EXITOSO",
+        descripcion=f"Usuario id={request.usuario_id} vinculado a proveedor id={proveedor_id}",
+        direccion_ip=direccion_ip,
+        user_agent=user_agent,
+    )
+    proveedor = obtener_proveedor_por_id(proveedor_id)
+    if proveedor is None:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
+    return construir_proveedor_response(proveedor)
+
+
+def desvincular_usuario(
+    proveedor_id: int,
+    usuario_id: int,
+    usuario_actual: dict[str, object],
+    direccion_ip: str | None = None,
+    user_agent: str | None = None,
+) -> ProveedorResponse:
+    if obtener_proveedor_por_id(proveedor_id) is None:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
+
+    desvinculado = desvincular_usuario_proveedor(proveedor_id, usuario_id)
+    if not desvinculado:
+        raise HTTPException(status_code=404, detail="Vinculo proveedor-usuario no encontrado.")
+
+    registrar_bitacora(
+        usuario_id=int(usuario_actual["id"]),
+        accion="DESVINCULAR_USUARIO",
+        modulo="PROVEEDORES",
+        resultado="EXITOSO",
+        descripcion=f"Usuario id={usuario_id} desvinculado de proveedor id={proveedor_id}",
+        direccion_ip=direccion_ip,
+        user_agent=user_agent,
+    )
+    proveedor = obtener_proveedor_por_id(proveedor_id)
+    if proveedor is None:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
+    return construir_proveedor_response(proveedor)
+
+
+def obtener_perfil_proveedor(usuario_actual: dict[str, object]) -> ProveedorPerfilResponse:
+    proveedor = _proveedor_obligatorio(usuario_actual)
+    return ProveedorPerfilResponse(**proveedor)
+
+
+def listar_productos_panel_proveedor(usuario_actual: dict[str, object]) -> list[ProveedorProductoResponse]:
+    proveedor = _proveedor_obligatorio(usuario_actual)
+    return [
+        ProveedorProductoResponse(**row)
+        for row in listar_productos_proveedor_panel(int(proveedor["id"]))
+    ]
+
+
+def listar_stock_panel_proveedor(usuario_actual: dict[str, object]) -> list[ProveedorStockResponse]:
+    proveedor = _proveedor_obligatorio(usuario_actual)
+    return [
+        ProveedorStockResponse(**row)
+        for row in listar_stock_proveedor_panel(int(proveedor["id"]))
+    ]
+
+
+def listar_entregas_panel_proveedor(usuario_actual: dict[str, object]) -> list[ProveedorEntregaResponse]:
+    proveedor = _proveedor_obligatorio(usuario_actual)
+    return [
+        ProveedorEntregaResponse(**row)
+        for row in listar_entregas_proveedor_panel(int(proveedor["id"]))
+    ]
+
+
 def construir_proveedor_response(proveedor: dict[str, object]) -> ProveedorResponse:
     return ProveedorResponse(
         id=int(proveedor["id"]),
@@ -181,4 +279,17 @@ def construir_proveedor_response(proveedor: dict[str, object]) -> ProveedorRespo
         direccion=str(proveedor["direccion"]) if proveedor["direccion"] is not None else None,
         activo=bool(proveedor["activo"]),
         fecha_creacion=proveedor["fecha_creacion"],
+        usuarios_ids=[int(usuario_id) for usuario_id in proveedor.get("usuarios_ids", [])],
     )
+
+
+def _proveedor_obligatorio(usuario_actual: dict[str, object]) -> dict[str, object]:
+    roles = {str(rol) for rol in usuario_actual.get("roles", [])}
+    if "PROVEEDOR" not in roles:
+        raise HTTPException(status_code=403, detail="No tiene rol de proveedor.")
+
+    proveedor = obtener_proveedor_por_usuario(int(usuario_actual["id"]))
+    if proveedor is None:
+        raise HTTPException(status_code=403, detail="Tu usuario no esta vinculado a un proveedor activo.")
+
+    return proveedor

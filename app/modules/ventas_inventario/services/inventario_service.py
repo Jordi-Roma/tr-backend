@@ -61,6 +61,8 @@ def registrar_movimiento_service(
     tipo = request.tipo.upper()
     if tipo not in {"ENTRADA", "SALIDA", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO"}:
         raise HTTPException(status_code=400, detail="Tipo de movimiento manual invalido.")
+    if request.proveedor_id is not None and tipo != "ENTRADA":
+        raise HTTPException(status_code=400, detail="Solo las entradas de inventario pueden asociarse a un proveedor.")
     try:
         row = registrar_movimiento_manual(
             int(usuario_actual["id"]),
@@ -69,6 +71,7 @@ def registrar_movimiento_service(
             tipo,
             request.cantidad,
             request.motivo,
+            request.proveedor_id,
         )
         return MovimientoInventarioResponse(**row)
     except ValueError as error:

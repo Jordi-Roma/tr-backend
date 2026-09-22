@@ -32,6 +32,7 @@ class MovimientoInventarioRequest(BaseModel):
     tipo: str
     cantidad: int = Field(ge=1)
     motivo: str | None = None
+    proveedor_id: int | None = None
 
 
 class MovimientoInventarioResponse(BaseModel):
@@ -49,6 +50,8 @@ class MovimientoInventarioResponse(BaseModel):
     stock_anterior: int
     stock_nuevo: int
     motivo: str | None = None
+    proveedor_id: int | None = None
+    proveedor: str | None = None
     referencia_tipo: str | None = None
     referencia_id: int | None = None
     fecha_movimiento: datetime

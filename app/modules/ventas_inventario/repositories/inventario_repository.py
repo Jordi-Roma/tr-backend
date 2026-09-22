@@ -158,6 +158,7 @@ def registrar_movimiento_manual(
     tipo: str,
     cantidad: int,
     motivo: str | None,
+    proveedor_id: int | None = None,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -172,6 +173,7 @@ def registrar_movimiento_manual(
             motivo,
             None,
             None,
+            proveedor_id if tipo == "ENTRADA" else None,
         )
         connection.commit()
         movimiento = _obtener_movimiento_cursor(cursor, movimiento_id)
@@ -219,6 +221,8 @@ def listar_movimientos(filtros: dict[str, object]) -> list[dict[str, object]]:
                 mi.stock_anterior,
                 mi.stock_nuevo,
                 mi.motivo,
+                mi.proveedor_id,
+                pr.nombre AS proveedor,
                 mi.referencia_tipo,
                 mi.referencia_id,
                 mi.fecha_movimiento
@@ -229,6 +233,7 @@ def listar_movimientos(filtros: dict[str, object]) -> list[dict[str, object]]:
             JOIN producto p ON p.id = pv.producto_id
             JOIN talla t ON t.id = pv.talla_id
             JOIN color co ON co.id = pv.color_id
+            LEFT JOIN proveedor pr ON pr.id = mi.proveedor_id
             WHERE {' AND '.join(condiciones)}
             ORDER BY mi.fecha_movimiento DESC, mi.id DESC;
             """,
@@ -524,6 +529,7 @@ def _aplicar_movimiento(
     motivo: str | None,
     referencia_tipo: str | None,
     referencia_id: int | None,
+    proveedor_id: int | None = None,
 ) -> int:
     if tipo not in TIPOS_SUMA and tipo not in TIPOS_RESTA:
         raise ValueError("Tipo de movimiento invalido.")
@@ -558,9 +564,10 @@ def _aplicar_movimiento(
             stock_nuevo,
             motivo,
             referencia_tipo,
-            referencia_id
+            referencia_id,
+            proveedor_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
@@ -574,6 +581,7 @@ def _aplicar_movimiento(
             motivo,
             referencia_tipo,
             referencia_id,
+            proveedor_id,
         ),
     )
     return int(cursor.fetchone()["id"])
@@ -620,6 +628,8 @@ def _obtener_movimiento_cursor(cursor, movimiento_id: int) -> dict[str, object] 
             mi.stock_anterior,
             mi.stock_nuevo,
             mi.motivo,
+            mi.proveedor_id,
+            pr.nombre AS proveedor,
             mi.referencia_tipo,
             mi.referencia_id,
             mi.fecha_movimiento
@@ -630,6 +640,7 @@ def _obtener_movimiento_cursor(cursor, movimiento_id: int) -> dict[str, object] 
         JOIN producto p ON p.id = pv.producto_id
         JOIN talla t ON t.id = pv.talla_id
         JOIN color co ON co.id = pv.color_id
+        LEFT JOIN proveedor pr ON pr.id = mi.proveedor_id
         WHERE mi.id = %s
         LIMIT 1;
         """,

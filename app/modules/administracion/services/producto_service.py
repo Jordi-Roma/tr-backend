@@ -58,6 +58,7 @@ def registrar_producto(
         tipo_corte=request.tipo_corte,
         ancho_base_cm=request.ancho_base_cm,
         largo_base_cm=request.largo_base_cm,
+        modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
     )
 
     registrar_bitacora(
@@ -102,6 +103,7 @@ def editar_producto(
         tipo_corte=request.tipo_corte,
         ancho_base_cm=request.ancho_base_cm,
         largo_base_cm=request.largo_base_cm,
+        modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
     )
 
     if not actualizado:
@@ -193,6 +195,7 @@ def construir_producto_response(producto: dict[str, object]) -> ProductoResponse
         tipo_corte=str(producto.get("tipo_corte") or "REGULAR_FIT"),
         ancho_base_cm=float(producto.get("ancho_base_cm") or 53.0),
         largo_base_cm=float(producto.get("largo_base_cm") or 72.0),
+        modelo_3d_url=str(producto["modelo_3d_url"]) if producto.get("modelo_3d_url") else None,
         activo=bool(producto["activo"]),
         fecha_creacion=producto["fecha_creacion"],
         colecciones_ids=list(producto["colecciones_ids"]),

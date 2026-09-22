@@ -16,6 +16,7 @@ def obtener_datos_prenda_vestidor(producto_id: int) -> dict[str, object] | None:
                    COALESCE(p.tipo_corte, 'REGULAR_FIT') AS tipo_corte,
                    COALESCE(p.ancho_base_cm, 53.0) AS ancho_base_cm,
                    COALESCE(p.largo_base_cm, 72.0) AS largo_base_cm,
+                   p.modelo_3d_url,
                    (
                        SELECT ip.url
                        FROM imagen_producto ip
@@ -99,6 +100,7 @@ def listar_prendas_catalogo_vestidor(limite: int = 30) -> list[dict[str, object]
         cursor.execute(
             """
             SELECT p.id AS producto_id, p.nombre, c.nombre AS categoria,
+                   p.tipo_prenda, p.modelo_3d_url,
                    (
                        SELECT ip.url
                        FROM imagen_producto ip

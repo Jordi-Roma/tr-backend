@@ -23,6 +23,7 @@ class ProductoResponse(BaseModel):
     tipo_corte: str = "REGULAR_FIT"
     ancho_base_cm: float = 53.0
     largo_base_cm: float = 72.0
+    modelo_3d_url: str | None = None
     activo: bool
     fecha_creacion: datetime
     colecciones_ids: list[int]

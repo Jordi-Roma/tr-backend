@@ -59,6 +59,7 @@ class CatalogoPrendaItemResponse(BaseModel):
     tallas: list[CatalogoTallaResponse]
     colores: list[CatalogoColorResponse]
     imagen_principal: str | None = None
+    modelo_3d_url: str | None = None
     activo: bool
 
 

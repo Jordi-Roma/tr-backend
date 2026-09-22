@@ -4,6 +4,7 @@ from uuid import uuid4
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
+from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
 from app.modules.ventas_inventario.repositories.inventario_repository import _aplicar_movimiento
 
 
@@ -582,8 +583,6 @@ def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None) -> 
             co.nombre AS color,
             %s AS sucursal_id,
             ci.cantidad,
-            COALESCE(ci.precio_unitario, pp.precio, 0) AS precio_unitario,
-            (COALESCE(ci.precio_unitario, pp.precio, 0) * ci.cantidad) AS subtotal,
             COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0)::INT AS stock_disponible
         FROM carrito_item ci
         JOIN producto_variante pv ON pv.id = ci.producto_variante_id AND pv.activo = TRUE
@@ -591,10 +590,6 @@ def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None) -> 
         JOIN categoria ca ON ca.id = p.categoria_id
         JOIN talla t ON t.id = pv.talla_id
         JOIN color co ON co.id = pv.color_id
-        LEFT JOIN precio_producto pp
-            ON pp.producto_variante_id = pv.id
-            AND pp.activo = TRUE
-            AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
         LEFT JOIN inventario_sucursal inv
             ON inv.producto_variante_id = pv.id
             AND inv.sucursal_id = %s
@@ -604,7 +599,18 @@ def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None) -> 
         """,
         (sucursal_id, sucursal_id, carrito_id),
     )
-    return [dict(row) for row in cursor.fetchall()]
+    items = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        precio = _obtener_precio_final_variante_cursor(
+            cursor,
+            int(item["producto_variante_id"]),
+            sucursal_id,
+        )
+        item["precio_unitario"] = precio or Decimal("0.00")
+        item["subtotal"] = item["precio_unitario"] * int(item["cantidad"])
+        items.append(item)
+    return items
 
 
 def _crear_venta_pendiente(

@@ -4,6 +4,7 @@ from uuid import uuid4
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
+from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
 
 TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA"}
 TIPOS_RESTA = {"SALIDA", "AJUSTE_NEGATIVO", "TRANSFERENCIA_SALIDA", "VENTA_PRESENCIAL", "VENTA_DIGITAL"}
@@ -393,7 +394,7 @@ def crear_venta_presencial(
             variante_id = int(item["producto_variante_id"])
             cantidad = int(item["cantidad"])
             descuento = Decimal(str(item.get("descuento") or "0.00"))
-            precio = _obtener_precio_vigente(cursor, variante_id)
+            precio = _obtener_precio_final_variante_cursor(cursor, variante_id, sucursal_id)
             if precio is None:
                 raise ValueError("Una variante no tiene precio vigente.")
             bruto = precio * cantidad

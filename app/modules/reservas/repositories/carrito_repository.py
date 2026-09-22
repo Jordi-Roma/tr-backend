@@ -3,6 +3,10 @@ from decimal import Decimal
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
+from app.modules.catalogo.repositories.catalogo_publico_repository import (
+    _calcular_precio_final,
+    _obtener_promocion,
+)
 
 
 def obtener_cliente_id_por_usuario(usuario_id: int) -> int | None:
@@ -43,7 +47,7 @@ def agregar_item_carrito(
 
     try:
         carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
-        precio = _obtener_precio_variante_cursor(cursor, producto_variante_id)
+        precio = _obtener_precio_final_variante_cursor(cursor, producto_variante_id, sucursal_id)
 
         if precio is None:
             raise ValueError("La variante no tiene precio vigente.")
@@ -275,8 +279,7 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
             s.nombre AS sucursal,
             cd.nombre AS ciudad,
             ci.cantidad,
-            COALESCE(ci.precio_unitario, pp.precio, 0) AS precio_unitario,
-            (COALESCE(ci.precio_unitario, pp.precio, 0) * ci.cantidad) AS subtotal,
+            pp.precio AS precio_base,
             COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0)::INT AS stock_disponible
         FROM carrito_item ci
         JOIN producto_variante pv ON pv.id = ci.producto_variante_id
@@ -299,7 +302,15 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
         """,
         (carrito_id,),
     )
-    items = [dict(row) for row in cursor.fetchall()]
+    items = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        precio_base = item.pop("precio_base", None)
+        promocion = _obtener_promocion(cursor, int(item["producto_id"]), item["sucursal_id"])
+        precio_final = _calcular_precio_final(precio_base, promocion) or Decimal("0.00")
+        item["precio_unitario"] = precio_final
+        item["subtotal"] = precio_final * int(item["cantidad"])
+        items.append(item)
     total = sum((item["subtotal"] or Decimal("0.00") for item in items), Decimal("0.00"))
 
     return {
@@ -364,6 +375,33 @@ def _obtener_precio_variante_cursor(cursor, producto_variante_id: int) -> Decima
     )
     row = cursor.fetchone()
     return row["precio"] if row is not None else None
+
+
+def _obtener_precio_final_variante_cursor(
+    cursor,
+    producto_variante_id: int,
+    sucursal_id: int | None = None,
+) -> Decimal | None:
+    cursor.execute(
+        """
+        SELECT pv.producto_id, pp.precio
+        FROM producto_variante pv
+        JOIN precio_producto pp
+            ON pp.producto_variante_id = pv.id
+            AND pp.activo = TRUE
+            AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
+        WHERE pv.id = %s AND pv.activo = TRUE
+        ORDER BY pp.fecha_inicio DESC, pp.id DESC
+        LIMIT 1;
+        """,
+        (producto_variante_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+
+    promocion = _obtener_promocion(cursor, int(row["producto_id"]), sucursal_id)
+    return _calcular_precio_final(row["precio"], promocion)
 
 
 def _obtener_stock_disponible_cursor(cursor, producto_variante_id: int, sucursal_id: int) -> int:

@@ -9,6 +9,7 @@ from app.modules.reservas.repositories.carrito_repository import (
     _armar_carrito_cursor,
     _obtener_cliente_id_por_usuario_cursor,
     _obtener_o_crear_carrito_cursor,
+    _obtener_precio_final_variante_cursor,
 )
 
 ESTADOS_FINALES = {"COMPLETADA", "CANCELADA", "VENCIDA"}
@@ -44,6 +45,11 @@ def crear_reserva_desde_carrito(
         for item in items:
             variante_id = int(item["producto_variante_id"])
             cantidad = int(item["cantidad"])
+            precio = _obtener_precio_final_variante_cursor(cursor, variante_id, sucursal_id)
+            if precio is None:
+                raise ValueError("Una prenda no tiene precio vigente.")
+            item["precio_unitario"] = precio
+            item["subtotal"] = precio * cantidad
             _validar_y_reservar_stock_cursor(cursor, variante_id, sucursal_id, cantidad)
 
         total = sum((item["subtotal"] or Decimal("0.00") for item in items), Decimal("0.00"))

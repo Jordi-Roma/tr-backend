@@ -14,7 +14,8 @@ def listar_productos() -> list[dict[str, object]]:
                    COALESCE(p.tipo_prenda, 'SUPERIOR') AS tipo_prenda,
                    COALESCE(p.tipo_corte, 'REGULAR_FIT') AS tipo_corte,
                    COALESCE(p.ancho_base_cm, 53.0) AS ancho_base_cm,
-                   COALESCE(p.largo_base_cm, 72.0) AS largo_base_cm
+                   COALESCE(p.largo_base_cm, 72.0) AS largo_base_cm,
+                   p.modelo_3d_url
             FROM producto p
             JOIN categoria c ON p.categoria_id = c.id
             LEFT JOIN marca m ON p.marca_id = m.id
@@ -46,7 +47,8 @@ def obtener_producto_por_id(producto_id: int) -> dict[str, object] | None:
                    COALESCE(p.tipo_prenda, 'SUPERIOR') AS tipo_prenda,
                    COALESCE(p.tipo_corte, 'REGULAR_FIT') AS tipo_corte,
                    COALESCE(p.ancho_base_cm, 53.0) AS ancho_base_cm,
-                   COALESCE(p.largo_base_cm, 72.0) AS largo_base_cm
+                   COALESCE(p.largo_base_cm, 72.0) AS largo_base_cm,
+                   p.modelo_3d_url
             FROM producto p
             JOIN categoria c ON p.categoria_id = c.id
             LEFT JOIN marca m ON p.marca_id = m.id
@@ -104,6 +106,7 @@ def crear_producto(
     tipo_corte: str = "REGULAR_FIT",
     ancho_base_cm: float = 53.0,
     largo_base_cm: float = 72.0,
+    modelo_3d_url: str | None = None,
 ) -> int:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -113,14 +116,14 @@ def crear_producto(
             """
             INSERT INTO producto (
                 categoria_id, marca_id, nombre, descripcion, material, genero,
-                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm
+                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm, modelo_3d_url
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id;
             """,
             (
                 categoria_id, marca_id, nombre, descripcion, material, genero,
-                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm,
+                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm, modelo_3d_url,
             ),
         )
         producto_id = cursor.fetchone()["id"]
@@ -161,6 +164,7 @@ def actualizar_producto(
     tipo_corte: str = "REGULAR_FIT",
     ancho_base_cm: float = 53.0,
     largo_base_cm: float = 72.0,
+    modelo_3d_url: str | None = None,
 ) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -178,13 +182,14 @@ def actualizar_producto(
                 tipo_prenda = %s,
                 tipo_corte = %s,
                 ancho_base_cm = %s,
-                largo_base_cm = %s
+                largo_base_cm = %s,
+                modelo_3d_url = %s
             WHERE id = %s
             RETURNING id;
             """,
             (
                 categoria_id, marca_id, nombre, descripcion, material, genero,
-                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm, producto_id,
+                tipo_prenda, tipo_corte, ancho_base_cm, largo_base_cm, modelo_3d_url, producto_id,
             ),
         )
         if cursor.fetchone() is None:

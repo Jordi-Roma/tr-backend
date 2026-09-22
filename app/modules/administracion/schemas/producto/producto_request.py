@@ -15,6 +15,7 @@ class CrearProductoRequest(BaseModel):
     tipo_corte: str = "REGULAR_FIT"
     ancho_base_cm: float = 53.0
     largo_base_cm: float = 72.0
+    modelo_3d_url: str | None = None
     colecciones_ids: list[int] = []
     proveedores_ids: list[int] = []
     imagenes: list[ImagenProductoRequest] = []
@@ -49,6 +50,7 @@ class ActualizarProductoRequest(BaseModel):
     tipo_corte: str = "REGULAR_FIT"
     ancho_base_cm: float = 53.0
     largo_base_cm: float = 72.0
+    modelo_3d_url: str | None = None
     colecciones_ids: list[int] = []
     proveedores_ids: list[int] = []
     imagenes: list[ImagenProductoRequest] = []

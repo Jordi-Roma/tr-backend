@@ -36,6 +36,7 @@ class PrendaARResponse(BaseModel):
     ancho_base_cm: float
     largo_base_cm: float
     imagen_ar_url: str | None = None
+    modelo_3d_url: str | None = None
     precio: float
     tallas: list[TallaARResponse] = []
     colores: list[ColorARResponse] = []

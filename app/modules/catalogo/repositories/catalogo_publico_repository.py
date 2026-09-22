@@ -203,7 +203,7 @@ def _armar_prenda(
         """
         SELECT p.id AS producto_id, p.nombre, p.descripcion, p.categoria_id,
                c.nombre AS categoria, p.marca_id, m.nombre AS marca,
-               p.material, p.genero, p.activo,
+               p.material, p.genero, p.activo, p.modelo_3d_url,
                (
                    SELECT ip.url
                    FROM imagen_producto ip

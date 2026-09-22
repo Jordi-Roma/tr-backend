@@ -124,12 +124,16 @@ def db_check() -> dict[str, str]:
 def descargar_apk():
     import os
     from fastapi.responses import FileResponse
-    apk_path = r"c:\MATERIAS\SI2\PrimerParcial\mobile_tr\build\app\outputs\flutter-apk\app-release.apk"
-    if os.path.exists(apk_path):
-        return FileResponse(
-            apk_path,
-            media_type="application/vnd.android.package-archive",
-            filename="tienda-ropa-release.apk",
-        )
+    paths = [
+        r"c:\MATERIAS\SI2\Presentacion\tr-mobile\build\app\outputs\flutter-apk\app-release.apk",
+        r"c:\MATERIAS\SI2\PrimerParcial\mobile_tr\build\app\outputs\flutter-apk\app-release.apk",
+    ]
+    for apk_path in paths:
+        if os.path.exists(apk_path):
+            return FileResponse(
+                apk_path,
+                media_type="application/vnd.android.package-archive",
+                filename="StyleAR-release.apk",
+            )
     return {"error": "APK no encontrado o aún en compilación"}
 

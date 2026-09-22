@@ -5,7 +5,7 @@ c = conn.cursor()
 
 print("Actualizando productos 3D del catálogo...")
 
-# 1. Actualizar nombres y detalles de productos
+# 1. Actualizar nombres, detalles y enlaces de calibración 3D de productos
 c.execute("""
     UPDATE producto 
     SET nombre = 'Jeans Denim Clásico 3D',
@@ -14,6 +14,7 @@ c.execute("""
         tipo_corte = 'SLIM_FIT',
         ancho_base_cm = 84.0,
         largo_base_cm = 104.0,
+        modelo_3d_url = 'https://www.snapchat.com/unlock/?type=SNAPCODE&uuid=b5d99fe6e0d5428593ade7347131cd6e&metadata=01',
         activo = TRUE
     WHERE id = 4;
 """)
@@ -26,6 +27,7 @@ c.execute("""
         tipo_corte = 'REGULAR_FIT',
         ancho_base_cm = 54.0,
         largo_base_cm = 72.0,
+        modelo_3d_url = 'https://www.snapchat.com/unlock/?type=SNAPCODE&uuid=b5d99fe6e0d5428593ade7347131cd6e&metadata=01',
         activo = TRUE
     WHERE id = 3;
 """)
@@ -38,6 +40,7 @@ c.execute("""
         tipo_corte = 'REGULAR_FIT',
         ancho_base_cm = 52.0,
         largo_base_cm = 70.0,
+        modelo_3d_url = NULL,
         activo = TRUE
     WHERE id = 2;
 """)
@@ -50,6 +53,7 @@ c.execute("""
         tipo_corte = 'OVERSIZE',
         ancho_base_cm = 58.0,
         largo_base_cm = 74.0,
+        modelo_3d_url = 'https://www.snapchat.com/unlock/?type=SNAPCODE&uuid=b5d99fe6e0d5428593ade7347131cd6e&metadata=01',
         activo = TRUE
     WHERE id = 1;
 """)

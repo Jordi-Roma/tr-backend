@@ -1,5 +1,6 @@
 from psycopg2.extras import RealDictCursor
 
+from app.core.config import ACCESS_TOKEN_EXPIRE_MINUTES
 from app.database.connection import get_connection
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 
@@ -134,12 +135,12 @@ def crear_sesion(
             VALUES (
                 %s,
                 %s,
-                CURRENT_TIMESTAMP + INTERVAL '30 minutes',
+                CURRENT_TIMESTAMP + (%s * INTERVAL '1 minute'),
                 TRUE
             )
             RETURNING id, fecha_inicio, fecha_expiracion;
             """,
-            (usuario_id, refresh_token_hash),
+            (usuario_id, refresh_token_hash, ACCESS_TOKEN_EXPIRE_MINUTES),
         )
         sesion = cursor.fetchone()
         connection.commit()

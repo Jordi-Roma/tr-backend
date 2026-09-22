@@ -226,7 +226,7 @@ def listar_reservas_admin(
             estado_sql = "AND estado = %s"
             params.append(estado)
         else:
-            estado_sql = "AND estado IN ('PENDIENTE', 'PREPARADA', 'EN_ATENCION')"
+            estado_sql = "AND estado IN ('PENDIENTE_ANTICIPO', 'PENDIENTE', 'PREPARADA', 'EN_ATENCION')"
 
         if sucursal_id is not None:
             sucursal_sql = "AND sucursal_id = %s"

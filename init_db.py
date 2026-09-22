@@ -29,6 +29,7 @@ SQL_FILES = [
     "database/migracion_cu24_talla_tipo_prenda.sql",
     "database/migracion_cu24_vestidor.sql",
     "database/migracion_reportes_programados.sql",
+    "database/migracion_panel_proveedor.sql",
 ]
 
 

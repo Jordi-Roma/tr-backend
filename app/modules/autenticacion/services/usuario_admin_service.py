@@ -62,6 +62,8 @@ def registrar_usuario(
         correo,
         password_hash,
         request.rol_id,
+        str(rol["nombre"]),
+        request.telefono,
         int(usuario_actual["id"]),
     )
     return construir_usuario_response(usuario)

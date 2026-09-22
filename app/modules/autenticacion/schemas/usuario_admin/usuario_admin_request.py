@@ -54,6 +54,7 @@ class ActualizarUsuarioRequest(BaseModel):
 class CrearUsuarioAdminRequest(ActualizarUsuarioRequest):
     password: str
     rol_id: int
+    telefono: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -69,3 +70,12 @@ class CrearUsuarioAdminRequest(ActualizarUsuarioRequest):
         if valor < 1:
             raise ValueError("El rol no es valido.")
         return valor
+
+    @field_validator("telefono")
+    @classmethod
+    def validar_telefono(cls, valor: str | None) -> str | None:
+        if valor is None:
+            return None
+
+        telefono = valor.strip()
+        return telefono or None

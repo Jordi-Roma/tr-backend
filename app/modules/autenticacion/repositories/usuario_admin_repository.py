@@ -10,6 +10,8 @@ def crear_usuario_con_rol(
     correo: str,
     password_hash: str,
     rol_id: int,
+    rol_nombre: str,
+    telefono: str | None,
     usuario_id_admin: int,
 ) -> dict[str, object]:
     connection = get_connection()
@@ -36,6 +38,14 @@ def crear_usuario_con_rol(
             """,
             (usuario_id, rol_id),
         )
+        if rol_nombre == "CLIENTE":
+            cursor.execute(
+                """
+                INSERT INTO cliente (usuario_id, telefono)
+                VALUES (%s, %s);
+                """,
+                (usuario_id, telefono),
+            )
         registrar_bitacora_con_cursor(
             cursor,
             usuario_id_admin,

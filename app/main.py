@@ -27,6 +27,7 @@ from app.modules.administracion.router.coleccion_router import (
     router as coleccion_router,
 )
 from app.modules.administracion.router.producto_router import router as producto_router
+from app.modules.administracion.router.promocion_router import router as promocion_router
 from app.modules.administracion.router.variante_router import router as variante_router
 from app.modules.autenticacion.router.bitacora_router import router as bitacora_router
 from app.modules.reservas.router.carrito_router import router as carrito_router
@@ -82,6 +83,7 @@ app.include_router(catalogo_router)
 app.include_router(temporada_router)
 app.include_router(coleccion_router)
 app.include_router(producto_router)
+app.include_router(promocion_router)
 app.include_router(variante_router)
 app.include_router(carrito_router)
 app.include_router(reserva_router)

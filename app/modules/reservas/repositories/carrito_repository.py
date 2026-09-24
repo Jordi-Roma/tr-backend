@@ -58,6 +58,12 @@ def agregar_item_carrito(
 
             if stock < cantidad_actual + cantidad:
                 raise ValueError("No hay stock suficiente para agregar esa cantidad.")
+        else:
+            stock = _obtener_stock_disponible_total_cursor(cursor, producto_variante_id)
+            cantidad_actual = _obtener_cantidad_item_total_cursor(cursor, carrito_id, producto_variante_id)
+
+            if stock < cantidad_actual + cantidad:
+                raise ValueError("No hay stock suficiente para agregar esa cantidad.")
 
         cursor.execute(
             """
@@ -144,6 +150,11 @@ def actualizar_item_carrito(cliente_id: int, item_id: int, cantidad: int) -> dic
                 int(item["producto_variante_id"]),
                 int(item["sucursal_id"]),
             )
+
+            if stock < cantidad:
+                raise ValueError("No hay stock suficiente para esa cantidad.")
+        else:
+            stock = _obtener_stock_disponible_total_cursor(cursor, int(item["producto_variante_id"]))
 
             if stock < cantidad:
                 raise ValueError("No hay stock suficiente para esa cantidad.")
@@ -420,6 +431,20 @@ def _obtener_stock_disponible_cursor(cursor, producto_variante_id: int, sucursal
     return int(row["stock"]) if row is not None else 0
 
 
+def _obtener_stock_disponible_total_cursor(cursor, producto_variante_id: int) -> int:
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(GREATEST(stock_disponible - stock_reservado, 0)), 0)::INT AS stock
+        FROM inventario_sucursal
+        WHERE producto_variante_id = %s
+          AND activo = TRUE;
+        """,
+        (producto_variante_id,),
+    )
+    row = cursor.fetchone()
+    return int(row["stock"]) if row is not None else 0
+
+
 def _obtener_cantidad_item_cursor(
     cursor,
     carrito_id: int,
@@ -437,6 +462,25 @@ def _obtener_cantidad_item_cursor(
         LIMIT 1;
         """,
         (carrito_id, producto_variante_id, sucursal_id),
+    )
+    row = cursor.fetchone()
+    return int(row["cantidad"]) if row is not None else 0
+
+
+def _obtener_cantidad_item_total_cursor(
+    cursor,
+    carrito_id: int,
+    producto_variante_id: int,
+) -> int:
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(cantidad), 0)::INT AS cantidad
+        FROM carrito_item
+        WHERE carrito_id = %s
+          AND producto_variante_id = %s
+          AND activo = TRUE;
+        """,
+        (carrito_id, producto_variante_id),
     )
     row = cursor.fetchone()
     return int(row["cantidad"]) if row is not None else 0

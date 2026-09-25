@@ -6,7 +6,7 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
 
-TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA"}
+TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION_VENTA"}
 TIPOS_RESTA = {"SALIDA", "AJUSTE_NEGATIVO", "TRANSFERENCIA_SALIDA", "VENTA_PRESENCIAL", "VENTA_DIGITAL"}
 
 

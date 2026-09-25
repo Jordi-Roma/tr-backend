@@ -169,6 +169,27 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
         if payment_intent:
             # Stripe normalmente relaciona el fallo con la sesion; se deja como evento aceptado.
             pass
+    elif tipo in {"refund.created", "refund.updated", "refund.failed"}:
+        refund_id = data.get("id")
+        refund_estado = data.get("status") or ("failed" if tipo == "refund.failed" else "pending")
+        metadata = data.get("metadata") or {}
+        devolucion_id = metadata.get("devolucion_id")
+        fallo = data.get("failure_reason")
+        if refund_id and devolucion_id:
+            from app.modules.ventas_inventario.services.devolucion_service import (
+                procesar_evento_refund_stripe,
+            )
+
+            procesar_evento_refund_stripe(
+                str(refund_id), str(refund_estado), str(fallo) if fallo else None,
+                int(devolucion_id),
+            )
+        elif refund_id:
+            from app.modules.ventas_inventario.repositories import devolucion_repository
+
+            devolucion_repository.actualizar_resultado_stripe_por_refund(
+                str(refund_id), str(refund_estado), str(fallo) if fallo else None
+            )
     return {"status": "ok"}
 
 

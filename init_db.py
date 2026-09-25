@@ -30,6 +30,7 @@ SQL_FILES = [
     "database/migracion_cu24_vestidor.sql",
     "database/migracion_reportes_programados.sql",
     "database/migracion_panel_proveedor.sql",
+    "database/migracion_devoluciones.sql",
 ]
 
 
@@ -53,6 +54,8 @@ def ejecutar_scripts():
             except Exception as ex:
                 conn.rollback()
                 print(f"Nota en {rel_path}: {ex}")
+                if rel_path == "database/migracion_devoluciones.sql":
+                    raise RuntimeError("No se pudo aplicar la migración obligatoria de devoluciones.") from ex
 
         try:
             cur.execute("ALTER TABLE categoria ADD COLUMN IF NOT EXISTS categoria_padre_id BIGINT NULL;")

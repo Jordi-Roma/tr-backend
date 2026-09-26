@@ -1,11 +1,17 @@
 import os
+from datetime import datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
 
 from app.modules.ventas_inventario.repositories import pago_repository as repo
-from app.modules.ventas_inventario.schemas.pago.pago_request import CrearCheckoutStripeRequest
+from app.modules.ventas_inventario.schemas.pago.pago_request import (
+    CrearCheckoutQrRequest,
+    CrearCheckoutStripeRequest,
+)
 from app.modules.ventas_inventario.schemas.pago.pago_response import (
+    CheckoutQrResponse,
     CheckoutStripeResponse,
     OrdenPagoResponse,
     PagoHistorialDetalleResponse,
@@ -34,6 +40,78 @@ def crear_checkout_stripe_service(usuario_actual: dict[str, object], request: Cr
         return _checkout_response(orden)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+def crear_checkout_qr_service(
+    usuario_actual: dict[str, object],
+    request: CrearCheckoutQrRequest,
+) -> CheckoutQrResponse:
+    cliente_id = _cliente_id_obligatorio(usuario_actual)
+    try:
+        tipo_entrega = request.tipo_entrega.strip().upper()
+        if tipo_entrega not in {"RECOJO_SUCURSAL", "DELIVERY"}:
+            raise ValueError("Tipo de entrega no valido.")
+        delivery = preparar_delivery_para_checkout(request.delivery) if tipo_entrega == "DELIVERY" else None
+        sucursal_id = int(delivery["sucursal_id"]) if delivery else request.sucursal_id
+
+        qr_tx_id = f"QR-BO-{uuid4().hex[:10].upper()}"
+
+        orden = repo.crear_orden_desde_carrito(
+            cliente_id=cliente_id,
+            usuario_id=int(usuario_actual["id"]),
+            sucursal_id=sucursal_id,
+            delivery=delivery,
+            metodo="QR",
+            proveedor="QR_SIMPLE",
+        )
+
+        monto_str = f"{Decimal(str(orden['monto_total'])):.2f}"
+        glosa = f"VENTA-{orden['venta_id']}-ORDEN-{orden['id']}"
+        vencimiento = (datetime.now() + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Payload QR Simple interoperable (formato estándar de interoperabilidad bancaria boliviana / BCP / BNB)
+        qr_payload = (
+            f"000201010212"
+            f"43320016bo.bancobcp.qr0110StyleAR-SRL"
+            f"52044100530306854{len(monto_str):02d}{monto_str}"
+            f"5802BO5915StyleAR BOLIVIA6010SANTA CRUZ"
+            f"62{len(glosa)+4:02d}05{len(glosa):02d}{glosa}"
+            f"6304{uuid4().hex[:4].upper()}"
+        )
+
+        orden = repo.actualizar_orden_qr(
+            int(orden["id"]),
+            qr_payload=qr_payload,
+            session_id=qr_tx_id,
+        )
+
+        return CheckoutQrResponse(
+            orden_id=int(orden["id"]),
+            venta_id=int(orden["venta_id"]),
+            monto_total=orden["monto_total"],
+            moneda="BOB",
+            estado=str(orden["estado"]),
+            qr_payload=qr_payload,
+            alias="StyleAR Bolivia S.R.L.",
+            banco="Banco de Crédito BCP",
+            cuenta="10000000452319",
+            titular="StyleAR S.R.L.",
+            glosa=glosa,
+            vencimiento=vencimiento,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+
+def confirmar_pago_qr_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:
+    orden = repo.obtener_orden_pago(orden_id)
+    if orden is None:
+        raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
+    _validar_acceso_orden(usuario_actual, orden)
+    try:
+        return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"])))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def obtener_orden_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:

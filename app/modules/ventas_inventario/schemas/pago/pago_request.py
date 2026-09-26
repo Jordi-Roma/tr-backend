@@ -9,5 +9,11 @@ class CrearCheckoutStripeRequest(BaseModel):
     delivery: DeliveryCheckoutRequest | None = None
 
 
+class CrearCheckoutQrRequest(BaseModel):
+    sucursal_id: int | None = Field(default=None, gt=0)
+    tipo_entrega: str = "RECOJO_SUCURSAL"
+    delivery: DeliveryCheckoutRequest | None = None
+
+
 class ConfirmarPagoPruebaRequest(BaseModel):
     aprobar: bool = True

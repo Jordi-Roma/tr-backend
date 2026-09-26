@@ -21,7 +21,9 @@ ROLES_SUCURSAL = {"ENCARGADO_SUCURSAL", "CAJERO"}
 
 
 def listar_ventas_elegibles_service(usuario: dict[str, object]) -> list[VentaDevolucionElegibleResponse]:
-    cliente_id = _cliente_id_requerido(usuario)
+    cliente_id = _cliente_id_opcional(usuario)
+    if cliente_id is None:
+        return []
     return [VentaDevolucionElegibleResponse(**item) for item in repo.listar_ventas_elegibles(cliente_id, DIAS_PLAZO_DEVOLUCION)]
 
 
@@ -45,14 +47,17 @@ def solicitar_devolucion_service(
 
 
 def listar_mis_devoluciones_service(usuario: dict[str, object], estado: str | None = None) -> list[DevolucionResponse]:
-    cliente_id = _cliente_id_requerido(usuario)
+    cliente_id = _cliente_id_opcional(usuario)
+    if cliente_id is None:
+        return []
     return [DevolucionResponse(**item) for item in repo.listar_devoluciones_propias(cliente_id, estado)]
 
 
 def listar_devoluciones_service(
     usuario: dict[str, object], estado: str | None, venta_id: int | None, cliente: str | None
 ) -> list[DevolucionResponse]:
-    ver_todas = _tiene_permiso(usuario, "devoluciones:ver_todos")
+    roles = _roles(usuario)
+    ver_todas = "ADMINISTRADOR" in roles or _tiene_permiso(usuario, "devoluciones:ver_todos")
     if ver_todas:
         sucursal_id = None
     else:
@@ -205,10 +210,15 @@ def procesar_evento_refund_stripe(
         repo.actualizar_resultado_stripe_por_refund(refund_id, estado, mensaje_error)
 
 
+def _cliente_id_opcional(usuario: dict[str, object]) -> int | None:
+    usuario_id = int(usuario["id"])
+    return repo.cliente_id_por_usuario(usuario_id)
+
+
 def _cliente_id_requerido(usuario: dict[str, object]) -> int:
     roles = _roles(usuario)
     usuario_id = int(usuario["id"])
-    if "CLIENTE" not in roles and not _tiene_permiso(usuario, "devoluciones:solicitar"):
+    if "CLIENTE" not in roles and "ADMINISTRADOR" not in roles and not _tiene_permiso(usuario, "devoluciones:solicitar"):
         raise HTTPException(status_code=403, detail="Solo un cliente puede solicitar o consultar sus devoluciones.")
     cliente_id = repo.cliente_id_por_usuario(usuario_id)
     if cliente_id is None:

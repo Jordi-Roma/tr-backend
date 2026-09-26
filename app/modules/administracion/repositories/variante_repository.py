@@ -211,7 +211,7 @@ def asignar_precio(variante_id: int, monto: Decimal, fecha_inicio: object | None
         cursor.execute(
             """
             INSERT INTO precio_producto (producto_variante_id, precio, fecha_inicio, fecha_fin)
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, COALESCE(%s, CURRENT_DATE), %s)
             RETURNING id;
             """,
             (variante_id, monto, fecha_inicio, fecha_fin),

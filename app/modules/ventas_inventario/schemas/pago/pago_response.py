@@ -9,6 +9,21 @@ class CheckoutStripeResponse(BaseModel):
     checkout_url: str
 
 
+class CheckoutQrResponse(BaseModel):
+    orden_id: int
+    venta_id: int
+    monto_total: Decimal
+    moneda: str = "BOB"
+    estado: str
+    qr_payload: str
+    alias: str = "StyleAR S.R.L."
+    banco: str = "Banco de Crédito BCP"
+    cuenta: str = "10000000452319"
+    titular: str = "StyleAR Bolivia S.R.L."
+    glosa: str
+    vencimiento: str
+
+
 class OrdenPagoResponse(BaseModel):
     orden_id: int
     venta_id: int

@@ -79,6 +79,9 @@ def crear_orden_desde_carrito(
     usuario_id: int,
     sucursal_id: int | None,
     delivery: dict | None = None,
+    metodo: str = "TARJETA",
+    proveedor: str = "STRIPE",
+    checkout_url: str | None = None,
 ) -> dict:
     connection = get_connection()
     try:
@@ -149,12 +152,13 @@ def crear_orden_desde_carrito(
                     moneda,
                     metodo,
                     estado,
-                    proveedor
+                    proveedor,
+                    checkout_url
                 )
-                VALUES (%s, %s, 'COMPRA', %s, 'BOB', 'TARJETA', 'PENDIENTE', 'STRIPE')
+                VALUES (%s, %s, 'COMPRA', %s, 'BOB', %s, 'PENDIENTE', %s, %s)
                 RETURNING *;
                 """,
-                (venta_id, cliente_id, total),
+                (venta_id, cliente_id, total, metodo, proveedor, checkout_url),
             )
             orden = dict(cursor.fetchone())
             if delivery:
@@ -199,6 +203,33 @@ def actualizar_checkout_stripe(orden_id: int, session_id: str, checkout_url: str
                 RETURNING *;
                 """,
                 (session_id, payment_intent_id, checkout_url, orden_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Orden de pago no encontrada.")
+        connection.commit()
+        return dict(row)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def actualizar_orden_qr(orden_id: int, qr_payload: str, session_id: str) -> dict:
+    connection = get_connection()
+    try:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE orden_pago
+                SET proveedor_session_id = %s,
+                    checkout_url = %s,
+                    fecha_actualizacion = CURRENT_TIMESTAMP
+                WHERE id = %s
+                RETURNING *;
+                """,
+                (session_id, qr_payload, orden_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -457,6 +488,10 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
             )
             detalles = [dict(row) for row in cursor.fetchall()]
             usuario_movimiento = usuario_id_movimiento or orden["usuario_id"]
+            metodo_pago = str(orden.get("metodo") or "TARJETA").upper()
+            if metodo_pago not in {"EFECTIVO", "TARJETA", "QR", "TRANSFERENCIA"}:
+                metodo_pago = "STRIPE" if orden.get("proveedor") == "STRIPE" else "QR"
+            proveedor_nombre = str(orden.get("proveedor") or orden.get("metodo") or "Digital")
             for detalle in detalles:
                 _aplicar_movimiento(
                     cursor,
@@ -465,7 +500,7 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
                     int(detalle["producto_variante_id"]),
                     "VENTA_DIGITAL",
                     int(detalle["cantidad"]),
-                    "Pago digital confirmado por Stripe",
+                    f"Pago digital confirmado por {proveedor_nombre}",
                     "VENTA",
                     int(orden["venta_id"]),
                 )
@@ -474,10 +509,10 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
                 """
                 UPDATE venta
                 SET estado = 'COMPLETADA',
-                    metodo_pago = 'STRIPE'
+                    metodo_pago = %s
                 WHERE id = %s;
                 """,
-                (orden["venta_id"],),
+                (metodo_pago, orden["venta_id"]),
             )
             cursor.execute(
                 """

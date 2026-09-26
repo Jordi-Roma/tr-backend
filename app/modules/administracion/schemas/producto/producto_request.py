@@ -13,12 +13,22 @@ class CrearProductoRequest(BaseModel):
     genero: str | None = None
     tipo_prenda: str = "SUPERIOR"
     tipo_corte: str = "REGULAR_FIT"
-    ancho_base_cm: float = 53.0
-    largo_base_cm: float = 72.0
+    ancho_base_cm: float | None = 53.0
+    largo_base_cm: float | None = 72.0
     modelo_3d_url: str | None = None
     colecciones_ids: list[int] = []
     proveedores_ids: list[int] = []
     imagenes: list[ImagenProductoRequest] = []
+
+    @field_validator("ancho_base_cm", mode="before")
+    @classmethod
+    def validar_ancho_base(cls, v: float | None) -> float:
+        return float(v) if v is not None else 53.0
+
+    @field_validator("largo_base_cm", mode="before")
+    @classmethod
+    def validar_largo_base(cls, v: float | None) -> float:
+        return float(v) if v is not None else 72.0
 
     @field_validator("nombre")
     @classmethod
@@ -48,12 +58,22 @@ class ActualizarProductoRequest(BaseModel):
     genero: str | None = None
     tipo_prenda: str = "SUPERIOR"
     tipo_corte: str = "REGULAR_FIT"
-    ancho_base_cm: float = 53.0
-    largo_base_cm: float = 72.0
+    ancho_base_cm: float | None = 53.0
+    largo_base_cm: float | None = 72.0
     modelo_3d_url: str | None = None
     colecciones_ids: list[int] = []
     proveedores_ids: list[int] = []
     imagenes: list[ImagenProductoRequest] = []
+
+    @field_validator("ancho_base_cm", mode="before")
+    @classmethod
+    def validar_ancho_base_upd(cls, v: float | None) -> float:
+        return float(v) if v is not None else 53.0
+
+    @field_validator("largo_base_cm", mode="before")
+    @classmethod
+    def validar_largo_base_upd(cls, v: float | None) -> float:
+        return float(v) if v is not None else 72.0
 
     @field_validator("nombre")
     @classmethod

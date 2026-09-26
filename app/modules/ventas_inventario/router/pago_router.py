@@ -3,9 +3,11 @@ from fastapi import APIRouter, Depends, Request
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.ventas_inventario.schemas.pago.pago_request import (
     ConfirmarPagoPruebaRequest,
+    CrearCheckoutQrRequest,
     CrearCheckoutStripeRequest,
 )
 from app.modules.ventas_inventario.schemas.pago.pago_response import (
+    CheckoutQrResponse,
     CheckoutStripeResponse,
     OrdenPagoResponse,
     PagoHistorialDetalleResponse,
@@ -13,6 +15,8 @@ from app.modules.ventas_inventario.schemas.pago.pago_response import (
 )
 from app.modules.ventas_inventario.services.pago_service import (
     confirmar_pago_prueba_service,
+    confirmar_pago_qr_service,
+    crear_checkout_qr_service,
     crear_checkout_stripe_service,
     listar_mis_pagos_service,
     listar_pagos_service,
@@ -82,12 +86,28 @@ def crear_checkout_stripe(
     return crear_checkout_stripe_service(usuario_actual, request)
 
 
+@router.post("/qr/checkout", response_model=CheckoutQrResponse)
+def crear_checkout_qr(
+    request: CrearCheckoutQrRequest,
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+) -> CheckoutQrResponse:
+    return crear_checkout_qr_service(usuario_actual, request)
+
+
 @router.get("/orden/{orden_id}", response_model=OrdenPagoResponse)
 def obtener_orden_pago(
     orden_id: int,
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> OrdenPagoResponse:
     return obtener_orden_service(usuario_actual, orden_id)
+
+
+@router.post("/qr/confirmar/{orden_id}", response_model=OrdenPagoResponse)
+def confirmar_pago_qr(
+    orden_id: int,
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+) -> OrdenPagoResponse:
+    return confirmar_pago_qr_service(usuario_actual, orden_id)
 
 
 @router.post("/stripe/confirmar-prueba/{orden_id}", response_model=OrdenPagoResponse)

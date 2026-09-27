@@ -317,6 +317,8 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
     let currentSessionId = null;
     let isPaused = false;
     let manualRot = 0;
+    let currentFacingMode = 'user'; // 'user' (frontal) o 'environment' (trasera)
+    let isCameraSwitching = false;
 
     const localVideo = document.getElementById('localVideo');
     const remoteVideo = document.getElementById('remoteVideo');
@@ -331,20 +333,27 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
       
       let baseRot = isLandscape ? 90 : 0;
       let totalRot = (baseRot + manualRot) % 360;
+      const scaleStr = (currentFacingMode === 'user') ? 'scaleX(-1)' : 'scaleX(1)';
+
+      if (currentFacingMode === 'user') {{
+        videoEl.classList.add('mirror');
+      }} else {{
+        videoEl.classList.remove('mirror');
+      }}
 
       if (totalRot === 90 || totalRot === 270) {{
         videoEl.style.width = '100vh';
         videoEl.style.height = '100vw';
         videoEl.style.maxWidth = 'none';
         videoEl.style.maxHeight = 'none';
-        videoEl.style.transform = 'rotate(' + totalRot + 'deg) scaleX(-1)';
+        videoEl.style.transform = 'rotate(' + totalRot + 'deg) ' + scaleStr;
         videoEl.style.objectFit = 'contain';
       }} else {{
         videoEl.style.width = '100%';
         videoEl.style.height = '100%';
         videoEl.style.maxWidth = '100vw';
         videoEl.style.maxHeight = '100vh';
-        videoEl.style.transform = totalRot === 180 ? 'rotate(180deg) scaleX(-1)' : 'scaleX(-1)';
+        videoEl.style.transform = (totalRot === 180 ? 'rotate(180deg) ' : '') + scaleStr;
         videoEl.style.objectFit = 'contain';
       }}
     }}
@@ -355,22 +364,56 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
       applyOrientation(remoteVideo);
     }};
 
+    async function getCameraStream(facing) {{
+      // 1. Intentar con facingMode ideal
+      try {{
+        return await navigator.mediaDevices.getUserMedia({{
+          audio: false,
+          video: {{ facingMode: {{ ideal: facing }} }}
+        }});
+      }} catch (e1) {{
+        console.warn('Fallo facingMode ideal:', e1);
+      }}
+
+      // 2. Intentar con facingMode directo
+      try {{
+        return await navigator.mediaDevices.getUserMedia({{
+          audio: false,
+          video: {{ facingMode: facing }}
+        }});
+      }} catch (e2) {{
+        console.warn('Fallo facingMode directo:', e2);
+      }}
+
+      // 3. Enumerar dispositivos para encontrar la cámara correspondiente
+      try {{
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        if (videoDevices.length > 1) {{
+          let targetDev = null;
+          if (facing === 'environment') {{
+            targetDev = videoDevices.find(d => /back|rear|trasera|posterior|environment/i.test(d.label)) || videoDevices[videoDevices.length - 1];
+          }} else {{
+            targetDev = videoDevices.find(d => /front|user|delantera|frontal/i.test(d.label)) || videoDevices[0];
+          }}
+          if (targetDev && targetDev.deviceId) {{
+            return await navigator.mediaDevices.getUserMedia({{
+              audio: false,
+              video: {{ deviceId: {{ exact: targetDev.deviceId }} }}
+            }});
+          }}
+        }}
+      }} catch (e3) {{
+        console.warn('Fallo enumerateDevices fallback:', e3);
+      }}
+
+      // 4. Fallback genérico
+      return await navigator.mediaDevices.getUserMedia({{ audio: false, video: true }});
+    }}
+
     async function initCamera() {{
       try {{
-        let stream = null;
-        try {{
-          stream = await navigator.mediaDevices.getUserMedia({{
-            audio: false,
-            video: {{ facingMode: 'user' }}
-          }});
-        }} catch (e1) {{
-          console.warn('Fallback a video basico:', e1);
-          stream = await navigator.mediaDevices.getUserMedia({{
-            audio: false,
-            video: true
-          }});
-        }}
-
+        const stream = await getCameraStream(currentFacingMode);
         localStream = stream;
         localVideo.srcObject = stream;
         localVideo.muted = true;
@@ -381,7 +424,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
         applyOrientation(localVideo);
         setTimeout(() => applyOrientation(localVideo), 150);
         
-        statusLabel.textContent = 'Cámara en Vivo';
+        statusLabel.textContent = 'Cámara Frontal en Vivo';
 
         // Iniciar conexión con Decart Lucy VTON WebRTC
         startDecartSession(currentProductId);
@@ -431,7 +474,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
         const sessionData = await res.json();
         currentSessionId = sessionData.session_id;
 
-        // 2. Conectar a sala LiveKit de Decart (sin forzar resolución landscape)
+        // 2. Conectar a sala LiveKit de Decart
         const room = new LivekitClient.Room({{
           adaptiveStream: true,
           dynacast: true,
@@ -451,7 +494,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
             remoteVideo.classList.add('active');
             statusDot.className = 'dot';
             statusDot.style.background = '#10B981';
-            statusLabel.textContent = '🔴 En Vivo • Decart Lucy 3.5';
+            statusLabel.textContent = (currentFacingMode === 'user' ? '🔴 Frontal' : '🔴 Trasera') + ' • Decart Lucy 3.5';
           }}
         }});
 
@@ -485,7 +528,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
               remoteVideo.classList.add('active');
               statusDot.className = 'dot';
               statusDot.style.background = '#10B981';
-              statusLabel.textContent = '🔴 En Vivo • Decart Lucy 3.5';
+              statusLabel.textContent = (currentFacingMode === 'user' ? '🔴 Frontal' : '🔴 Trasera') + ' • Decart Lucy 3.5';
             }}
           }});
         }});
@@ -500,6 +543,72 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
     }}
 
     // Métodos globales llamados desde Flutter
+    window.switchCamera = async function() {{
+      if (isCameraSwitching) return currentFacingMode;
+      isCameraSwitching = true;
+      const targetFacing = (currentFacingMode === 'user') ? 'environment' : 'user';
+      statusDot.className = 'dot live-dot';
+      statusLabel.textContent = 'Cambiando a cámara ' + (targetFacing === 'user' ? 'frontal' : 'trasera') + '...';
+
+      try {{
+        const newStream = await getCameraStream(targetFacing);
+
+        // Detener stream anterior para liberar sensor de cámara en Android
+        if (localStream) {{
+          localStream.getTracks().forEach(t => t.stop());
+        }}
+
+        currentFacingMode = targetFacing;
+        localStream = newStream;
+        localVideo.srcObject = newStream;
+        localVideo.muted = true;
+        await localVideo.play();
+
+        applyOrientation(localVideo);
+        applyOrientation(remoteVideo);
+
+        // Actualizar track en LiveKit
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        if (currentRoom && currentRoom.localParticipant && newVideoTrack) {{
+          try {{
+            const camPub = currentRoom.localParticipant.getTrackPublication(LivekitClient.Track.Source.Camera);
+            if (camPub && camPub.track && typeof camPub.track.replaceTrack === 'function') {{
+              await camPub.track.replaceTrack(newVideoTrack);
+              console.log('[LiveKit] Track reemplazado con replaceTrack()');
+            }} else {{
+              if (camPub && camPub.track) {{
+                await currentRoom.localParticipant.unpublishTrack(camPub.track, true);
+              }}
+              await currentRoom.localParticipant.publishTrack(newVideoTrack, {{
+                name: 'camera',
+                source: LivekitClient.Track.Source.Camera,
+                simulcast: false
+              }});
+              console.log('[LiveKit] Nuevo track publicado');
+            }}
+          }} catch (errLivekit) {{
+            console.warn('[LiveKit] Error al actualizar track, reiniciando sesión de Decart:', errLivekit);
+            startDecartSession(currentProductId);
+          }}
+        }}
+
+        statusDot.className = 'dot';
+        statusDot.style.background = '#10B981';
+        statusLabel.textContent = (currentFacingMode === 'user' ? '🔴 Frontal' : '🔴 Trasera') + ' • Decart Lucy 3.5';
+
+        if (window.FlutterChannel) {{
+          window.FlutterChannel.postMessage(JSON.stringify({{ event: 'cameraChanged', facingMode: currentFacingMode }}));
+        }}
+        return currentFacingMode;
+      }} catch (err) {{
+        console.error('Error al cambiar de cámara:', err);
+        statusDot.className = 'dot paused-dot';
+        statusLabel.textContent = 'Error al cambiar cámara';
+      }} finally {{
+        isCameraSwitching = false;
+      }}
+    }};
+
     window.pauseLiveStream = function() {{
       isPaused = true;
       if (currentSessionId) {{
@@ -542,7 +651,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
           if (data.status === 'ok') {{
             statusDot.className = 'dot';
             statusDot.style.background = '#10B981';
-            statusLabel.textContent = '🔴 En Vivo • Decart Lucy 3.5';
+            statusLabel.textContent = (currentFacingMode === 'user' ? '🔴 Frontal' : '🔴 Trasera') + ' • Decart Lucy 3.5';
             return;
           }}
         }} catch (e) {{

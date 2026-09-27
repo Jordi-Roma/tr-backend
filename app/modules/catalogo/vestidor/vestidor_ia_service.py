@@ -6,6 +6,7 @@ import base64
 import requests
 from io import BytesIO
 from dotenv import load_dotenv
+from fastapi import HTTPException
 
 load_dotenv()
 
@@ -170,6 +171,178 @@ def _image_to_base64_data_uri(image_path: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _get_decart_api_key() -> str | None:
+    """Obtiene la clave de Decart desde el entorno o directamente del archivo .env."""
+    key = os.getenv("DECART_API_KEY")
+    if key and key.strip():
+        return key.strip()
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+    env_path = os.path.join(backend_dir, ".env")
+    if os.path.exists(env_path):
+        from dotenv import dotenv_values
+        vals = dotenv_values(env_path)
+        key = vals.get("DECART_API_KEY")
+        if key and key.strip():
+            os.environ["DECART_API_KEY"] = key.strip()
+            return key.strip()
+    return None
+
+
+def _run_async(coro_fn):
+    """Ejecuta una función asíncrona de forma segura tanto si hay un event loop activo (FastAPI) como si no."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: asyncio.run(coro_fn()))
+            return future.result()
+    else:
+        return asyncio.run(coro_fn())
+
+
+def generar_token_webrtc_decart(duracion_segundos: int = 300) -> dict[str, object]:
+    """Genera un token de sesión efímero para streaming WebRTC en vivo con Decart Lucy VTON."""
+    api_key = _get_decart_api_key()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="La clave DECART_API_KEY no está configurada en el servidor backend.",
+        )
+    try:
+        from decart import DecartClient
+
+        async def _create_token():
+            async with DecartClient(api_key=api_key) as client:
+                return await client.tokens.create(
+                    allowed_models=["lucy-vton-3.5", "lucy-vton-latest"],
+                    expires_in=duracion_segundos,
+                )
+
+        token_resp = _run_async(_create_token)
+        return {
+            "status": "ok",
+            "token": token_resp.token,
+            "api_key": token_resp.api_key,
+            "expires_at": token_resp.expires_at,
+            "model": "lucy-vton-3.5",
+            "webrtc_url": "https://api.decart.ai/v1/stream",
+            "duracion_segundos": duracion_segundos,
+        }
+    except Exception as e:
+        print(f"[Decart WebRTC] Error al generar token: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error al generar token de streaming con Decart AI: {e}",
+        ) from e
+
+
+def _intentar_tryon_decart(user_img_path: str, garm_img_path: str, tipo_prenda: str) -> str | None:
+    """Invoca Decart AI (modelo Lucy VTON 3.5) para amoldar la prenda fotorrealistamente."""
+    api_key = _get_decart_api_key()
+    if not api_key:
+        print("[Decart AI] DECART_API_KEY no encontrada ni en os.environ ni en .env.")
+        return None
+
+    temp_in_video = None
+    temp_out_video = None
+    try:
+        import asyncio
+        from decart import DecartClient
+        import decart.models as dm
+
+        print(f"[Decart AI] Preparando inferencia fotorrealista Lucy VTON 3.5 ({tipo_prenda})...")
+
+        # 1. Decart Lucy VTON 3.5 requiere un contenedor de video (.mp4)
+        # Convertimos la foto del usuario a un video corto de 10 fotogramas
+        img = cv2.imread(user_img_path)
+        if img is None:
+            print(f"[Decart AI] Error al leer imagen de usuario: {user_img_path}")
+            return None
+
+        h, w = img.shape[:2]
+        # Normalizar dimensiones pares para codificación de video MP4
+        target_w = 720 if w > 720 else w
+        target_h = int(h * (target_w / float(w)))
+        target_w = target_w - (target_w % 2)
+        target_h = target_h - (target_h % 2)
+        img_resized = cv2.resize(img, (target_w, target_h))
+
+        unique_token = f"{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        temp_in_video = os.path.join(TRYON_DIR, f"decart_in_{unique_token}.mp4")
+        temp_out_video = os.path.join(TRYON_DIR, f"decart_out_{unique_token}.mp4")
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(temp_in_video, fourcc, 10.0, (target_w, target_h))
+        for _ in range(10):
+            writer.write(img_resized)
+        writer.release()
+
+        # 2. Leer bytes de video y prenda
+        with open(temp_in_video, "rb") as f_v, open(garm_img_path, "rb") as f_g:
+            video_bytes = f_v.read()
+            garm_bytes = f_g.read()
+
+        category_prompt = "lower-body garment pants jeans" if tipo_prenda == "INFERIOR" else "upper-body garment shirt top"
+        prompt = f"Virtual try-on {category_prompt}, change clothing to match reference image, photorealistic, natural fit, high quality"
+
+        async def _run_decart():
+            async with DecartClient(api_key=api_key.strip()) as client:
+                model = dm.video("lucy-vton-3.5")
+                job_result = await client.queue.submit_and_poll(
+                    options={
+                        "model": model,
+                        "data": video_bytes,
+                        "reference_image": garm_bytes,
+                        "prompt": prompt,
+                    }
+                )
+                if hasattr(job_result, "data") and job_result.data:
+                    return job_result.data
+                return None
+
+        result_bytes = _run_async(_run_decart)
+        if not result_bytes:
+            print("[Decart AI] Decart no devolvió datos de resultado.")
+            return None
+
+        # 3. Guardar el video resultante y extraer el fotograma sintetizado
+        with open(temp_out_video, "wb") as f_out:
+            f_out.write(result_bytes)
+
+        cap = cv2.VideoCapture(temp_out_video)
+        ret, frame = False, None
+        for _ in range(4):
+            r, f = cap.read()
+            if r and f is not None:
+                ret, frame = r, f
+        cap.release()
+
+        if not ret or frame is None:
+            print("[Decart AI] No se pudo extraer fotograma del video generado.")
+            return None
+
+        out_file = os.path.join(TRYON_DIR, f"decart_{unique_token}.jpg")
+        cv2.imwrite(out_file, frame)
+        print(f"[Decart AI] ¡Inferencia fotorrealista completada con éxito! -> {out_file}")
+        return out_file
+
+    except Exception as e:
+        print(f"[Decart AI] Error o excepción durante inferencia Lucy VTON: {e}")
+        return None
+    finally:
+        for temp_f in [temp_in_video, temp_out_video]:
+            if temp_f and os.path.exists(temp_f):
+                try:
+                    os.remove(temp_f)
+                except Exception:
+                    pass
+
+
 def _intentar_tryon_fashn(user_img_path: str, garm_img_path: str, tipo_prenda: str) -> str | None:
     """Invoca la API especializada FASHN.ai (tryon-max) para amoldar ropa superior o inferior."""
     api_key = os.getenv("FASHN_API_KEY")
@@ -328,13 +501,20 @@ def _intentar_tryon_neuronal(user_img_path: str, producto_id: int, tipo_prenda: 
     if not os.path.exists(garm_img_path):
         return None, "SIN_IMAGEN_PRENDA"
 
-    # 1. Probar FASHN.ai si está configurada la clave API
+    # 1. Prioridad 1: Decart AI (Lucy VTON 3.5)
+    decart_key = _get_decart_api_key()
+    if decart_key:
+        res_decart = _intentar_tryon_decart(user_img_path, garm_img_path, tipo_prenda)
+        if res_decart:
+            return res_decart, "IA_DECART_LUCY_VTON"
+
+    # 2. Prioridad 2: FASHN.ai si está configurada la clave API
     if os.getenv("FASHN_API_KEY"):
         res_fashn = _intentar_tryon_fashn(user_img_path, garm_img_path, tipo_prenda)
         if res_fashn:
             return res_fashn, "IA_FASHN_TRYON_MAX"
 
-    # Inferencia anatómica inteligente local en tiempo real (< 1s)
+    # Fallback: Inferencia anatómica inteligente local
     return None, "IA_MEDIAPIPE_LOCAL_FIT"
 
 
@@ -529,10 +709,18 @@ def procesar_tryon_ia(
 
     if neural_result_path and os.path.exists(neural_result_path):
         neural_img = Image.open(neural_result_path)
-        # Preservación anatómica inteligente: rostro, cabello y partes no alteradas al 100%
-        resultado_final = _aplicar_preservacion_anatomica(user_img_resized, neural_img, landmarks, tipo_prenda, user_img_resized.size[1])
-        resultado_final.save(out_path, "JPEG", quality=93, optimize=True)
-        print(f"[Vestidor IA] Inferencia completada con éxito usando {metodo_usado} -> {out_path}")
+        if "DECART" in metodo_usado:
+            # Decart Lucy VTON 3.5 ya sintetiza la prenda fotorrealistamente
+            # respetando rostro, cabello, cuello, hombros y postura de forma 100% impecable sin corte horizontal
+            resultado_final = neural_img
+            if resultado_final.size != user_img_resized.size:
+                resultado_final = resultado_final.resize(user_img_resized.size, Image.Resampling.LANCZOS)
+            print(f"[Vestidor IA] Inferencia completada con éxito usando {metodo_usado} fotorrealista directo (sin corte) -> {out_path}")
+        else:
+            # Preservación anatómica solo para otros modelos de difusión
+            resultado_final = _aplicar_preservacion_anatomica(user_img_resized, neural_img, landmarks, tipo_prenda, user_img_resized.size[1])
+            print(f"[Vestidor IA] Inferencia completada con éxito usando {metodo_usado} con preservación -> {out_path}")
+        resultado_final.save(out_path, "JPEG", quality=95, optimize=True)
     else:
         # Fallback de calce anatómico inteligente MediaPipe
         print(f"[Vestidor IA] Aplicando motor de calce anatómico MediaPipe...")

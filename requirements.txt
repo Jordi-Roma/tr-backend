@@ -36,3 +36,4 @@ pillow>=11,<13
 opencv-python-headless>=4.10,<5
 mediapipe>=0.10,<1
 google-genai>=1.52,<2
+decart>=0.2.1

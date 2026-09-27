@@ -131,6 +131,8 @@ def procesar_reembolso_service(usuario: dict[str, object], devolucion_id: int) -
         )
     if devolucion["estado"] == "REEMBOLSADA":
         result = repo.obtener_devolucion(devolucion_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Devolución no encontrada.")
         return DevolucionResponse(**result)
 
     secret_key = os.getenv("STRIPE_SECRET_KEY", "")

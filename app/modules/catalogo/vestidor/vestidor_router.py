@@ -101,28 +101,75 @@ async def _keep_decart_alive(session_id: str, ws: aiohttp.ClientWebSocketRespons
         print(f"[Decart WS Bridge] Limpieza de sesión {session_id} finalizada.")
 
 
+async def _obtener_imagen_prenda_b64(producto_id: int) -> tuple[str, str]:
+    """Obtiene la imagen real del producto desde la base de datos o almacenamiento en Base64."""
+    from app.modules.catalogo.vestidor.vestidor_repository import obtener_datos_prenda_vestidor
+
+    nombre_prenda = "Prenda"
+    img_bytes = None
+
+    try:
+        datos = obtener_datos_prenda_vestidor(producto_id)
+        if datos and datos.get("prenda"):
+            prenda = datos["prenda"]
+            nombre_prenda = prenda.get("nombre") or "Prenda"
+            img_url = prenda.get("imagen_principal")
+            if not img_url and datos.get("imagenes"):
+                for im in datos["imagenes"]:
+                    if im.get("url"):
+                        img_url = im["url"]
+                        break
+
+            if img_url:
+                if img_url.startswith("http://") or img_url.startswith("https://"):
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    }
+                    async with aiohttp.ClientSession(headers=headers) as client:
+                        async with client.get(img_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                            if resp.status == 200:
+                                img_bytes = await resp.read()
+                elif os.path.exists(img_url):
+                    with open(img_url, "rb") as f:
+                        img_bytes = f.read()
+    except Exception as e:
+        print(f"[Vestidor Realtime] Error al obtener imagen real de producto {producto_id}: {e}")
+
+    # Fallback de seguridad en caso de que el producto no tenga imagen en BD o falle la red
+    if not img_bytes:
+        from app.modules.catalogo.vestidor.vestidor_ia_service import GARMENT_AI_CONFIG
+        cfg = GARMENT_AI_CONFIG.get(producto_id, GARMENT_AI_CONFIG.get(1, {}))
+        img_path = cfg.get("image")
+        if not img_path or not os.path.exists(img_path):
+            for c in GARMENT_AI_CONFIG.values():
+                if os.path.exists(c.get("image", "")):
+                    img_path = c["image"]
+                    break
+        if img_path and os.path.exists(img_path):
+            with open(img_path, "rb") as f:
+                img_bytes = f.read()
+
+    if not img_bytes:
+        raise HTTPException(status_code=404, detail="No se pudo obtener la imagen de la prenda.")
+
+    img_b64 = base64.b64encode(img_bytes).decode()
+    prompt = f"Virtual try-on {nombre_prenda}, natural fit on human body photorealistic high quality"
+    return img_b64, prompt
+
+
 @router.post(
     "/sesion-realtime",
     summary="Crear sesión WebRTC en vivo con Decart Lucy VTON 3.5 (WebSocket persistente)",
 )
 async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
-    from app.modules.catalogo.vestidor.vestidor_ia_service import GARMENT_AI_CONFIG, _get_decart_api_key
+    from app.modules.catalogo.vestidor.vestidor_ia_service import _get_decart_api_key
 
     api_key = _get_decart_api_key()
     if not api_key:
         raise HTTPException(status_code=503, detail="DECART_API_KEY no configurada.")
     api_key = api_key.strip()
 
-    cfg = GARMENT_AI_CONFIG.get(producto_id, GARMENT_AI_CONFIG.get(1, {}))
-    img_path = cfg.get("image")
-    if not img_path or not os.path.exists(img_path):
-        for c in GARMENT_AI_CONFIG.values():
-            if os.path.exists(c.get("image", "")):
-                img_path = c["image"]
-                break
-
-    with open(img_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
+    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id)
 
     url = f"wss://api3.decart.ai/v1/stream?api_key={urllib.parse.quote(api_key)}&model=lucy-vton-3.5&livekit_early_room_info=true"
 
@@ -132,7 +179,7 @@ async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
         set_img_msg = {
             "type": "set_image",
             "image_data": img_b64,
-            "prompt": "Virtual try-on clothing photorealistic natural fit on human body",
+            "prompt": prompt,
         }
         await ws.send_str(json.dumps(set_img_msg))
         await ws.receive_str()
@@ -169,33 +216,19 @@ async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
     summary="Cambiar prenda en la sesión WebRTC de Decart en vivo sin reiniciar la cámara",
 )
 async def post_cambiar_prenda_realtime(session_id: str, producto_id: int) -> dict[str, object]:
-    from app.modules.catalogo.vestidor.vestidor_ia_service import GARMENT_AI_CONFIG
-
     print(f"[Cambiar Prenda] Buscando {session_id}. Sesiones activas: {list(ACTIVE_DECART_SESSIONS.keys())}")
     sess = ACTIVE_DECART_SESSIONS.get(session_id)
     if not sess or not sess.get("ws") or sess["ws"].closed:
         print(f"[Cambiar Prenda] No activa o cerrada. sess={sess is not None}")
         return {"status": "reconnect_needed", "message": "Sesión expirada"}
 
-    cfg = GARMENT_AI_CONFIG.get(producto_id, GARMENT_AI_CONFIG.get(1, {}))
-    img_path = cfg.get("image")
-    if not img_path or not os.path.exists(img_path):
-        for c in GARMENT_AI_CONFIG.values():
-            if os.path.exists(c.get("image", "")):
-                img_path = c["image"]
-                break
-
-    if not img_path or not os.path.exists(img_path):
-        return {"status": "error", "message": "Imagen de prenda no encontrada"}
-
-    with open(img_path, "rb") as f:
-        img_b64 = base64.b64encode(f.read()).decode()
+    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id)
 
     ws = sess["ws"]
     set_img_msg = {
         "type": "set_image",
         "image_data": img_b64,
-        "prompt": "Virtual try-on clothing photorealistic natural fit on human body",
+        "prompt": prompt,
     }
     try:
         await ws.send_str(json.dumps(set_img_msg))

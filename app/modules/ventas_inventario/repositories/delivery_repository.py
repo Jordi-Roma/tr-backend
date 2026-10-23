@@ -67,16 +67,16 @@ def obtener_sucursal_id_por_usuario_empleado(usuario_id: int) -> int | None:
         connection.close()
 
 
-def obtener_sucursal(sucursal_id: int) -> dict | None:
+def obtener_sucursal(sucursal_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            return obtener_sucursal_cursor(cursor, sucursal_id)
+            return obtener_sucursal_cursor(cursor, sucursal_id, empresa_id)
     finally:
         connection.close()
 
 
-def obtener_sucursal_cursor(cursor, sucursal_id: int) -> dict | None:
+def obtener_sucursal_cursor(cursor, sucursal_id: int, empresa_id: int) -> dict | None:
     cursor.execute(
         """
         SELECT
@@ -89,10 +89,11 @@ def obtener_sucursal_cursor(cursor, sucursal_id: int) -> dict | None:
         FROM sucursal s
         LEFT JOIN ciudad c ON c.id = s.ciudad_id
         WHERE s.id = %s
+          AND s.empresa_id = %s
           AND s.activo = TRUE
         LIMIT 1;
         """,
-        (sucursal_id,),
+        (sucursal_id, empresa_id),
     )
     row = cursor.fetchone()
     return dict(row) if row else None
@@ -101,6 +102,7 @@ def obtener_sucursal_cursor(cursor, sucursal_id: int) -> dict | None:
 def crear_delivery_para_venta(
     cursor,
     *,
+    empresa_id: int,
     venta_id: int,
     cliente_id: int,
     sucursal_id: int,
@@ -115,6 +117,7 @@ def crear_delivery_para_venta(
     cursor.execute(
         """
         INSERT INTO delivery (
+            empresa_id,
             venta_id,
             cliente_id,
             sucursal_id,
@@ -127,10 +130,11 @@ def crear_delivery_para_venta(
             costo_delivery,
             estado
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDIENTE')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDIENTE')
         RETURNING *;
         """,
         (
+            empresa_id,
             venta_id,
             cliente_id,
             sucursal_id,
@@ -146,7 +150,7 @@ def crear_delivery_para_venta(
     return dict(cursor.fetchone())
 
 
-def crear_delivery_independiente(data: dict) -> dict:
+def crear_delivery_independiente(data: dict, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -155,17 +159,23 @@ def crear_delivery_independiente(data: dict) -> dict:
                 SELECT cliente_id, sucursal_id
                 FROM venta
                 WHERE id = %s
+                  AND empresa_id = %s
                   AND activo = TRUE
                 LIMIT 1;
                 """,
-                (data["venta_id"],),
+                (data["venta_id"], empresa_id),
             )
             venta = cursor.fetchone()
             if venta is None:
                 raise ValueError("Venta no encontrada.")
+            if venta["cliente_id"] is None or int(venta["cliente_id"]) != int(data["cliente_id"]):
+                raise ValueError("La venta no pertenece al cliente.")
+            if data.get("sucursal_id") is not None and int(data["sucursal_id"]) != int(venta["sucursal_id"]):
+                raise ValueError("La sucursal no corresponde a la venta.")
 
             delivery = crear_delivery_para_venta(
                 cursor,
+                empresa_id=empresa_id,
                 venta_id=int(data["venta_id"]),
                 cliente_id=int(venta["cliente_id"]) if venta["cliente_id"] is not None else data["cliente_id"],
                 sucursal_id=int(data.get("sucursal_id") or venta["sucursal_id"]),
@@ -183,9 +193,9 @@ def crear_delivery_independiente(data: dict) -> dict:
                 SET tipo_entrega = 'DELIVERY',
                     costo_delivery = %s,
                     total = subtotal - descuento + %s
-                WHERE id = %s;
+                WHERE id = %s AND empresa_id = %s;
                 """,
-                (data["costo_delivery"], data["costo_delivery"], data["venta_id"]),
+                (data["costo_delivery"], data["costo_delivery"], data["venta_id"], empresa_id),
             )
         connection.commit()
         return delivery
@@ -198,6 +208,7 @@ def crear_delivery_independiente(data: dict) -> dict:
 
 def listar_deliveries(
     *,
+    empresa_id: int,
     cliente_id: int | None = None,
     sucursal_id: int | None = None,
     estado: str | None = None,
@@ -205,8 +216,8 @@ def listar_deliveries(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
 ) -> list[dict]:
-    where = ["d.activo = TRUE"]
-    params: list[object] = []
+    where = ["d.activo = TRUE", "d.empresa_id = %s", "v.empresa_id = d.empresa_id"]
+    params: list[object] = [empresa_id]
 
     if cliente_id is not None:
         where.append("d.cliente_id = %s")
@@ -268,7 +279,7 @@ def listar_deliveries(
         connection.close()
 
 
-def obtener_delivery(delivery_id: int) -> dict | None:
+def obtener_delivery(delivery_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -292,10 +303,12 @@ def obtener_delivery(delivery_id: int) -> dict | None:
                 LEFT JOIN cliente c ON c.id = d.cliente_id
                 LEFT JOIN usuario u ON u.id = c.usuario_id
                 WHERE d.id = %s
+                  AND d.empresa_id = %s
+                  AND v.empresa_id = d.empresa_id
                   AND d.activo = TRUE
                 LIMIT 1;
                 """,
-                (delivery_id,),
+                (delivery_id, empresa_id),
             )
             row = cursor.fetchone()
             return dict(row) if row else None
@@ -303,7 +316,7 @@ def obtener_delivery(delivery_id: int) -> dict | None:
         connection.close()
 
 
-def actualizar_estado(delivery_id: int, estado: str, observacion: str | None) -> dict:
+def actualizar_estado(delivery_id: int, estado: str, observacion: str | None, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -315,16 +328,17 @@ def actualizar_estado(delivery_id: int, estado: str, observacion: str | None) ->
                     fecha_entrega = CASE WHEN %s = 'ENTREGADO' THEN CURRENT_TIMESTAMP ELSE fecha_entrega END,
                     fecha_actualizacion = CURRENT_TIMESTAMP
                 WHERE id = %s
+                  AND empresa_id = %s
                   AND activo = TRUE
                 RETURNING id;
                 """,
-                (estado, observacion, estado, delivery_id),
+                (estado, observacion, estado, delivery_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
                 raise ValueError("Delivery no encontrado.")
         connection.commit()
-        delivery = obtener_delivery(delivery_id)
+        delivery = obtener_delivery(delivery_id, empresa_id)
         if delivery is None:
             raise ValueError("Delivery no encontrado.")
         return delivery

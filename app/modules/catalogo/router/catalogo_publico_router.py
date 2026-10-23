@@ -1,6 +1,8 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+
+from app.core.contexto_empresa import exigir_empresa_publica
 
 from app.modules.catalogo.schemas.catalogo_publico.catalogo_publico_request import (
     CatalogoFiltros,
@@ -41,6 +43,7 @@ def listar_prendas_endpoint(
     solo_disponibles: bool = False,
     pagina: int = Query(default=1, ge=1),
     por_pagina: int = Query(default=12, ge=1, le=60),
+    empresa_id: int = Depends(exigir_empresa_publica),
 ) -> CatalogoPrendasResponse:
     filtros = CatalogoFiltros(
         q=q,
@@ -57,25 +60,26 @@ def listar_prendas_endpoint(
         pagina=pagina,
         por_pagina=por_pagina,
     )
-    return listar_prendas(filtros)
+    return listar_prendas(filtros, empresa_id)
 
 
 @router.get("/sucursales", response_model=list[CatalogoSucursalResponse])
-def listar_sucursales_endpoint() -> list[CatalogoSucursalResponse]:
-    return listar_sucursales()
+def listar_sucursales_endpoint(empresa_id: int = Depends(exigir_empresa_publica)) -> list[CatalogoSucursalResponse]:
+    return listar_sucursales(empresa_id)
 
 
 @router.get("/filtros", response_model=CatalogoFiltrosResponse)
-def obtener_filtros_endpoint() -> CatalogoFiltrosResponse:
-    return obtener_filtros()
+def obtener_filtros_endpoint(empresa_id: int = Depends(exigir_empresa_publica)) -> CatalogoFiltrosResponse:
+    return obtener_filtros(empresa_id)
 
 
 @router.get("/prendas/{producto_id}", response_model=CatalogoPrendaDetalleResponse)
 def obtener_prenda_endpoint(
     producto_id: int,
     sucursal_id: int | None = None,
+    empresa_id: int = Depends(exigir_empresa_publica),
 ) -> CatalogoPrendaDetalleResponse:
-    return obtener_prenda(producto_id, sucursal_id)
+    return obtener_prenda(producto_id, sucursal_id, empresa_id)
 
 
 @router.get(
@@ -87,5 +91,6 @@ def obtener_disponibilidad_endpoint(
     talla_id: int | None = None,
     color_id: int | None = None,
     sucursal_id: int | None = None,
+    empresa_id: int = Depends(exigir_empresa_publica),
 ) -> CatalogoDisponibilidadProductoResponse:
-    return obtener_disponibilidad(producto_id, talla_id, color_id, sucursal_id)
+    return obtener_disponibilidad(producto_id, talla_id, color_id, sucursal_id, empresa_id)

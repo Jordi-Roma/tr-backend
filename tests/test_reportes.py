@@ -21,8 +21,8 @@ def test_rango_invertido_no_se_acepta():
 
 
 def test_voz_interpreta_inventario_sin_confundirlo_con_ventas(monkeypatch):
-    monkeypatch.setattr(reporte_service, "listar_sucursales", lambda: [{"id": 1, "nombre": "Sucursal Centro"}])
-    respuesta = reporte_service.interpretar("Inventario bajo stock en Sucursal Centro")
+    monkeypatch.setattr(reporte_service, "listar_sucursales", lambda empresa_id: [{"id": 1, "nombre": "Sucursal Centro"}])
+    respuesta = reporte_service.interpretar("Inventario bajo stock en Sucursal Centro", 1)
     assert respuesta["interpretado"] is True
     assert respuesta["filtros"]["tipo"] == "INVENTARIO"
     assert respuesta["filtros"]["solo_bajo_stock"] is True
@@ -30,13 +30,13 @@ def test_voz_interpreta_inventario_sin_confundirlo_con_ventas(monkeypatch):
 
 
 def test_ventas_y_exportaciones_comparten_los_totales(monkeypatch):
-    monkeypatch.setattr(reporte_service, "listar_sucursales", lambda: [{"id": 1, "nombre": "Sucursal Centro"}])
+    monkeypatch.setattr(reporte_service, "listar_sucursales", lambda empresa_id: [{"id": 1, "nombre": "Sucursal Centro"}])
     fecha = datetime(2026, 9, 10, 12, tzinfo=ZoneInfo("America/La_Paz"))
-    monkeypatch.setattr(reporte_service, "consultar_reporte", lambda _: [
+    monkeypatch.setattr(reporte_service, "consultar_reporte", lambda _, empresa_id: [
         {"codigo": "V1", "fecha": fecha, "sucursal": "Sucursal Centro", "subtotal": Decimal("40.00"), "descuento": Decimal("0.00"), "total": Decimal("40.00"), "unidades": 2},
         {"codigo": "V2", "fecha": fecha, "sucursal": "Sucursal Centro", "subtotal": Decimal("30.00"), "descuento": Decimal("0.00"), "total": Decimal("30.00"), "unidades": 1},
     ])
-    reporte = reporte_service.generar_reporte(ReporteRequest(tipo="VENTAS", fecha_desde=date(2026, 9, 1), fecha_hasta=date(2026, 9, 15)))
+    reporte = reporte_service.generar_reporte(ReporteRequest(tipo="VENTAS", fecha_desde=date(2026, 9, 1), fecha_hasta=date(2026, 9, 15)), 1)
     assert reporte["total_filas"] == 2
     assert reporte["indicadores"][2]["valor"] == 70.0
     assert reporte["indicadores"][1]["valor"] == 3

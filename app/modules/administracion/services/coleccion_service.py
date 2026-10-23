@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 from app.modules.administracion.repositories.coleccion_repository import (
     actualizar_coleccion,
@@ -27,12 +28,12 @@ def construir_coleccion_response(row: dict[str, object]) -> ColeccionDetalleResp
         fecha_creacion=row["fecha_creacion"]
     )
 
-def obtener_colecciones() -> list[ColeccionDetalleResponse]:
-    colecciones = listar_colecciones()
+def obtener_colecciones(usuario_actual: dict[str, object]) -> list[ColeccionDetalleResponse]:
+    colecciones = listar_colecciones(exigir_empresa_id(usuario_actual))
     return [construir_coleccion_response(c) for c in colecciones]
 
-def obtener_coleccion(coleccion_id: int) -> ColeccionDetalleResponse:
-    coleccion = obtener_coleccion_por_id(coleccion_id)
+def obtener_coleccion(coleccion_id: int, usuario_actual: dict[str, object]) -> ColeccionDetalleResponse:
+    coleccion = obtener_coleccion_por_id(coleccion_id, exigir_empresa_id(usuario_actual))
     if coleccion is None:
         raise HTTPException(status_code=404, detail="Colección no encontrada.")
     return construir_coleccion_response(coleccion)
@@ -43,13 +44,14 @@ def registrar_coleccion(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColeccionDetalleResponse:
-    temporada = obtener_temporada_por_id(request.temporada_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    temporada = obtener_temporada_por_id(request.temporada_id, empresa_id)
     if temporada is None:
         raise HTTPException(status_code=400, detail="La temporada seleccionada no existe.")
     if not temporada["activo"]:
         raise HTTPException(status_code=400, detail="La temporada seleccionada está inactiva.")
 
-    if obtener_coleccion_por_temporada_nombre(request.temporada_id, request.nombre) is not None:
+    if obtener_coleccion_por_temporada_nombre(request.temporada_id, request.nombre, empresa_id) is not None:
         raise HTTPException(
             status_code=409,
             detail="Ya existe una colección con ese nombre en esta temporada.",
@@ -58,6 +60,7 @@ def registrar_coleccion(
         temporada_id=request.temporada_id,
         nombre=request.nombre.strip(),
         descripcion=request.descripcion,
+        empresa_id=empresa_id,
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -68,7 +71,9 @@ def registrar_coleccion(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_coleccion(int(coleccion["id"]))
+    if coleccion is None:
+        raise HTTPException(status_code=400, detail="La temporada seleccionada no esta disponible.")
+    return obtener_coleccion(int(coleccion["id"]), usuario_actual)
 
 def editar_coleccion(
     coleccion_id: int,
@@ -77,18 +82,19 @@ def editar_coleccion(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColeccionDetalleResponse:
-    actual = obtener_coleccion_por_id(coleccion_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_coleccion_por_id(coleccion_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Colección no encontrada.")
 
     if actual["temporada_id"] != request.temporada_id:
-        temporada = obtener_temporada_por_id(request.temporada_id)
+        temporada = obtener_temporada_por_id(request.temporada_id, empresa_id)
         if temporada is None:
             raise HTTPException(status_code=400, detail="La nueva temporada seleccionada no existe.")
         if not temporada["activo"]:
             raise HTTPException(status_code=400, detail="La nueva temporada seleccionada está inactiva.")
 
-    existente = obtener_coleccion_por_temporada_nombre(request.temporada_id, request.nombre)
+    existente = obtener_coleccion_por_temporada_nombre(request.temporada_id, request.nombre, empresa_id)
     if existente is not None and int(existente["id"]) != coleccion_id:
         raise HTTPException(
             status_code=409,
@@ -100,6 +106,7 @@ def editar_coleccion(
         temporada_id=request.temporada_id,
         nombre=request.nombre.strip(),
         descripcion=request.descripcion,
+        empresa_id=empresa_id,
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -110,7 +117,9 @@ def editar_coleccion(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_coleccion(int(coleccion["id"]))
+    if coleccion is None:
+        raise HTTPException(status_code=400, detail="La temporada seleccionada no esta disponible.")
+    return obtener_coleccion(int(coleccion["id"]), usuario_actual)
 
 def eliminar_coleccion(
     coleccion_id: int,
@@ -118,14 +127,15 @@ def eliminar_coleccion(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    actual = obtener_coleccion_por_id(coleccion_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_coleccion_por_id(coleccion_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Colección no encontrada.")
 
     if not actual["activo"]:
         raise HTTPException(status_code=400, detail="La colección ya está inactiva.")
 
-    cambiar_estado_coleccion(coleccion_id, False)
+    cambiar_estado_coleccion(coleccion_id, False, empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="DESACTIVAR",
@@ -143,14 +153,15 @@ def reactivar_coleccion(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColeccionDetalleResponse:
-    actual = obtener_coleccion_por_id(coleccion_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_coleccion_por_id(coleccion_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Colección no encontrada.")
 
     if actual["activo"]:
         raise HTTPException(status_code=400, detail="La colección ya está activa.")
 
-    coleccion = cambiar_estado_coleccion(coleccion_id, True)
+    coleccion = cambiar_estado_coleccion(coleccion_id, True, empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="ACTIVAR",
@@ -160,4 +171,4 @@ def reactivar_coleccion(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_coleccion(int(coleccion["id"]))
+    return obtener_coleccion(int(coleccion["id"]), usuario_actual)

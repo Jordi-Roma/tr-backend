@@ -65,8 +65,8 @@ def _obtener_medidas_talla(talla_nombre: str, tipo_prenda: str) -> tuple[float, 
     return MEDIDAS_SUPERIOR_STD.get(nombre_limpio, (53.0, 72.0))
 
 
-def obtener_prenda_ar(producto_id: int) -> PrendaARResponse:
-    datos = obtener_datos_prenda_vestidor(producto_id)
+def obtener_prenda_ar(producto_id: int, empresa_id: int) -> PrendaARResponse:
+    datos = obtener_datos_prenda_vestidor(producto_id, empresa_id)
     if not datos:
         raise HTTPException(status_code=404, detail="Prenda no encontrada para vestidor virtual.")
 
@@ -178,12 +178,12 @@ def obtener_prenda_ar(producto_id: int) -> PrendaARResponse:
     )
 
 
-def listar_prendas_vestidor(limite: int = 30) -> list[dict[str, object]]:
-    prendas = listar_prendas_catalogo_vestidor(limite)
+def listar_prendas_vestidor(limite: int, empresa_id: int) -> list[dict[str, object]]:
+    prendas = listar_prendas_catalogo_vestidor(limite, empresa_id)
     resultado = []
     for p in prendas:
         try:
-            detalle = obtener_prenda_ar(p["producto_id"])
+            detalle = obtener_prenda_ar(p["producto_id"], empresa_id)
             d = detalle.model_dump()
             d["imagen_url"] = detalle.imagen_ar_url
             d["precio_desde"] = detalle.precio
@@ -207,13 +207,16 @@ def listar_prendas_vestidor(limite: int = 30) -> list[dict[str, object]]:
     return resultado
 
 
-def guardar_sesion_vestidor(request: CrearSesionVestidorRequest) -> SesionVestidorResponse:
+def guardar_sesion_vestidor(request: CrearSesionVestidorRequest, empresa_id: int) -> SesionVestidorResponse:
     registro = registrar_sesion_vestidor(
-        cliente_id=request.cliente_id,
+        cliente_id=None,
         producto_id=request.producto_id,
         variante_id=request.variante_id,
+        empresa_id=empresa_id,
         origen=request.origen,
     )
+    if registro is None:
+        raise HTTPException(status_code=404, detail="Prenda o variante no encontrada en esta empresa.")
     return SesionVestidorResponse(
         id=registro["id"],
         cliente_id=registro["cliente_id"],

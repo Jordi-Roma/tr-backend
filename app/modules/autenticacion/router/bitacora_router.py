@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.core.contexto_empresa import exigir_empresa_id
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin, requerir_admin_saas
 from app.modules.autenticacion.repositories.bitacora_repository import (
     contar_bitacora,
     listar_bitacora,
@@ -30,7 +31,9 @@ def listar_bitacora_endpoint(
     por_pagina: int = Query(default=50, ge=1, le=200),
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> BitacoraListResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     registros = listar_bitacora(
+        empresa_id=empresa_id,
         usuario_id=usuario_id,
         accion=accion,
         modulo=modulo,
@@ -41,6 +44,7 @@ def listar_bitacora_endpoint(
         por_pagina=por_pagina,
     )
     total = contar_bitacora(
+        empresa_id=empresa_id,
         usuario_id=usuario_id,
         accion=accion,
         modulo=modulo,
@@ -61,9 +65,31 @@ def obtener_bitacora_endpoint(
     registro_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> BitacoraDetalleResponse:
-    registro = obtener_registro_bitacora(registro_id)
+    registro = obtener_registro_bitacora(registro_id, exigir_empresa_id(usuario_actual))
 
     if registro is None:
         raise HTTPException(status_code=404, detail="Registro de bitacora no encontrado.")
 
+    return construir_detalle(registro)
+
+
+@router.get("/saas/bitacora", response_model=BitacoraListResponse)
+def listar_bitacora_plataforma(
+    pagina: int = Query(default=1, ge=1),
+    por_pagina: int = Query(default=50, ge=1, le=200),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+) -> BitacoraListResponse:
+    registros = listar_bitacora(empresa_id=None, pagina=pagina, por_pagina=por_pagina)
+    total = contar_bitacora(empresa_id=None)
+    return BitacoraListResponse.construir(registros, total, pagina, por_pagina)
+
+
+@router.get("/saas/bitacora/{registro_id}", response_model=BitacoraDetalleResponse)
+def obtener_bitacora_plataforma(
+    registro_id: int,
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+) -> BitacoraDetalleResponse:
+    registro = obtener_registro_bitacora(registro_id, None)
+    if registro is None:
+        raise HTTPException(status_code=404, detail="Registro de bitacora no encontrado.")
     return construir_detalle(registro)

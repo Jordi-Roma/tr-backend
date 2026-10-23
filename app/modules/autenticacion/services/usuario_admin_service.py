@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 from app.core.security import hashear_password
 
@@ -27,8 +28,8 @@ from app.modules.autenticacion.schemas.usuario_admin.usuario_admin_response impo
 )
 
 
-def obtener_usuarios() -> list[UsuarioAdminResponse]:
-    usuarios = listar_usuarios()
+def obtener_usuarios(empresa_id: int) -> list[UsuarioAdminResponse]:
+    usuarios = listar_usuarios(empresa_id)
     return [construir_usuario_response(usuario) for usuario in usuarios]
 
 
@@ -38,6 +39,7 @@ def registrar_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> UsuarioAdminResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     username = request.username.strip().lower()
     correo = request.correo.strip().lower()
 
@@ -65,12 +67,13 @@ def registrar_usuario(
         str(rol["nombre"]),
         request.telefono,
         int(usuario_actual["id"]),
+        empresa_id,
     )
     return construir_usuario_response(usuario)
 
 
-def obtener_usuario(usuario_id: int) -> UsuarioAdminResponse:
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+def obtener_usuario(usuario_id: int, empresa_id: int) -> UsuarioAdminResponse:
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -85,7 +88,8 @@ def editar_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> UsuarioAdminResponse:
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -110,6 +114,7 @@ def editar_usuario(
         username,
         correo,
         int(usuario_actual["id"]),
+        empresa_id,
     )
 
     if usuario_actualizado is None:
@@ -133,6 +138,7 @@ def eliminar_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     usuario_admin_id = int(usuario_actual["id"])
 
     if usuario_id == usuario_admin_id:
@@ -141,12 +147,12 @@ def eliminar_usuario(
             detail="No puede desactivar su propio usuario.",
         )
 
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-    desactivado = desactivar_usuario(usuario_id, usuario_admin_id)
+    desactivado = desactivar_usuario(usuario_id, usuario_admin_id, empresa_id)
 
     if not desactivado:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -169,12 +175,13 @@ def reactivar_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-    activado = activar_usuario(usuario_id, int(usuario_actual["id"]))
+    activado = activar_usuario(usuario_id, int(usuario_actual["id"]), empresa_id)
 
     if not activado:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -198,7 +205,8 @@ def asignar_rol_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -208,7 +216,7 @@ def asignar_rol_usuario(
     if rol is None or rol["activo"] is not True:
         raise HTTPException(status_code=404, detail="Rol no encontrado.")
 
-    asignar_rol_a_usuario(usuario_id, rol_id, int(usuario_actual["id"]))
+    asignar_rol_a_usuario(usuario_id, rol_id, int(usuario_actual["id"]), empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="ASIGNAR_ROL",
@@ -228,8 +236,9 @@ def desactivar_rol_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     usuario_admin_id = int(usuario_actual["id"])
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -245,7 +254,7 @@ def desactivar_rol_usuario(
             detail="No puede quitarse a si mismo el rol ADMINISTRADOR.",
         )
 
-    desactivado = desactivar_rol_de_usuario(usuario_id, rol_id, usuario_admin_id)
+    desactivado = desactivar_rol_de_usuario(usuario_id, rol_id, usuario_admin_id, empresa_id)
 
     if not desactivado:
         raise HTTPException(
@@ -272,7 +281,8 @@ def activar_rol_usuario(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    usuario = obtener_usuario_admin_por_id(usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    usuario = obtener_usuario_admin_por_id(usuario_id, empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -282,7 +292,7 @@ def activar_rol_usuario(
     if rol is None or rol["activo"] is not True:
         raise HTTPException(status_code=404, detail="Rol no encontrado.")
 
-    activar_rol_de_usuario(usuario_id, rol_id, int(usuario_actual["id"]))
+    activar_rol_de_usuario(usuario_id, rol_id, int(usuario_actual["id"]), empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="ACTIVAR_ROL",

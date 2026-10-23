@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 
@@ -163,13 +164,13 @@ def reactivar_ciudad(
     return MensajeResponse(mensaje="Ciudad activada correctamente.")
 
 
-def obtener_sucursales() -> list[SucursalResponse]:
-    sucursales = listar_sucursales()
+def obtener_sucursales(usuario_actual: dict[str, object]) -> list[SucursalResponse]:
+    sucursales = listar_sucursales(exigir_empresa_id(usuario_actual))
     return [construir_sucursal_response(sucursal) for sucursal in sucursales]
 
 
-def obtener_sucursal(sucursal_id: int) -> SucursalResponse:
-    sucursal = obtener_sucursal_por_id(sucursal_id)
+def obtener_sucursal(sucursal_id: int, usuario_actual: dict[str, object]) -> SucursalResponse:
+    sucursal = obtener_sucursal_por_id(sucursal_id, exigir_empresa_id(usuario_actual))
 
     if sucursal is None or sucursal["activo"] is not True:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
@@ -192,6 +193,7 @@ def registrar_sucursal(
         request.latitud,
         request.longitud,
         int(usuario_actual["id"]),
+        exigir_empresa_id(usuario_actual),
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -212,7 +214,8 @@ def editar_sucursal(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> SucursalResponse:
-    sucursal_actual = obtener_sucursal_por_id(sucursal_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    sucursal_actual = obtener_sucursal_por_id(sucursal_id, empresa_id)
 
     if sucursal_actual is None or sucursal_actual["activo"] is not True:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
@@ -227,6 +230,7 @@ def editar_sucursal(
         request.latitud,
         request.longitud,
         int(usuario_actual["id"]),
+        empresa_id,
     )
 
     if sucursal is None:
@@ -250,12 +254,13 @@ def eliminar_sucursal(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    sucursal = obtener_sucursal_por_id(sucursal_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    sucursal = obtener_sucursal_por_id(sucursal_id, empresa_id)
 
     if sucursal is None or sucursal["activo"] is not True:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
 
-    desactivada = desactivar_sucursal(sucursal_id, int(usuario_actual["id"]))
+    desactivada = desactivar_sucursal(sucursal_id, int(usuario_actual["id"]), empresa_id)
 
     if not desactivada:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
@@ -278,7 +283,8 @@ def reactivar_sucursal(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    sucursal = obtener_sucursal_por_id(sucursal_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    sucursal = obtener_sucursal_por_id(sucursal_id, empresa_id)
 
     if sucursal is None:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
@@ -289,7 +295,7 @@ def reactivar_sucursal(
             detail="No se puede activar una sucursal de una ciudad inactiva.",
         )
 
-    activada = activar_sucursal(sucursal_id, int(usuario_actual["id"]))
+    activada = activar_sucursal(sucursal_id, int(usuario_actual["id"]), empresa_id)
 
     if not activada:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")

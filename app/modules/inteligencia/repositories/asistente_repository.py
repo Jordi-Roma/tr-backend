@@ -12,7 +12,10 @@ def buscar_productos_para_asistente(
     producto_id: int | None = None,
     sucursal_id: int | None = None,
     limite: int = 8,
+    empresa_id: int | None = None,
 ) -> list[dict[str, object]]:
+    if empresa_id is None:
+        raise ValueError("Se requiere empresa_id para consultar el asistente.")
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -22,8 +25,15 @@ def buscar_productos_para_asistente(
             "pv.activo = TRUE",
             "inv.activo = TRUE",
             "(inv.stock_disponible - inv.stock_reservado) > 0",
+            "inv.empresa_id = %s",
+            "s.empresa_id = inv.empresa_id",
+            "pv.empresa_id = inv.empresa_id",
+            "p.empresa_id = inv.empresa_id",
+            "c.empresa_id = inv.empresa_id",
+            "t.empresa_id = inv.empresa_id",
+            "co.empresa_id = inv.empresa_id",
         ]
-        filtros_params: list[object] = []
+        filtros_params: list[object] = [empresa_id]
 
         if producto_id is not None:
             condiciones.append("p.id = %s")
@@ -110,6 +120,7 @@ def buscar_productos_para_asistente(
             JOIN color co ON co.id = pv.color_id
             LEFT JOIN precio_producto pp
                 ON pp.producto_variante_id = pv.id
+                AND pp.empresa_id = inv.empresa_id
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
             WHERE {' AND '.join(condiciones)}
@@ -125,7 +136,7 @@ def buscar_productos_para_asistente(
         connection.close()
 
 
-def listar_sucursales_para_asistente(limite: int = 10) -> list[dict[str, object]]:
+def listar_sucursales_para_asistente(empresa_id: int, limite: int = 10) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -135,11 +146,11 @@ def listar_sucursales_para_asistente(limite: int = 10) -> list[dict[str, object]
             SELECT s.id, s.nombre, ci.nombre AS ciudad
             FROM sucursal s
             JOIN ciudad ci ON ci.id = s.ciudad_id
-            WHERE s.activo = TRUE AND ci.activo = TRUE
+            WHERE s.activo = TRUE AND ci.activo = TRUE AND s.empresa_id = %s
             ORDER BY ci.nombre ASC, s.nombre ASC
             LIMIT %s;
             """,
-            (limite,),
+            (empresa_id, limite),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:

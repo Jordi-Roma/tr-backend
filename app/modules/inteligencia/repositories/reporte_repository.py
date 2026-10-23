@@ -15,11 +15,11 @@ def _rows(sql: str, params: tuple[object, ...]) -> list[dict[str, object]]:
         connection.close()
 
 
-def listar_sucursales() -> list[dict[str, object]]:
-    return _rows("SELECT s.id, s.nombre, c.nombre AS ciudad FROM sucursal s JOIN ciudad c ON c.id = s.ciudad_id WHERE s.activo = TRUE ORDER BY c.nombre, s.nombre", ())
+def listar_sucursales(empresa_id: int) -> list[dict[str, object]]:
+    return _rows("SELECT s.id, s.nombre, c.nombre AS ciudad FROM sucursal s JOIN ciudad c ON c.id = s.ciudad_id WHERE s.activo = TRUE AND s.empresa_id = %s ORDER BY c.nombre, s.nombre", (empresa_id,))
 
 
-def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
+def consultar_reporte(request: ReporteRequest, empresa_id: int) -> list[dict[str, object]]:
     desde = request.fecha_desde
     hasta = request.fecha_hasta
     sucursal = request.sucursal_id
@@ -33,14 +33,14 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
                    v.metodo_pago, v.costo_delivery,
                    COALESCE((SELECT SUM(d.cantidad) FROM venta_detalle d WHERE d.venta_id = v.id), 0) AS unidades
             FROM venta v JOIN sucursal s ON s.id = v.sucursal_id
-            WHERE v.activo = TRUE
+            WHERE v.activo = TRUE AND v.empresa_id = %s AND s.empresa_id = v.empresa_id
               AND (v.fecha_venta AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR v.sucursal_id = %s)
               AND (%s::text IS NULL OR v.estado = %s)
               AND (%s::text IS NULL OR v.metodo_pago = %s)
               AND (%s::text IS NULL OR v.tipo_entrega = %s)
             ORDER BY v.fecha_venta DESC LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, estado, estado, metodo_pago, metodo_pago, tipo_entrega, tipo_entrega))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado, metodo_pago, metodo_pago, tipo_entrega, tipo_entrega))
     if request.tipo == "PRODUCTOS_MAS_VENDIDOS":
         tipo_entrega = request.tipo_entrega
         return _rows("""
@@ -49,12 +49,12 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
             FROM venta v JOIN venta_detalle d ON d.venta_id = v.id
             JOIN producto_variante pv ON pv.id = d.producto_variante_id
             JOIN producto p ON p.id = pv.producto_id
-            WHERE v.estado = 'COMPLETADA' AND v.activo = TRUE
+            WHERE v.estado = 'COMPLETADA' AND v.activo = TRUE AND v.empresa_id = %s AND p.empresa_id = v.empresa_id
               AND (v.fecha_venta AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR v.sucursal_id = %s)
               AND (%s::text IS NULL OR v.tipo_entrega = %s)
             GROUP BY p.nombre, pv.sku, v.tipo_entrega ORDER BY unidades DESC, producto LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, tipo_entrega, tipo_entrega))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, tipo_entrega, tipo_entrega))
     if request.tipo == "INVENTARIO":
         return _rows("""
             SELECT s.nombre AS sucursal, p.nombre AS producto, pv.sku,
@@ -64,21 +64,23 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
             FROM inventario_sucursal i JOIN sucursal s ON s.id = i.sucursal_id
             JOIN producto_variante pv ON pv.id = i.producto_variante_id
             JOIN producto p ON p.id = pv.producto_id
-            WHERE i.activo = TRUE AND (%s::bigint IS NULL OR i.sucursal_id = %s)
+            WHERE i.activo = TRUE AND s.empresa_id = %s AND p.empresa_id = s.empresa_id
+              AND (%s::bigint IS NULL OR i.sucursal_id = %s)
               AND (%s::boolean = FALSE OR i.stock_disponible - i.stock_reservado <= i.stock_minimo)
             ORDER BY s.nombre, p.nombre, pv.sku LIMIT 5000
-        """, (sucursal, sucursal, request.solo_bajo_stock))
+        """, (empresa_id, sucursal, sucursal, request.solo_bajo_stock))
     if request.tipo == "RESERVAS":
         estado = request.estado.strip().upper() if request.estado else None
         return _rows("""
             SELECT r.codigo, r.fecha_reserva AS fecha, s.nombre AS sucursal, r.estado, r.total,
                    COALESCE((SELECT SUM(d.cantidad) FROM reserva_detalle d WHERE d.reserva_id = r.id AND d.activo = TRUE), 0) AS unidades
             FROM reserva r JOIN sucursal s ON s.id = r.sucursal_id
-            WHERE r.activo = TRUE AND (r.fecha_reserva AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
+            WHERE r.activo = TRUE AND r.empresa_id = %s AND s.empresa_id = r.empresa_id
+              AND (r.fecha_reserva AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR r.sucursal_id = %s)
               AND (%s::text IS NULL OR r.estado = %s)
             ORDER BY r.fecha_reserva DESC LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, estado, estado))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado))
     if request.tipo == "MOVIMIENTOS":
         estado = request.estado.strip().upper() if request.estado else None
         return _rows("""
@@ -87,11 +89,12 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
             FROM movimiento_inventario m JOIN sucursal s ON s.id = m.sucursal_id
             JOIN producto_variante pv ON pv.id = m.producto_variante_id
             JOIN producto p ON p.id = pv.producto_id
-            WHERE m.activo = TRUE AND (m.fecha_movimiento AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
+            WHERE m.activo = TRUE AND s.empresa_id = %s AND p.empresa_id = s.empresa_id
+              AND (m.fecha_movimiento AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR m.sucursal_id = %s)
               AND (%s::text IS NULL OR m.tipo = %s)
             ORDER BY m.fecha_movimiento DESC LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, estado, estado))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado))
     if request.tipo == "TRANSFERENCIAS":
         estado = request.estado.strip().upper() if request.estado else None
         return _rows("""
@@ -100,11 +103,12 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
                COALESCE((SELECT SUM(d.cantidad) FROM transferencia_stock_detalle d WHERE d.transferencia_id = t.id), 0) AS unidades
         FROM transferencia_stock t JOIN sucursal so ON so.id = t.sucursal_origen_id
         JOIN sucursal sd ON sd.id = t.sucursal_destino_id
-        WHERE t.activo = TRUE AND (t.fecha_transferencia AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
+        WHERE t.activo = TRUE AND so.empresa_id = %s AND sd.empresa_id = so.empresa_id
+          AND (t.fecha_transferencia AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
           AND (%s::bigint IS NULL OR t.sucursal_origen_id = %s OR t.sucursal_destino_id = %s)
           AND (%s::text IS NULL OR t.estado = %s)
         ORDER BY t.fecha_transferencia DESC LIMIT 5000
-    """, (desde, hasta, sucursal, sucursal, sucursal, estado, estado))
+    """, (empresa_id, desde, hasta, sucursal, sucursal, sucursal, estado, estado))
     if request.tipo == "PAGOS":
         estado = request.estado.strip().upper() if request.estado else None
         metodo_pago = request.metodo_pago.strip().upper() if request.metodo_pago else None
@@ -121,7 +125,7 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
             LEFT JOIN sucursal s ON s.id = v.sucursal_id
             LEFT JOIN cliente c ON c.id = op.cliente_id
             LEFT JOIN usuario u ON u.id = c.usuario_id
-            WHERE op.activo = TRUE
+            WHERE op.activo = TRUE AND op.empresa_id = %s AND v.empresa_id = op.empresa_id
               AND (op.fecha_creacion AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR v.sucursal_id = %s)
               AND (%s::text IS NULL OR op.estado = %s)
@@ -129,7 +133,7 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
               AND (%s::text IS NULL OR op.proveedor = %s)
               AND (%s::text IS NULL OR v.tipo_entrega = %s)
             ORDER BY op.fecha_creacion DESC LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, estado, estado, metodo_pago, metodo_pago, proveedor, proveedor, tipo_entrega, tipo_entrega))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado, metodo_pago, metodo_pago, proveedor, proveedor, tipo_entrega, tipo_entrega))
     if request.tipo == "DELIVERIES":
         estado = request.estado.strip().upper() if request.estado else None
         return _rows("""
@@ -143,12 +147,12 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
             JOIN sucursal s ON s.id = d.sucursal_id
             LEFT JOIN cliente c ON c.id = d.cliente_id
             LEFT JOIN usuario u ON u.id = c.usuario_id
-            WHERE d.activo = TRUE
+            WHERE d.activo = TRUE AND d.empresa_id = %s AND v.empresa_id = d.empresa_id
               AND (d.fecha_creacion AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
               AND (%s::bigint IS NULL OR d.sucursal_id = %s)
               AND (%s::text IS NULL OR d.estado = %s)
             ORDER BY d.fecha_creacion DESC LIMIT 5000
-        """, (desde, hasta, sucursal, sucursal, estado, estado))
+        """, (empresa_id, desde, hasta, sucursal, sucursal, estado, estado))
     rol = request.rol.strip().upper() if request.rol else None
     activo = request.activo
     return _rows("""
@@ -157,7 +161,7 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
         FROM usuario u
         LEFT JOIN usuario_rol ur ON ur.usuario_id = u.id AND ur.activo = TRUE
         LEFT JOIN rol r ON r.id = ur.rol_id AND r.activo = TRUE
-        WHERE (u.fecha_creacion AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
+        WHERE u.empresa_id = %s AND (u.fecha_creacion AT TIME ZONE 'America/La_Paz')::date BETWEEN %s AND %s
           AND (%s::boolean IS NULL OR u.activo = %s)
           AND (%s::text IS NULL OR EXISTS (
               SELECT 1
@@ -167,34 +171,35 @@ def consultar_reporte(request: ReporteRequest) -> list[dict[str, object]]:
           ))
         GROUP BY u.id, u.fecha_creacion, u.nombre, u.apellido, u.username, u.correo, u.activo
         ORDER BY u.fecha_creacion DESC LIMIT 5000
-    """, (desde, hasta, activo, activo, rol, rol))
+    """, (empresa_id, desde, hasta, activo, activo, rol, rol))
 
 
-def listar_reportes_programados() -> list[dict[str, object]]:
+def listar_reportes_programados(empresa_id: int) -> list[dict[str, object]]:
     return _rows("""
         SELECT rp.id, rp.titulo, rp.tipo, rp.frecuencia, rp.hora, rp.dia,
                rp.formato, rp.destinatario_email, rp.sucursal_id, s.nombre AS sucursal_nombre,
                rp.solo_bajo_stock, rp.activo, rp.ultima_ejecucion, rp.proxima_ejecucion, rp.creado_en
         FROM reporte_programado rp
         LEFT JOIN sucursal s ON s.id = rp.sucursal_id
+        WHERE rp.empresa_id = %s
         ORDER BY rp.creado_en DESC
-    """, ())
+    """, (empresa_id,))
 
 
-def crear_reporte_programado(data: dict[str, object], usuario_id: int | None = None) -> dict[str, object]:
+def crear_reporte_programado(data: dict[str, object], empresa_id: int, usuario_id: int | None = None) -> dict[str, object]:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
                 INSERT INTO reporte_programado (
-                    titulo, tipo, frecuencia, hora, dia, formato,
+                    empresa_id, titulo, tipo, frecuencia, hora, dia, formato,
                     destinatario_email, sucursal_id, solo_bajo_stock, activo, creado_por
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
                           destinatario_email, sucursal_id, solo_bajo_stock, activo,
                           ultima_ejecucion, proxima_ejecucion, creado_en
             """, (
-                data["titulo"], data["tipo"], data["frecuencia"], data.get("hora", "08:00"),
+                empresa_id, data["titulo"], data["tipo"], data["frecuencia"], data.get("hora", "08:00"),
                 data.get("dia"), data.get("formato", "PDF"), data["destinatario_email"],
                 data.get("sucursal_id"), data.get("solo_bajo_stock", False), data.get("activo", True),
                 usuario_id
@@ -206,18 +211,18 @@ def crear_reporte_programado(data: dict[str, object], usuario_id: int | None = N
         connection.close()
 
 
-def actualizar_estado_reporte_programado(programado_id: int, activo: bool) -> dict[str, object] | None:
+def actualizar_estado_reporte_programado(programado_id: int, activo: bool, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
                 UPDATE reporte_programado
                 SET activo = %s
-                WHERE id = %s
+                WHERE id = %s AND empresa_id = %s
                 RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
                           destinatario_email, sucursal_id, solo_bajo_stock, activo,
                           ultima_ejecucion, proxima_ejecucion, creado_en
-            """, (activo, programado_id))
+            """, (activo, programado_id, empresa_id))
             row = cursor.fetchone()
             connection.commit()
             return dict(row) if row else None
@@ -225,29 +230,29 @@ def actualizar_estado_reporte_programado(programado_id: int, activo: bool) -> di
         connection.close()
 
 
-def eliminar_reporte_programado(programado_id: int) -> bool:
+def eliminar_reporte_programado(programado_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM reporte_programado WHERE id = %s", (programado_id,))
+            cursor.execute("DELETE FROM reporte_programado WHERE id = %s AND empresa_id = %s", (programado_id, empresa_id))
             connection.commit()
             return cursor.rowcount > 0
     finally:
         connection.close()
 
 
-def marcar_ejecucion_reporte_programado(programado_id: int) -> dict[str, object] | None:
+def marcar_ejecucion_reporte_programado(programado_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute("""
                 UPDATE reporte_programado
                 SET ultima_ejecucion = NOW()
-                WHERE id = %s
+                WHERE id = %s AND empresa_id = %s
                 RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
                           destinatario_email, sucursal_id, solo_bajo_stock, activo,
                           ultima_ejecucion, proxima_ejecucion, creado_en
-            """, (programado_id,))
+            """, (programado_id, empresa_id))
             row = cursor.fetchone()
             connection.commit()
             return dict(row) if row else None

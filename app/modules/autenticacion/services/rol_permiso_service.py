@@ -113,7 +113,7 @@ def eliminar_rol(
     if rol is None or rol["activo"] is not True:
         raise HTTPException(status_code=404, detail="Rol no encontrado.")
 
-    if str(rol["nombre"]) == "ADMINISTRADOR":
+    if str(rol["nombre"]) in ("ADMINISTRADOR", "ADMIN_SAAS"):
         raise HTTPException(
             status_code=400,
             detail="No se puede desactivar el rol ADMINISTRADOR.",

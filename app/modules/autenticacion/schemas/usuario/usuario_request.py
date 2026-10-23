@@ -2,6 +2,8 @@ import re
 
 from pydantic import BaseModel, field_validator
 
+from app.core.contexto_empresa import normalizar_codigo_empresa
+
 
 class UsuarioRegistroRequest(BaseModel):
     nombre: str
@@ -9,7 +11,13 @@ class UsuarioRegistroRequest(BaseModel):
     username: str
     correo: str
     password: str
+    empresa_codigo: str
     telefono: str | None = None
+
+    @field_validator("empresa_codigo")
+    @classmethod
+    def validar_empresa_codigo(cls, valor: str) -> str:
+        return normalizar_codigo_empresa(valor)
 
     @field_validator("nombre", "apellido", "password")
     @classmethod

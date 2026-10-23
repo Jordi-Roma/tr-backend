@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.core.config import AI_REPORTS_PROVIDER
 from app.modules.inteligencia.repositories.reporte_repository import (
     actualizar_estado_reporte_programado,
@@ -37,8 +38,8 @@ TITULOS = {
 MONETARIOS = {"subtotal", "descuento", "total", "importe"}
 
 
-def catalogo_reportes() -> dict[str, object]:
-    return {"tipos": [{"id": key, "nombre": title} for key, title in TITULOS.items()], "sucursales": listar_sucursales()}
+def catalogo_reportes(empresa_id: int) -> dict[str, object]:
+    return {"tipos": [{"id": key, "nombre": title} for key, title in TITULOS.items()], "sucursales": listar_sucursales(empresa_id)}
 
 
 def _normalizar(texto: str) -> str:
@@ -46,7 +47,7 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in texto if unicodedata.category(c) != "Mn")
 
 
-def _interpretar_por_reglas(texto: str) -> dict[str, object]:
+def _interpretar_por_reglas(texto: str, empresa_id: int) -> dict[str, object]:
     normal = _normalizar(texto)
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
     inicio, fin = hoy.replace(day=1), hoy
@@ -103,7 +104,7 @@ def _interpretar_por_reglas(texto: str) -> dict[str, object]:
         inicio = date(2020, 1, 1)
         fin = hoy
     sucursal_id = None
-    sucursales = listar_sucursales()
+    sucursales = listar_sucursales(empresa_id)
     for sucursal in sucursales:
         nombre = _normalizar(str(sucursal["nombre"]))
         if nombre in normal:
@@ -156,19 +157,19 @@ def _interpretar_por_reglas(texto: str) -> dict[str, object]:
     return {"interpretado": True, "advertencias": [], "texto_normalizado": normal, "filtros": filtros.model_dump(mode="json"), "motor": "reglas"}
 
 
-def interpretar(texto: str) -> dict[str, object]:
+def interpretar(texto: str, empresa_id: int) -> dict[str, object]:
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
     if AI_REPORTS_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
-            return interpretar_con_vertex(texto, hoy, listar_sucursales())
+            return interpretar_con_vertex(texto, hoy, listar_sucursales(empresa_id))
         except Exception as exc:
-            resultado = _interpretar_por_reglas(texto)
+            resultado = _interpretar_por_reglas(texto, empresa_id)
             advertencias = list(resultado.get("advertencias") or [])
             advertencias.append(f"{AI_REPORTS_PROVIDER.title()} no respondió; se usó interpretación local. Detalle: {exc}")
             resultado["advertencias"] = advertencias
             resultado["motor"] = "reglas_fallback"
             return resultado
-    return _interpretar_por_reglas(texto)
+    return _interpretar_por_reglas(texto, empresa_id)
 
 
 def _presentar(valor: object) -> object:
@@ -179,11 +180,11 @@ def _presentar(valor: object) -> object:
     return valor
 
 
-def generar_reporte(request: ReporteRequest) -> dict[str, object]:
-    sucursales = listar_sucursales()
+def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, object]:
+    sucursales = listar_sucursales(empresa_id)
     if request.sucursal_id is not None and not any(s["id"] == request.sucursal_id for s in sucursales):
         raise HTTPException(status_code=422, detail="La sucursal seleccionada no existe o está inactiva.")
-    rows = consultar_reporte(request)
+    rows = consultar_reporte(request, empresa_id)
     if len(rows) == 5000:
         raise HTTPException(status_code=422, detail="El reporte alcanza el límite de 5000 filas. Reduce el período o selecciona una sucursal.")
     filas = [{key: _presentar(value) for key, value in row.items()} for row in rows]
@@ -231,32 +232,36 @@ def _presentar_programado(item: dict[str, object]) -> dict[str, object]:
     }
 
 
-def listar_programados_service() -> list[dict[str, object]]:
-    return [_presentar_programado(item) for item in listar_reportes_programados()]
+def listar_programados_service(usuario_actual: dict[str, object]) -> list[dict[str, object]]:
+    return [_presentar_programado(item) for item in listar_reportes_programados(exigir_empresa_id(usuario_actual))]
 
 
 def crear_programado_service(request: CrearReporteProgramadoRequest, usuario_actual: dict[str, object]) -> dict[str, object]:
+    empresa_id = exigir_empresa_id(usuario_actual)
+    if request.sucursal_id is not None and not any(s["id"] == request.sucursal_id for s in listar_sucursales(empresa_id)):
+        raise HTTPException(status_code=422, detail="La sucursal seleccionada no pertenece a la empresa.")
     usuario_id = int(usuario_actual["id"]) if "id" in usuario_actual else None
-    item = crear_reporte_programado(request.model_dump(), usuario_id)
+    item = crear_reporte_programado(request.model_dump(), empresa_id, usuario_id)
     return _presentar_programado(item)
 
 
-def actualizar_estado_programado_service(programado_id: int, activo: bool) -> dict[str, object]:
-    item = actualizar_estado_reporte_programado(programado_id, activo)
+def actualizar_estado_programado_service(programado_id: int, activo: bool, usuario_actual: dict[str, object]) -> dict[str, object]:
+    item = actualizar_estado_reporte_programado(programado_id, activo, exigir_empresa_id(usuario_actual))
     if not item:
         raise HTTPException(status_code=404, detail="Programación de reporte no encontrada.")
     return _presentar_programado(item)
 
 
-def eliminar_programado_service(programado_id: int) -> dict[str, str]:
-    ok = eliminar_reporte_programado(programado_id)
+def eliminar_programado_service(programado_id: int, usuario_actual: dict[str, object]) -> dict[str, str]:
+    ok = eliminar_reporte_programado(programado_id, exigir_empresa_id(usuario_actual))
     if not ok:
         raise HTTPException(status_code=404, detail="Programación de reporte no encontrada.")
     return {"status": "ok", "mensaje": "Programación eliminada exitosamente."}
 
 
-def ejecutar_programado_service(programado_id: int) -> dict[str, object]:
-    item = marcar_ejecucion_reporte_programado(programado_id)
+def ejecutar_programado_service(programado_id: int, usuario_actual: dict[str, object]) -> dict[str, object]:
+    empresa_id = exigir_empresa_id(usuario_actual)
+    item = marcar_ejecucion_reporte_programado(programado_id, empresa_id)
     if not item:
         raise HTTPException(status_code=404, detail="Programación de reporte no encontrada.")
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
@@ -268,7 +273,7 @@ def ejecutar_programado_service(programado_id: int) -> dict[str, object]:
         sucursal_id=item.get("sucursal_id"),
         solo_bajo_stock=item.get("solo_bajo_stock", False),
     )
-    resultado = generar_reporte(rep_req)
+    resultado = generar_reporte(rep_req, empresa_id)
     return {
         "programado": _presentar_programado(item),
         "reporte": resultado,

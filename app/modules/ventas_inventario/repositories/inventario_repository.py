@@ -1,3 +1,4 @@
+from app.core.plan_empresa import exigir_operaciones_empresa
 from decimal import Decimal
 from uuid import uuid4
 
@@ -10,7 +11,7 @@ TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION
 TIPOS_RESTA = {"SALIDA", "AJUSTE_NEGATIVO", "TRANSFERENCIA_SALIDA", "VENTA_PRESENCIAL", "VENTA_DIGITAL"}
 
 
-def obtener_sucursal_empleado(usuario_id: int) -> int | None:
+def obtener_sucursal_empleado(usuario_id: int, empresa_id: int) -> int | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -18,10 +19,10 @@ def obtener_sucursal_empleado(usuario_id: int) -> int | None:
             """
             SELECT sucursal_id
             FROM empleado
-            WHERE usuario_id = %s AND activo = TRUE
+            WHERE usuario_id = %s AND empresa_id = %s AND activo = TRUE
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         row = cursor.fetchone()
         return int(row["sucursal_id"]) if row else None
@@ -30,12 +31,23 @@ def obtener_sucursal_empleado(usuario_id: int) -> int | None:
         connection.close()
 
 
-def listar_inventario(filtros: dict[str, object]) -> list[dict[str, object]]:
+def sucursal_pertenece_empresa(sucursal_id: int, empresa_id: int) -> bool:
+    connection = get_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE", (sucursal_id, empresa_id))
+        return cursor.fetchone() is not None
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def listar_inventario(filtros: dict[str, object], empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        condiciones = ["inv.activo = TRUE"]
-        params: list[object] = []
+        condiciones = ["inv.activo = TRUE", "inv.empresa_id = %s", "s.empresa_id = inv.empresa_id", "pv.empresa_id = inv.empresa_id", "p.empresa_id = inv.empresa_id"]
+        params: list[object] = [empresa_id]
 
         for key, column in (
             ("inventario_id", "inv.id"),
@@ -91,12 +103,12 @@ def listar_inventario(filtros: dict[str, object]) -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_inventario(inventario_id: int) -> dict[str, object] | None:
-    rows = listar_inventario({"inventario_id": inventario_id})
+def obtener_inventario(inventario_id: int, empresa_id: int) -> dict[str, object] | None:
+    rows = listar_inventario({"inventario_id": inventario_id}, empresa_id)
     return rows[0] if rows else None
 
 
-def actualizar_stock_minimo(inventario_id: int, stock_minimo: int) -> dict[str, object] | None:
+def actualizar_stock_minimo(inventario_id: int, stock_minimo: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -105,17 +117,17 @@ def actualizar_stock_minimo(inventario_id: int, stock_minimo: int) -> dict[str, 
             UPDATE inventario_sucursal
             SET stock_minimo = %s,
                 fecha_actualizacion = CURRENT_TIMESTAMP
-            WHERE id = %s AND activo = TRUE
+            WHERE id = %s AND empresa_id = %s AND activo = TRUE
             RETURNING id;
             """,
-            (stock_minimo, inventario_id),
+            (stock_minimo, inventario_id, empresa_id),
         )
         row = cursor.fetchone()
         if row is None:
             connection.rollback()
             return None
         connection.commit()
-        return listar_inventario_por_id(int(row["id"]))
+        return listar_inventario_por_id(int(row["id"]), empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -124,7 +136,7 @@ def actualizar_stock_minimo(inventario_id: int, stock_minimo: int) -> dict[str, 
         connection.close()
 
 
-def listar_inventario_por_id(inventario_id: int) -> dict[str, object] | None:
+def listar_inventario_por_id(inventario_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -132,9 +144,9 @@ def listar_inventario_por_id(inventario_id: int) -> dict[str, object] | None:
             """
             SELECT sucursal_id, producto_variante_id
             FROM inventario_sucursal
-            WHERE id = %s AND activo = TRUE;
+            WHERE id = %s AND empresa_id = %s AND activo = TRUE;
             """,
-            (inventario_id,),
+            (inventario_id, empresa_id),
         )
         row = cursor.fetchone()
         if row is None:
@@ -143,7 +155,8 @@ def listar_inventario_por_id(inventario_id: int) -> dict[str, object] | None:
             {
                 "sucursal_id": row["sucursal_id"],
                 "producto_variante_id": row["producto_variante_id"],
-            }
+            },
+            empresa_id,
         )
         return rows[0] if rows else None
     finally:
@@ -153,6 +166,7 @@ def listar_inventario_por_id(inventario_id: int) -> dict[str, object] | None:
 
 def registrar_movimiento_manual(
     usuario_id: int,
+    empresa_id: int,
     sucursal_id: int,
     producto_variante_id: int,
     tipo: str,
@@ -174,9 +188,10 @@ def registrar_movimiento_manual(
             None,
             None,
             proveedor_id if tipo == "ENTRADA" else None,
+            empresa_id,
         )
         connection.commit()
-        movimiento = _obtener_movimiento_cursor(cursor, movimiento_id)
+        movimiento = _obtener_movimiento_cursor(cursor, movimiento_id, empresa_id)
         if movimiento is None:
             raise RuntimeError("No se pudo recuperar el movimiento creado.")
         return movimiento
@@ -188,12 +203,12 @@ def registrar_movimiento_manual(
         connection.close()
 
 
-def listar_movimientos(filtros: dict[str, object]) -> list[dict[str, object]]:
+def listar_movimientos(filtros: dict[str, object], empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        condiciones = ["mi.activo = TRUE"]
-        params: list[object] = []
+        condiciones = ["mi.activo = TRUE", "mi.empresa_id = %s", "s.empresa_id = mi.empresa_id", "pv.empresa_id = mi.empresa_id", "p.empresa_id = mi.empresa_id"]
+        params: list[object] = [empresa_id]
         for key, column in (
             ("id", "mi.id"),
             ("sucursal_id", "mi.sucursal_id"),
@@ -247,6 +262,7 @@ def listar_movimientos(filtros: dict[str, object]) -> list[dict[str, object]]:
 
 def crear_transferencia(
     usuario_id: int,
+    empresa_id: int,
     sucursal_origen_id: int,
     sucursal_destino_id: int,
     observacion: str | None,
@@ -260,24 +276,28 @@ def crear_transferencia(
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
+        _validar_sucursal_cursor(cursor, sucursal_origen_id, empresa_id)
+        _validar_sucursal_cursor(cursor, sucursal_destino_id, empresa_id)
         cursor.execute(
             """
             INSERT INTO transferencia_stock (
+                empresa_id,
                 sucursal_origen_id,
                 sucursal_destino_id,
                 usuario_id,
                 estado,
                 observacion
             )
-            VALUES (%s, %s, %s, 'COMPLETADA', %s)
+            VALUES (%s, %s, %s, %s, 'COMPLETADA', %s)
             RETURNING id;
             """,
-            (sucursal_origen_id, sucursal_destino_id, usuario_id, observacion),
+            (empresa_id, sucursal_origen_id, sucursal_destino_id, usuario_id, observacion),
         )
         transferencia_id = int(cursor.fetchone()["id"])
         for item in items:
             variante_id = int(item["producto_variante_id"])
             cantidad = int(item["cantidad"])
+            _validar_variante_cursor(cursor, variante_id, empresa_id)
             cursor.execute(
                 """
                 INSERT INTO transferencia_stock_detalle (transferencia_id, producto_variante_id, cantidad)
@@ -295,6 +315,8 @@ def crear_transferencia(
                 observacion,
                 "TRANSFERENCIA_STOCK",
                 transferencia_id,
+                None,
+                empresa_id,
             )
             _aplicar_movimiento(
                 cursor,
@@ -306,9 +328,11 @@ def crear_transferencia(
                 observacion,
                 "TRANSFERENCIA_STOCK",
                 transferencia_id,
+                None,
+                empresa_id,
             )
         connection.commit()
-        transferencia = _obtener_transferencia_cursor(cursor, transferencia_id)
+        transferencia = _obtener_transferencia_cursor(cursor, transferencia_id, empresa_id)
         if transferencia is None:
             raise RuntimeError("No se pudo recuperar la transferencia creada.")
         return transferencia
@@ -320,12 +344,12 @@ def crear_transferencia(
         connection.close()
 
 
-def listar_transferencias(sucursal_id: int | None = None) -> list[dict[str, object]]:
+def listar_transferencias(empresa_id: int, sucursal_id: int | None = None) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        params: list[object] = []
-        where = "ts.activo = TRUE"
+        params: list[object] = [empresa_id]
+        where = "ts.activo = TRUE AND ts.empresa_id = %s"
         if sucursal_id is not None:
             where += " AND (ts.sucursal_origen_id = %s OR ts.sucursal_destino_id = %s)"
             params.extend([sucursal_id, sucursal_id])
@@ -340,7 +364,7 @@ def listar_transferencias(sucursal_id: int | None = None) -> list[dict[str, obje
         )
         return [
             transferencia
-            for transferencia in (_obtener_transferencia_cursor(cursor, int(row["id"])) for row in cursor.fetchall())
+            for transferencia in (_obtener_transferencia_cursor(cursor, int(row["id"]), empresa_id) for row in cursor.fetchall())
             if transferencia is not None
         ]
     finally:
@@ -348,11 +372,11 @@ def listar_transferencias(sucursal_id: int | None = None) -> list[dict[str, obje
         connection.close()
 
 
-def obtener_transferencia(transferencia_id: int) -> dict[str, object] | None:
+def obtener_transferencia(transferencia_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        return _obtener_transferencia_cursor(cursor, transferencia_id)
+        return _obtener_transferencia_cursor(cursor, transferencia_id, empresa_id)
     finally:
         cursor.close()
         connection.close()
@@ -360,6 +384,7 @@ def obtener_transferencia(transferencia_id: int) -> dict[str, object] | None:
 
 def crear_venta_presencial(
     usuario_id: int,
+    empresa_id: int,
     sucursal_id: int,
     cliente_id: int | None,
     metodo_pago: str | None,
@@ -371,12 +396,19 @@ def crear_venta_presencial(
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
+        exigir_operaciones_empresa(empresa_id, cursor=cursor)
+        _validar_sucursal_cursor(cursor, sucursal_id, empresa_id)
+        if cliente_id is not None:
+            cursor.execute("SELECT 1 FROM cliente WHERE id = %s AND empresa_id = %s AND activo = TRUE", (cliente_id, empresa_id))
+            if cursor.fetchone() is None:
+                raise ValueError("Cliente no encontrado en esta empresa.")
         subtotal_total = Decimal("0.00")
         descuento_total = Decimal("0.00")
         codigo = f"VEN-{uuid4().hex[:10].upper()}"
         cursor.execute(
             """
             INSERT INTO venta (
+                empresa_id,
                 codigo,
                 sucursal_id,
                 usuario_id,
@@ -389,14 +421,15 @@ def crear_venta_presencial(
                 metodo_pago,
                 observacion
             )
-            VALUES (%s, %s, %s, %s, 'PRESENCIAL', 'COMPLETADA', 0, 0, 0, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'PRESENCIAL', 'COMPLETADA', 0, 0, 0, %s, %s)
             RETURNING id;
             """,
-            (codigo, sucursal_id, usuario_id, cliente_id, metodo_pago, observacion),
+            (empresa_id, codigo, sucursal_id, usuario_id, cliente_id, metodo_pago, observacion),
         )
         venta_id = int(cursor.fetchone()["id"])
         for item in items:
             variante_id = int(item["producto_variante_id"])
+            _validar_variante_cursor(cursor, variante_id, empresa_id)
             cantidad = int(item["cantidad"])
             descuento = Decimal(str(item.get("descuento") or "0.00"))
             precio = _obtener_precio_final_variante_cursor(cursor, variante_id, sucursal_id)
@@ -416,6 +449,8 @@ def crear_venta_presencial(
                 observacion,
                 "VENTA",
                 venta_id,
+                None,
+                empresa_id,
             )
             cursor.execute(
                 """
@@ -438,12 +473,12 @@ def crear_venta_presencial(
             SET subtotal = %s,
                 descuento = %s,
                 total = %s
-            WHERE id = %s;
+            WHERE id = %s AND empresa_id = %s;
             """,
-            (subtotal_total, descuento_total, total, venta_id),
+            (subtotal_total, descuento_total, total, venta_id, empresa_id),
         )
         connection.commit()
-        venta = _obtener_venta_cursor(cursor, venta_id)
+        venta = _obtener_venta_cursor(cursor, venta_id, empresa_id)
         if venta is None:
             raise RuntimeError("No se pudo recuperar la venta creada.")
         return venta
@@ -455,12 +490,12 @@ def crear_venta_presencial(
         connection.close()
 
 
-def listar_ventas(sucursal_id: int | None = None) -> list[dict[str, object]]:
+def listar_ventas(empresa_id: int, sucursal_id: int | None = None) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        params: list[object] = []
-        where = "v.activo = TRUE AND v.tipo = 'PRESENCIAL'"
+        params: list[object] = [empresa_id]
+        where = "v.activo = TRUE AND v.tipo = 'PRESENCIAL' AND v.empresa_id = %s"
         if sucursal_id is not None:
             where += " AND v.sucursal_id = %s"
             params.append(sucursal_id)
@@ -475,7 +510,7 @@ def listar_ventas(sucursal_id: int | None = None) -> list[dict[str, object]]:
         )
         return [
             venta
-            for venta in (_obtener_venta_cursor(cursor, int(row["id"])) for row in cursor.fetchall())
+            for venta in (_obtener_venta_cursor(cursor, int(row["id"]), empresa_id) for row in cursor.fetchall())
             if venta is not None
         ]
     finally:
@@ -483,38 +518,51 @@ def listar_ventas(sucursal_id: int | None = None) -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_venta(venta_id: int) -> dict[str, object] | None:
+def obtener_venta(venta_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        return _obtener_venta_cursor(cursor, venta_id)
+        return _obtener_venta_cursor(cursor, venta_id, empresa_id)
     finally:
         cursor.close()
         connection.close()
 
 
-def _obtener_o_crear_inventario(cursor, sucursal_id: int, producto_variante_id: int) -> dict[str, object]:
+def _validar_sucursal_cursor(cursor, sucursal_id: int, empresa_id: int) -> None:
+    cursor.execute("SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE", (sucursal_id, empresa_id))
+    if cursor.fetchone() is None:
+        raise ValueError("Sucursal no encontrada en esta empresa.")
+
+
+def _validar_variante_cursor(cursor, producto_variante_id: int, empresa_id: int) -> None:
+    cursor.execute("SELECT 1 FROM producto_variante WHERE id = %s AND empresa_id = %s AND activo = TRUE", (producto_variante_id, empresa_id))
+    if cursor.fetchone() is None:
+        raise ValueError("Variante no encontrada en esta empresa.")
+
+
+def _obtener_o_crear_inventario(cursor, sucursal_id: int, producto_variante_id: int, empresa_id: int) -> dict[str, object]:
     cursor.execute(
         """
         SELECT id, stock_disponible, stock_reservado, stock_minimo
         FROM inventario_sucursal
         WHERE sucursal_id = %s
           AND producto_variante_id = %s
+          AND empresa_id = %s
           AND activo = TRUE
         FOR UPDATE;
         """,
-        (sucursal_id, producto_variante_id),
+        (sucursal_id, producto_variante_id, empresa_id),
     )
     row = cursor.fetchone()
     if row is not None:
         return dict(row)
     cursor.execute(
         """
-        INSERT INTO inventario_sucursal (sucursal_id, producto_variante_id, stock_disponible, stock_reservado, stock_minimo)
-        VALUES (%s, %s, 0, 0, 0)
+        INSERT INTO inventario_sucursal (empresa_id, sucursal_id, producto_variante_id, stock_disponible, stock_reservado, stock_minimo)
+        VALUES (%s, %s, %s, 0, 0, 0)
         RETURNING id, stock_disponible, stock_reservado, stock_minimo;
         """,
-        (sucursal_id, producto_variante_id),
+        (empresa_id, sucursal_id, producto_variante_id),
     )
     return dict(cursor.fetchone())
 
@@ -530,10 +578,23 @@ def _aplicar_movimiento(
     referencia_tipo: str | None,
     referencia_id: int | None,
     proveedor_id: int | None = None,
+    empresa_id: int | None = None,
 ) -> int:
     if tipo not in TIPOS_SUMA and tipo not in TIPOS_RESTA:
         raise ValueError("Tipo de movimiento invalido.")
-    inventario = _obtener_o_crear_inventario(cursor, sucursal_id, producto_variante_id)
+    if empresa_id is None:
+        cursor.execute("SELECT empresa_id FROM sucursal WHERE id = %s AND activo = TRUE", (sucursal_id,))
+        sucursal = cursor.fetchone()
+        if sucursal is None:
+            raise ValueError("Sucursal no encontrada.")
+        empresa_id = int(sucursal["empresa_id"])
+    _validar_sucursal_cursor(cursor, sucursal_id, empresa_id)
+    _validar_variante_cursor(cursor, producto_variante_id, empresa_id)
+    if proveedor_id is not None:
+        cursor.execute("SELECT 1 FROM proveedor WHERE id = %s AND empresa_id = %s AND activo = TRUE", (proveedor_id, empresa_id))
+        if cursor.fetchone() is None:
+            raise ValueError("Proveedor no encontrado en esta empresa.")
+    inventario = _obtener_o_crear_inventario(cursor, sucursal_id, producto_variante_id, empresa_id)
     stock_anterior = int(inventario["stock_disponible"])
     stock_reservado = int(inventario["stock_reservado"])
     if tipo in TIPOS_SUMA:
@@ -548,13 +609,14 @@ def _aplicar_movimiento(
         UPDATE inventario_sucursal
         SET stock_disponible = %s,
             fecha_actualizacion = CURRENT_TIMESTAMP
-        WHERE id = %s;
+        WHERE id = %s AND empresa_id = %s;
         """,
-        (stock_nuevo, inventario["id"]),
+        (stock_nuevo, inventario["id"], empresa_id),
     )
     cursor.execute(
         """
         INSERT INTO movimiento_inventario (
+            empresa_id,
             sucursal_id,
             producto_variante_id,
             usuario_id,
@@ -567,10 +629,11 @@ def _aplicar_movimiento(
             referencia_id,
             proveedor_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
         (
+            empresa_id,
             sucursal_id,
             producto_variante_id,
             usuario_id,
@@ -604,11 +667,11 @@ def _obtener_precio_vigente(cursor, producto_variante_id: int) -> Decimal | None
     return row["precio"] if row else None
 
 
-def _obtener_movimiento_cursor(cursor, movimiento_id: int) -> dict[str, object] | None:
-    cursor.execute("SELECT id FROM movimiento_inventario WHERE id = %s;", (movimiento_id,))
+def _obtener_movimiento_cursor(cursor, movimiento_id: int, empresa_id: int) -> dict[str, object] | None:
+    cursor.execute("SELECT id FROM movimiento_inventario WHERE id = %s AND empresa_id = %s;", (movimiento_id, empresa_id))
     if cursor.fetchone() is None:
         return None
-    rows = listar_movimientos({"id": movimiento_id})
+    rows = listar_movimientos({"id": movimiento_id}, empresa_id)
     if rows:
         return rows[0]
     cursor.execute(
@@ -641,16 +704,16 @@ def _obtener_movimiento_cursor(cursor, movimiento_id: int) -> dict[str, object] 
         JOIN talla t ON t.id = pv.talla_id
         JOIN color co ON co.id = pv.color_id
         LEFT JOIN proveedor pr ON pr.id = mi.proveedor_id
-        WHERE mi.id = %s
+        WHERE mi.id = %s AND mi.empresa_id = %s
         LIMIT 1;
         """,
-        (movimiento_id,),
+        (movimiento_id, empresa_id),
     )
     row = cursor.fetchone()
     return dict(row) if row else None
 
 
-def _obtener_transferencia_cursor(cursor, transferencia_id: int) -> dict[str, object] | None:
+def _obtener_transferencia_cursor(cursor, transferencia_id: int, empresa_id: int) -> dict[str, object] | None:
     cursor.execute(
         """
         SELECT
@@ -665,10 +728,10 @@ def _obtener_transferencia_cursor(cursor, transferencia_id: int) -> dict[str, ob
         FROM transferencia_stock ts
         JOIN sucursal so ON so.id = ts.sucursal_origen_id
         JOIN sucursal sd ON sd.id = ts.sucursal_destino_id
-        WHERE ts.id = %s AND ts.activo = TRUE
+        WHERE ts.id = %s AND ts.empresa_id = %s AND ts.activo = TRUE
         LIMIT 1;
         """,
-        (transferencia_id,),
+        (transferencia_id, empresa_id),
     )
     row = cursor.fetchone()
     if row is None:
@@ -689,16 +752,16 @@ def _obtener_transferencia_cursor(cursor, transferencia_id: int) -> dict[str, ob
         JOIN producto p ON p.id = pv.producto_id
         JOIN talla t ON t.id = pv.talla_id
         JOIN color co ON co.id = pv.color_id
-        WHERE td.transferencia_id = %s
+        WHERE td.transferencia_id = %s AND td.empresa_id = %s AND pv.empresa_id = %s
         ORDER BY td.id ASC;
         """,
-        (transferencia_id,),
+        (transferencia_id, empresa_id, empresa_id),
     )
     data["detalles"] = [dict(item) for item in cursor.fetchall()]
     return data
 
 
-def _obtener_venta_cursor(cursor, venta_id: int) -> dict[str, object] | None:
+def _obtener_venta_cursor(cursor, venta_id: int, empresa_id: int) -> dict[str, object] | None:
     cursor.execute(
         """
         SELECT
@@ -715,10 +778,10 @@ def _obtener_venta_cursor(cursor, venta_id: int) -> dict[str, object] | None:
             v.fecha_venta
         FROM venta v
         JOIN sucursal s ON s.id = v.sucursal_id
-        WHERE v.id = %s AND v.activo = TRUE
+        WHERE v.id = %s AND v.empresa_id = %s AND v.activo = TRUE
         LIMIT 1;
         """,
-        (venta_id,),
+        (venta_id, empresa_id),
     )
     row = cursor.fetchone()
     if row is None:
@@ -742,10 +805,10 @@ def _obtener_venta_cursor(cursor, venta_id: int) -> dict[str, object] | None:
         JOIN producto p ON p.id = pv.producto_id
         JOIN talla t ON t.id = pv.talla_id
         JOIN color co ON co.id = pv.color_id
-        WHERE vd.venta_id = %s
+        WHERE vd.venta_id = %s AND vd.empresa_id = %s AND pv.empresa_id = %s
         ORDER BY vd.id ASC;
         """,
-        (venta_id,),
+        (venta_id, empresa_id, empresa_id),
     )
     data["detalles"] = [dict(item) for item in cursor.fetchall()]
     return data

@@ -1,5 +1,7 @@
 from fastapi import HTTPException, status
 
+from app.core.contexto_empresa import exigir_empresa_id
+
 from app.modules.reservas.repositories.carrito_repository import (
     actualizar_item_carrito,
     agregar_item_carrito,
@@ -80,7 +82,8 @@ def vaciar(usuario_actual: dict[str, object]) -> CarritoResponse:
 
 def _obtener_cliente_id(usuario_actual: dict[str, object]) -> int:
     usuario_id = int(usuario_actual["id"])
-    cliente_id = obtener_cliente_id_por_usuario(usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    cliente_id = obtener_cliente_id_por_usuario(usuario_id, empresa_id)
 
     if cliente_id is None:
         raise HTTPException(

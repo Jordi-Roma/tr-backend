@@ -1,6 +1,8 @@
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
+from app.core.plan_empresa import bloquear_empresa_y_obtener_limite
+from fastapi import HTTPException
 
 
 def listar_ciudades() -> list[dict[str, object]]:
@@ -219,7 +221,7 @@ def ciudad_tiene_sucursales_activas(ciudad_id: int) -> bool:
         connection.close()
 
 
-def listar_sucursales() -> list[dict[str, object]]:
+def listar_sucursales(empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -240,10 +242,10 @@ def listar_sucursales() -> list[dict[str, object]]:
             FROM sucursal s
             INNER JOIN ciudad c
                 ON c.id = s.ciudad_id
-            WHERE s.activo = TRUE
+            WHERE s.activo = TRUE AND s.empresa_id = %s
                 AND c.activo = TRUE
             ORDER BY s.id ASC;
-            """
+            """, (empresa_id,)
         )
         return [dict(sucursal) for sucursal in cursor.fetchall()]
     finally:
@@ -251,7 +253,7 @@ def listar_sucursales() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_sucursal_por_id(sucursal_id: int) -> dict[str, object] | None:
+def obtener_sucursal_por_id(sucursal_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -272,10 +274,10 @@ def obtener_sucursal_por_id(sucursal_id: int) -> dict[str, object] | None:
             FROM sucursal s
             INNER JOIN ciudad c
                 ON c.id = s.ciudad_id
-            WHERE s.id = %s
+            WHERE s.id = %s AND s.empresa_id = %s
             LIMIT 1;
             """,
-            (sucursal_id,),
+            (sucursal_id, empresa_id),
         )
         sucursal = cursor.fetchone()
 
@@ -296,20 +298,27 @@ def crear_sucursal(
     latitud,
     longitud,
     usuario_id: int,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "sucursales")
+        cursor.execute("SELECT count(*) AS total FROM sucursal WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
+        if limite is not None and int(cursor.fetchone()["total"]) >= limite:
+            raise HTTPException(status_code=403, detail="Se alcanzo el limite de sucursales del plan.")
         cursor.execute(
             """
-            INSERT INTO sucursal (ciudad_id, nombre, direccion, telefono, latitud, longitud)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO sucursal (ciudad_id, nombre, direccion, telefono, latitud, longitud, empresa_id)
+            SELECT c.id, %s, %s, %s, %s, %s, %s FROM ciudad c WHERE c.id = %s AND c.activo = TRUE
             RETURNING id, ciudad_id, nombre, direccion, telefono, latitud, longitud, activo;
             """,
-            (ciudad_id, nombre, direccion, telefono, latitud, longitud),
+            (nombre, direccion, telefono, latitud, longitud, empresa_id, ciudad_id),
         )
         sucursal = cursor.fetchone()
+        if sucursal is None:
+            raise ValueError("La ciudad no existe o esta inactiva.")
 
         registrar_bitacora_con_cursor(
             cursor,
@@ -319,7 +328,7 @@ def crear_sucursal(
         )
 
         connection.commit()
-        return obtener_sucursal_por_id(int(sucursal["id"]))
+        return obtener_sucursal_por_id(int(sucursal["id"]), empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -337,6 +346,7 @@ def actualizar_sucursal(
     latitud,
     longitud,
     usuario_id: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -351,11 +361,12 @@ def actualizar_sucursal(
                 telefono = %s,
                 latitud = %s,
                 longitud = %s
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE
+                AND EXISTS (SELECT 1 FROM ciudad WHERE id = %s AND activo = TRUE)
             RETURNING id;
             """,
-            (ciudad_id, nombre, direccion, telefono, latitud, longitud, sucursal_id),
+            (ciudad_id, nombre, direccion, telefono, latitud, longitud, sucursal_id, empresa_id, ciudad_id),
         )
         sucursal = cursor.fetchone()
 
@@ -371,7 +382,7 @@ def actualizar_sucursal(
         )
 
         connection.commit()
-        return obtener_sucursal_por_id(sucursal_id)
+        return obtener_sucursal_por_id(sucursal_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -380,7 +391,7 @@ def actualizar_sucursal(
         connection.close()
 
 
-def desactivar_sucursal(sucursal_id: int, usuario_id: int) -> bool:
+def desactivar_sucursal(sucursal_id: int, usuario_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -389,10 +400,10 @@ def desactivar_sucursal(sucursal_id: int, usuario_id: int) -> bool:
             """
             UPDATE sucursal
             SET activo = FALSE
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE;
             """,
-            (sucursal_id,),
+            (sucursal_id, empresa_id),
         )
         desactivada = cursor.rowcount > 0
 
@@ -416,18 +427,22 @@ def desactivar_sucursal(sucursal_id: int, usuario_id: int) -> bool:
         connection.close()
 
 
-def activar_sucursal(sucursal_id: int, usuario_id: int) -> bool:
+def activar_sucursal(sucursal_id: int, usuario_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
+        limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "sucursales")
+        cursor.execute("SELECT count(*) FROM sucursal WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
+        if limite is not None and int(cursor.fetchone()[0]) >= limite:
+            raise HTTPException(status_code=403, detail="Se alcanzo el limite de sucursales del plan.")
         cursor.execute(
             """
             UPDATE sucursal
             SET activo = TRUE
-            WHERE id = %s;
+            WHERE id = %s AND empresa_id = %s AND activo = FALSE;
             """,
-            (sucursal_id,),
+            (sucursal_id, empresa_id),
         )
         activada = cursor.rowcount > 0
 

@@ -95,9 +95,29 @@ def iniciar_sesion(
         raise HTTPException(status_code=401, detail="Credenciales incorrectas.")
 
     roles = [str(rol) for rol in usuario["roles"]]
+    empresa_id = int(usuario["empresa_id"]) if usuario["empresa_id"] is not None else None
+    empresa_codigo = str(usuario["empresa_codigo"]) if usuario["empresa_codigo"] is not None else None
+    if empresa_id is None:
+        acceso_correcto = "ADMIN_SAAS" in roles and request.empresa_codigo is None
+    else:
+        acceso_correcto = (
+            "ADMIN_SAAS" not in roles
+            and usuario["empresa_estado"] in {"ACTIVA", "SUSPENDIDA"}
+            and request.empresa_codigo == empresa_codigo
+        )
+    if not acceso_correcto:
+        registrar_bitacora_login(
+            usuario_id,
+            "INICIO_SESION_FALLIDO",
+            "FALLIDO",
+            "Empresa incorrecta o inactiva.",
+            direccion_ip=direccion_ip,
+            user_agent=user_agent,
+        )
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas.")
 
     reiniciar_intentos_login(usuario_id)
-    sesion = crear_sesion(usuario_id)
+    sesion = crear_sesion(usuario_id, empresa_id)
     access_token = crear_token_acceso(
         {
             "sub": str(usuario_id),
@@ -105,6 +125,8 @@ def iniciar_sesion(
             "username": str(usuario["username"]),
             "correo": str(usuario["correo"]),
             "roles": roles,
+            "empresa_id": empresa_id,
+            "empresa_codigo": empresa_codigo,
         }
     )
     registrar_bitacora_login(
@@ -125,6 +147,8 @@ def iniciar_sesion(
         username=str(usuario["username"]),
         correo=str(usuario["correo"]),
         roles=roles,
+        empresa_id=empresa_id,
+        empresa_codigo=empresa_codigo,
         mensaje="Inicio de sesion exitoso.",
     )
 

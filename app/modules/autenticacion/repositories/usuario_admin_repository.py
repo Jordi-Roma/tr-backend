@@ -1,3 +1,4 @@
+from app.core.plan_empresa import exigir_cupo_usuarios
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
@@ -13,18 +14,20 @@ def crear_usuario_con_rol(
     rol_nombre: str,
     telefono: str | None,
     usuario_id_admin: int,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        exigir_cupo_usuarios(cursor, empresa_id)
         cursor.execute(
             """
-            INSERT INTO usuario (nombre, apellido, username, correo, password_hash)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO usuario (nombre, apellido, username, correo, password_hash, empresa_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (nombre, apellido, username, correo, password_hash),
+            (nombre, apellido, username, correo, password_hash, empresa_id),
         )
         usuario = cursor.fetchone()
         if usuario is None:
@@ -41,10 +44,10 @@ def crear_usuario_con_rol(
         if rol_nombre == "CLIENTE":
             cursor.execute(
                 """
-                INSERT INTO cliente (usuario_id, telefono)
-                VALUES (%s, %s);
+                INSERT INTO cliente (usuario_id, telefono, empresa_id)
+                VALUES (%s, %s, %s);
                 """,
-                (usuario_id, telefono),
+                (usuario_id, telefono, empresa_id),
             )
         registrar_bitacora_con_cursor(
             cursor,
@@ -53,7 +56,7 @@ def crear_usuario_con_rol(
             f"Creacion de usuario id={usuario_id}.",
         )
         connection.commit()
-        resultado = obtener_usuario_admin_por_id(usuario_id)
+        resultado = obtener_usuario_admin_por_id(usuario_id, empresa_id)
         if resultado is None:
             raise ValueError("No se pudo recuperar el usuario creado.")
         return resultado
@@ -65,7 +68,7 @@ def crear_usuario_con_rol(
         connection.close()
 
 
-def listar_usuarios() -> list[dict[str, object]]:
+def listar_usuarios(empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -102,7 +105,7 @@ def listar_usuarios() -> list[dict[str, object]]:
             LEFT JOIN rol r
                 ON r.id = ur.rol_id
                 AND r.activo = TRUE
-            WHERE u.activo = TRUE
+            WHERE u.activo = TRUE AND u.empresa_id = %s
             GROUP BY
                 u.id,
                 u.nombre,
@@ -111,7 +114,8 @@ def listar_usuarios() -> list[dict[str, object]]:
                 u.correo,
                 u.activo
             ORDER BY u.id ASC;
-            """
+            """,
+            (empresa_id,),
         )
         return [dict(usuario) for usuario in cursor.fetchall()]
     finally:
@@ -119,7 +123,7 @@ def listar_usuarios() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_usuario_admin_por_id(usuario_id: int) -> dict[str, object] | None:
+def obtener_usuario_admin_por_id(usuario_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -156,7 +160,7 @@ def obtener_usuario_admin_por_id(usuario_id: int) -> dict[str, object] | None:
             LEFT JOIN rol r
                 ON r.id = ur.rol_id
                 AND r.activo = TRUE
-            WHERE u.id = %s
+            WHERE u.id = %s AND u.empresa_id = %s
             GROUP BY
                 u.id,
                 u.nombre,
@@ -166,7 +170,7 @@ def obtener_usuario_admin_por_id(usuario_id: int) -> dict[str, object] | None:
                 u.activo
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         usuario = cursor.fetchone()
 
@@ -236,6 +240,7 @@ def actualizar_usuario(
     username: str,
     correo: str,
     usuario_id_admin: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -249,10 +254,11 @@ def actualizar_usuario(
                 username = %s,
                 correo = %s
             WHERE id = %s
+                AND empresa_id = %s
                 AND activo = TRUE
             RETURNING id;
             """,
-            (nombre, apellido, username, correo, usuario_id),
+            (nombre, apellido, username, correo, usuario_id, empresa_id),
         )
         usuario = cursor.fetchone()
 
@@ -268,7 +274,7 @@ def actualizar_usuario(
         )
 
         connection.commit()
-        return obtener_usuario_admin_por_id(usuario_id)
+        return obtener_usuario_admin_por_id(usuario_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -277,7 +283,7 @@ def actualizar_usuario(
         connection.close()
 
 
-def desactivar_usuario(usuario_id: int, usuario_id_admin: int) -> bool:
+def desactivar_usuario(usuario_id: int, usuario_id_admin: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -287,9 +293,10 @@ def desactivar_usuario(usuario_id: int, usuario_id_admin: int) -> bool:
             UPDATE usuario
             SET activo = FALSE
             WHERE id = %s
+                AND empresa_id = %s
                 AND activo = TRUE;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         desactivado = cursor.rowcount > 0
 
@@ -313,18 +320,19 @@ def desactivar_usuario(usuario_id: int, usuario_id_admin: int) -> bool:
         connection.close()
 
 
-def activar_usuario(usuario_id: int, usuario_id_admin: int) -> bool:
+def activar_usuario(usuario_id: int, usuario_id_admin: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
 
     try:
+        exigir_cupo_usuarios(cursor, empresa_id, usuario_id)
         cursor.execute(
             """
             UPDATE usuario
             SET activo = TRUE
-            WHERE id = %s;
+            WHERE id = %s AND empresa_id = %s;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         activado = cursor.rowcount > 0
 
@@ -357,7 +365,7 @@ def obtener_rol_por_id(rol_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, activo
             FROM rol
-            WHERE id = %s
+            WHERE id = %s AND nombre <> 'ADMIN_SAAS'
             LIMIT 1;
             """,
             (rol_id,),
@@ -377,6 +385,7 @@ def asignar_rol_a_usuario(
     usuario_id: int,
     rol_id: int,
     usuario_id_admin: int,
+    empresa_id: int,
 ) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
@@ -387,18 +396,19 @@ def asignar_rol_a_usuario(
             UPDATE usuario_rol
             SET activo = TRUE
             WHERE usuario_id = %s
-                AND rol_id = %s;
+                AND rol_id = %s
+                AND EXISTS (SELECT 1 FROM usuario u WHERE u.id = usuario_rol.usuario_id AND u.empresa_id = %s);
             """,
-            (usuario_id, rol_id),
+            (usuario_id, rol_id, empresa_id),
         )
 
         if cursor.rowcount == 0:
             cursor.execute(
                 """
                 INSERT INTO usuario_rol (usuario_id, rol_id, activo)
-                VALUES (%s, %s, TRUE);
+                SELECT id, %s, TRUE FROM usuario WHERE id = %s AND empresa_id = %s;
                 """,
-                (usuario_id, rol_id),
+                (rol_id, usuario_id, empresa_id),
             )
 
         registrar_bitacora_con_cursor(
@@ -422,6 +432,7 @@ def desactivar_rol_de_usuario(
     usuario_id: int,
     rol_id: int,
     usuario_id_admin: int,
+    empresa_id: int,
 ) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
@@ -433,9 +444,10 @@ def desactivar_rol_de_usuario(
             SET activo = FALSE
             WHERE usuario_id = %s
                 AND rol_id = %s
+                AND EXISTS (SELECT 1 FROM usuario u WHERE u.id = usuario_rol.usuario_id AND u.empresa_id = %s)
                 AND activo = TRUE;
             """,
-            (usuario_id, rol_id),
+            (usuario_id, rol_id, empresa_id),
         )
         desactivado = cursor.rowcount > 0
 
@@ -463,6 +475,7 @@ def activar_rol_de_usuario(
     usuario_id: int,
     rol_id: int,
     usuario_id_admin: int,
+    empresa_id: int,
 ) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
@@ -473,18 +486,19 @@ def activar_rol_de_usuario(
             UPDATE usuario_rol
             SET activo = TRUE
             WHERE usuario_id = %s
-                AND rol_id = %s;
+                AND rol_id = %s
+                AND EXISTS (SELECT 1 FROM usuario u WHERE u.id = usuario_rol.usuario_id AND u.empresa_id = %s);
             """,
-            (usuario_id, rol_id),
+            (usuario_id, rol_id, empresa_id),
         )
 
         if cursor.rowcount == 0:
             cursor.execute(
                 """
                 INSERT INTO usuario_rol (usuario_id, rol_id, activo)
-                VALUES (%s, %s, TRUE);
+                SELECT id, %s, TRUE FROM usuario WHERE id = %s AND empresa_id = %s;
                 """,
-                (usuario_id, rol_id),
+                (rol_id, usuario_id, empresa_id),
             )
 
         registrar_bitacora_con_cursor(

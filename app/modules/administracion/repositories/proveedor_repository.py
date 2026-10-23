@@ -3,7 +3,7 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 
 
-def listar_proveedores() -> list[dict[str, object]]:
+def listar_proveedores(empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -27,10 +27,12 @@ def listar_proveedores() -> list[dict[str, object]]:
             FROM proveedor p
             LEFT JOIN proveedor_usuario pu
                 ON pu.proveedor_id = p.id
+                AND pu.empresa_id = p.empresa_id
                 AND pu.activo = TRUE
+            WHERE p.empresa_id = %s
             GROUP BY p.id
             ORDER BY p.nombre ASC;
-            """
+            """, (empresa_id,)
         )
         return [dict(proveedor) for proveedor in cursor.fetchall()]
     finally:
@@ -38,7 +40,7 @@ def listar_proveedores() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_proveedor_por_id(proveedor_id: int) -> dict[str, object] | None:
+def obtener_proveedor_por_id(proveedor_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -62,12 +64,13 @@ def obtener_proveedor_por_id(proveedor_id: int) -> dict[str, object] | None:
             FROM proveedor p
             LEFT JOIN proveedor_usuario pu
                 ON pu.proveedor_id = p.id
+                AND pu.empresa_id = p.empresa_id
                 AND pu.activo = TRUE
-            WHERE p.id = %s
+            WHERE p.id = %s AND p.empresa_id = %s
             GROUP BY p.id
             LIMIT 1;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         proveedor = cursor.fetchone()
 
@@ -80,7 +83,7 @@ def obtener_proveedor_por_id(proveedor_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_proveedor_por_nit(nit: str) -> dict[str, object] | None:
+def obtener_proveedor_por_nit(nit: str, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -89,10 +92,10 @@ def obtener_proveedor_por_nit(nit: str) -> dict[str, object] | None:
             """
             SELECT id, nit
             FROM proveedor
-            WHERE nit = %s
+            WHERE nit = %s AND empresa_id = %s
             LIMIT 1;
             """,
-            (nit,),
+            (nit, empresa_id),
         )
         proveedor = cursor.fetchone()
 
@@ -111,6 +114,7 @@ def crear_proveedor(
     telefono: str | None,
     correo: str | None,
     direccion: str | None,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -118,11 +122,11 @@ def crear_proveedor(
     try:
         cursor.execute(
             """
-            INSERT INTO proveedor (nombre, nit, telefono, correo, direccion)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO proveedor (nombre, nit, telefono, correo, direccion, empresa_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion, ARRAY[]::BIGINT[] AS usuarios_ids;
             """,
-            (nombre, nit, telefono, correo, direccion),
+            (nombre, nit, telefono, correo, direccion, empresa_id),
         )
         proveedor = cursor.fetchone()
         connection.commit()
@@ -141,6 +145,7 @@ def actualizar_proveedor(
     telefono: str | None,
     correo: str | None,
     direccion: str | None,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -153,16 +158,16 @@ def actualizar_proveedor(
                 telefono = %s,
                 correo = %s,
                 direccion = %s
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion,
                 ARRAY(
                     SELECT usuario_id
                     FROM proveedor_usuario
-                    WHERE proveedor_id = proveedor.id AND activo = TRUE
+                    WHERE proveedor_id = proveedor.id AND empresa_id = proveedor.empresa_id AND activo = TRUE
                     ORDER BY usuario_id
                 ) AS usuarios_ids;
             """,
-            (nombre, telefono, correo, direccion, proveedor_id),
+            (nombre, telefono, correo, direccion, proveedor_id, empresa_id),
         )
         proveedor = cursor.fetchone()
 
@@ -180,7 +185,7 @@ def actualizar_proveedor(
         connection.close()
 
 
-def desactivar_proveedor(proveedor_id: int) -> bool:
+def desactivar_proveedor(proveedor_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -189,11 +194,11 @@ def desactivar_proveedor(proveedor_id: int) -> bool:
             """
             UPDATE proveedor
             SET activo = FALSE
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE
             RETURNING id;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         proveedor = cursor.fetchone()
 
@@ -211,7 +216,7 @@ def desactivar_proveedor(proveedor_id: int) -> bool:
         connection.close()
 
 
-def activar_proveedor(proveedor_id: int) -> dict[str, object] | None:
+def activar_proveedor(proveedor_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -220,16 +225,16 @@ def activar_proveedor(proveedor_id: int) -> dict[str, object] | None:
             """
             UPDATE proveedor
             SET activo = TRUE
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion,
                 ARRAY(
                     SELECT usuario_id
                     FROM proveedor_usuario
-                    WHERE proveedor_id = proveedor.id AND activo = TRUE
+                    WHERE proveedor_id = proveedor.id AND empresa_id = proveedor.empresa_id AND activo = TRUE
                     ORDER BY usuario_id
                 ) AS usuarios_ids;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         proveedor = cursor.fetchone()
 
@@ -247,29 +252,29 @@ def activar_proveedor(proveedor_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def vincular_usuario_proveedor(proveedor_id: int, usuario_id: int) -> bool:
+def vincular_usuario_proveedor(proveedor_id: int, usuario_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cursor.execute("SELECT id FROM proveedor WHERE id = %s AND activo = TRUE;", (proveedor_id,))
+        cursor.execute("SELECT id FROM proveedor WHERE id = %s AND empresa_id = %s AND activo = TRUE;", (proveedor_id, empresa_id))
         if cursor.fetchone() is None:
             connection.rollback()
             return False
 
-        cursor.execute("SELECT id FROM usuario WHERE id = %s AND activo = TRUE;", (usuario_id,))
+        cursor.execute("SELECT id FROM usuario WHERE id = %s AND empresa_id = %s AND activo = TRUE;", (usuario_id, empresa_id))
         if cursor.fetchone() is None:
             connection.rollback()
             return False
 
         cursor.execute(
             """
-            INSERT INTO proveedor_usuario (proveedor_id, usuario_id, activo)
-            VALUES (%s, %s, TRUE)
+            INSERT INTO proveedor_usuario (proveedor_id, usuario_id, activo, empresa_id)
+            VALUES (%s, %s, TRUE, %s)
             ON CONFLICT (proveedor_id, usuario_id) DO UPDATE
-            SET activo = TRUE;
+            SET activo = TRUE WHERE proveedor_usuario.empresa_id = EXCLUDED.empresa_id;
             """,
-            (proveedor_id, usuario_id),
+            (proveedor_id, usuario_id, empresa_id),
         )
         connection.commit()
         return True
@@ -281,7 +286,7 @@ def vincular_usuario_proveedor(proveedor_id: int, usuario_id: int) -> bool:
         connection.close()
 
 
-def desvincular_usuario_proveedor(proveedor_id: int, usuario_id: int) -> bool:
+def desvincular_usuario_proveedor(proveedor_id: int, usuario_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -292,10 +297,11 @@ def desvincular_usuario_proveedor(proveedor_id: int, usuario_id: int) -> bool:
             SET activo = FALSE
             WHERE proveedor_id = %s
               AND usuario_id = %s
+              AND empresa_id = %s
               AND activo = TRUE
             RETURNING proveedor_id;
             """,
-            (proveedor_id, usuario_id),
+            (proveedor_id, usuario_id, empresa_id),
         )
         row = cursor.fetchone()
         if row is None:
@@ -311,7 +317,7 @@ def desvincular_usuario_proveedor(proveedor_id: int, usuario_id: int) -> bool:
         connection.close()
 
 
-def obtener_proveedor_por_usuario(usuario_id: int) -> dict[str, object] | None:
+def obtener_proveedor_por_usuario(usuario_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -319,14 +325,15 @@ def obtener_proveedor_por_usuario(usuario_id: int) -> dict[str, object] | None:
             """
             SELECT p.id, p.nombre, p.nit, p.telefono, p.correo, p.direccion, p.activo, p.fecha_creacion
             FROM proveedor_usuario pu
-            JOIN proveedor p ON p.id = pu.proveedor_id
+            JOIN proveedor p ON p.id = pu.proveedor_id AND p.empresa_id = pu.empresa_id
             WHERE pu.usuario_id = %s
+              AND pu.empresa_id = %s
               AND pu.activo = TRUE
               AND p.activo = TRUE
             ORDER BY p.id ASC
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         row = cursor.fetchone()
         return dict(row) if row else None
@@ -335,7 +342,7 @@ def obtener_proveedor_por_usuario(usuario_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def listar_productos_proveedor_panel(proveedor_id: int) -> list[dict[str, object]]:
+def listar_productos_proveedor_panel(proveedor_id: int, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -352,18 +359,19 @@ def listar_productos_proveedor_panel(proveedor_id: int) -> list[dict[str, object
                 p.activo,
                 COUNT(pv.id)::INT AS variantes
             FROM producto_proveedor pp
-            JOIN producto p ON p.id = pp.producto_id
-            JOIN categoria ca ON ca.id = p.categoria_id
-            LEFT JOIN marca m ON m.id = p.marca_id
+            JOIN producto p ON p.id = pp.producto_id AND p.empresa_id = pp.empresa_id
+            JOIN categoria ca ON ca.id = p.categoria_id AND ca.empresa_id = p.empresa_id
+            LEFT JOIN marca m ON m.id = p.marca_id AND m.empresa_id = p.empresa_id
             LEFT JOIN producto_variante pv
                 ON pv.producto_id = p.id
-                AND pv.activo = TRUE
+                AND pv.activo = TRUE AND pv.empresa_id = p.empresa_id
             WHERE pp.proveedor_id = %s
+              AND pp.empresa_id = %s
               AND pp.activo = TRUE
             GROUP BY p.id, ca.nombre, m.nombre, pp.costo_referencia
             ORDER BY p.nombre ASC;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:
@@ -371,7 +379,7 @@ def listar_productos_proveedor_panel(proveedor_id: int) -> list[dict[str, object
         connection.close()
 
 
-def listar_stock_proveedor_panel(proveedor_id: int) -> list[dict[str, object]]:
+def listar_stock_proveedor_panel(proveedor_id: int, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -393,22 +401,23 @@ def listar_stock_proveedor_panel(proveedor_id: int) -> list[dict[str, object]]:
                 inv.stock_minimo,
                 ((inv.stock_disponible - inv.stock_reservado) <= inv.stock_minimo) AS bajo_stock
             FROM producto_proveedor pp
-            JOIN producto p ON p.id = pp.producto_id
-            JOIN producto_variante pv ON pv.producto_id = p.id
-            JOIN talla t ON t.id = pv.talla_id
-            JOIN color co ON co.id = pv.color_id
+            JOIN producto p ON p.id = pp.producto_id AND p.empresa_id = pp.empresa_id
+            JOIN producto_variante pv ON pv.producto_id = p.id AND pv.empresa_id = p.empresa_id
+            JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = p.empresa_id
+            JOIN color co ON co.id = pv.color_id AND co.empresa_id = p.empresa_id
             JOIN inventario_sucursal inv
                 ON inv.producto_variante_id = pv.id
-                AND inv.activo = TRUE
-            JOIN sucursal s ON s.id = inv.sucursal_id
+                AND inv.activo = TRUE AND inv.empresa_id = p.empresa_id
+            JOIN sucursal s ON s.id = inv.sucursal_id AND s.empresa_id = p.empresa_id
             JOIN ciudad ci ON ci.id = s.ciudad_id
             WHERE pp.proveedor_id = %s
+              AND pp.empresa_id = %s
               AND pp.activo = TRUE
               AND p.activo = TRUE
               AND pv.activo = TRUE
             ORDER BY ci.nombre ASC, s.nombre ASC, p.nombre ASC, t.nombre ASC, co.nombre ASC;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:
@@ -416,7 +425,7 @@ def listar_stock_proveedor_panel(proveedor_id: int) -> list[dict[str, object]]:
         connection.close()
 
 
-def listar_entregas_proveedor_panel(proveedor_id: int) -> list[dict[str, object]]:
+def listar_entregas_proveedor_panel(proveedor_id: int, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -438,18 +447,19 @@ def listar_entregas_proveedor_panel(proveedor_id: int) -> list[dict[str, object]
                 mi.stock_nuevo,
                 mi.motivo
             FROM movimiento_inventario mi
-            JOIN producto_variante pv ON pv.id = mi.producto_variante_id
-            JOIN producto p ON p.id = pv.producto_id
-            JOIN talla t ON t.id = pv.talla_id
-            JOIN color co ON co.id = pv.color_id
-            JOIN sucursal s ON s.id = mi.sucursal_id
+            JOIN producto_variante pv ON pv.id = mi.producto_variante_id AND pv.empresa_id = mi.empresa_id
+            JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = mi.empresa_id
+            JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = mi.empresa_id
+            JOIN color co ON co.id = pv.color_id AND co.empresa_id = mi.empresa_id
+            JOIN sucursal s ON s.id = mi.sucursal_id AND s.empresa_id = mi.empresa_id
             JOIN ciudad ci ON ci.id = s.ciudad_id
             WHERE mi.proveedor_id = %s
+              AND mi.empresa_id = %s
               AND mi.tipo = 'ENTRADA'
               AND mi.activo = TRUE
             ORDER BY mi.fecha_movimiento DESC, mi.id DESC;
             """,
-            (proveedor_id,),
+            (proveedor_id, empresa_id),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:

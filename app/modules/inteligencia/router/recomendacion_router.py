@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import Field
 
+from app.core.contexto_empresa import exigir_empresa_id, exigir_empresa_publica
+from app.core.plan_empresa import exigir_funcion_empresa
 from app.modules.catalogo.schemas.catalogo_publico.catalogo_publico_response import CatalogoPrendaItemResponse
 from app.modules.catalogo.repositories.catalogo_publico_repository import obtener_prenda_catalogo
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
@@ -26,54 +28,71 @@ class PreferenciasIA(PreferenciasIAResponse):
 @router.get('/producto/{producto_id}', response_model=list[RecomendacionPrendaResponse])
 def recomendaciones_producto(producto_id: int, sucursal_id: int | None = Query(None, gt=0),
                              talla_id: int | None = Query(None, gt=0),
-                             limite: int = Query(6, ge=1, le=12)):
-    return recomendar_desde_producto(producto_id, sucursal_id, talla_id, limite)
+                             limite: int = Query(6, ge=1, le=12),
+                             empresa_id: int = Depends(exigir_empresa_publica)):
+    exigir_funcion_empresa(empresa_id, "recomendaciones", permitir_consulta=True)
+    return recomendar_desde_producto(producto_id, empresa_id, sucursal_id, talla_id, limite)
 
 
 @router.get('/para-mi', response_model=list[RecomendacionPrendaResponse])
 def recomendaciones_para_mi(limite: int = Query(8, ge=1, le=12), usuario: dict = Depends(obtener_usuario_actual)):
-    return recomendar_para_cliente(cliente_id_obligatorio(usuario), limite)
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones", permitir_consulta=True)
+    return recomendar_para_cliente(cliente_id_obligatorio(usuario), empresa_id, limite)
 
 
 @router.get('/preferencias', response_model=PreferenciasIA)
 def leer_preferencias(usuario: dict = Depends(obtener_usuario_actual)):
-    return repo.obtener_preferencias(cliente_id_obligatorio(usuario))
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones", permitir_consulta=True)
+    return repo.obtener_preferencias(cliente_id_obligatorio(usuario), empresa_id)
 
 
 @router.put('/preferencias', response_model=PreferenciasIA)
 def actualizar_preferencias(preferencias: PreferenciasIA, usuario: dict = Depends(obtener_usuario_actual)):
-    if any(id_ <= 0 for id_ in preferencias.categorias) or not repo.categorias_validas(preferencias.categorias):
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones")
+    if any(id_ <= 0 for id_ in preferencias.categorias) or not repo.categorias_validas(preferencias.categorias, empresa_id):
         raise HTTPException(status_code=422, detail='Categoría no válida.')
     return repo.guardar_preferencias(cliente_id_obligatorio(usuario),
-                                    sorted(set(preferencias.categorias)), preferencias.usar_historial)
+                                    sorted(set(preferencias.categorias)), preferencias.usar_historial,
+                                    empresa_id)
 
 
-def _favoritos_items(cliente_id: int) -> list[dict]:
-    return [item for producto_id in repo.listar_favoritos(cliente_id)
-            if (item := obtener_prenda_catalogo(producto_id)) is not None]
+def _favoritos_items(cliente_id: int, empresa_id: int) -> list[dict]:
+    return [item for producto_id in repo.listar_favoritos(cliente_id, empresa_id)
+            if (item := obtener_prenda_catalogo(producto_id, None, empresa_id)) is not None]
 
 
 @router.get('/favoritos', response_model=list[CatalogoPrendaItemResponse])
 def favoritos(usuario: dict = Depends(obtener_usuario_actual)):
-    return _favoritos_items(cliente_id_obligatorio(usuario))
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones", permitir_consulta=True)
+    return _favoritos_items(cliente_id_obligatorio(usuario), empresa_id)
 
 
 @router.put('/favoritos/{producto_id}', response_model=list[CatalogoPrendaItemResponse])
 def agregar_favorito(producto_id: int, usuario: dict = Depends(obtener_usuario_actual)):
     cliente_id = cliente_id_obligatorio(usuario)
-    repo.guardar_favorito(cliente_id, producto_id)
-    return _favoritos_items(cliente_id)
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones")
+    repo.guardar_favorito(cliente_id, producto_id, empresa_id)
+    return _favoritos_items(cliente_id, empresa_id)
 
 
 @router.delete('/favoritos/{producto_id}', response_model=list[CatalogoPrendaItemResponse])
 def eliminar_favorito(producto_id: int, usuario: dict = Depends(obtener_usuario_actual)):
     cliente_id = cliente_id_obligatorio(usuario)
-    repo.quitar_favorito(cliente_id, producto_id)
-    return _favoritos_items(cliente_id)
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones")
+    repo.quitar_favorito(cliente_id, producto_id, empresa_id)
+    return _favoritos_items(cliente_id, empresa_id)
 
 
 @router.post('/indexar')
 def indexar(usuario: dict = Depends(obtener_usuario_actual)):
     if 'ADMINISTRADOR' not in usuario.get('roles', []):
         raise HTTPException(status_code=403, detail='Solo administradores pueden indexar productos.')
-    return indexar_productos()
+    empresa_id = exigir_empresa_id(usuario)
+    exigir_funcion_empresa(empresa_id, "recomendaciones")
+    return indexar_productos(empresa_id)

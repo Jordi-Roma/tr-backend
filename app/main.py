@@ -5,6 +5,11 @@ from app.database.connection import get_connection
 from app.modules.administracion.router.ciudad_sucursal_router import (
     router as ciudad_sucursal_router,
 )
+from app.modules.administracion.router.empresa_publica_router import (
+    router as empresa_publica_router,
+)
+from app.modules.administracion.router.empresa_saas_router import router as empresa_saas_router
+from app.modules.administracion.router.respaldo_router import router as respaldo_router
 from app.modules.administracion.router.catalogo_router import (
     router as catalogo_router,
 )
@@ -75,6 +80,9 @@ app.include_router(password_reset_router)
 app.include_router(perfil_router)
 app.include_router(rol_permiso_router)
 app.include_router(usuario_admin_router)
+app.include_router(empresa_publica_router)
+app.include_router(empresa_saas_router)
+app.include_router(respaldo_router)
 app.include_router(ciudad_sucursal_router)
 app.include_router(empleado_router)
 app.include_router(proveedor_router)
@@ -100,28 +108,27 @@ app.include_router(asistente_router)
 from fastapi.staticfiles import StaticFiles
 import os
 os.makedirs("static/images", exist_ok=True)
+
+
 os.makedirs("static/tryon", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.on_event("startup")
-def run_db_migrations():
+def verificar_migracion_multitenant():
+    """No servir trafico nuevo sobre un esquema antiguo o parcialmente migrado."""
+    conn = get_connection()
     try:
-        conn = get_connection()
         cur = conn.cursor()
-        cur.execute("""
-            ALTER TABLE producto
-            ADD COLUMN IF NOT EXISTS tipo_prenda VARCHAR(20) NOT NULL DEFAULT 'SUPERIOR',
-            ADD COLUMN IF NOT EXISTS tipo_corte VARCHAR(30) NOT NULL DEFAULT 'REGULAR_FIT',
-            ADD COLUMN IF NOT EXISTS ancho_base_cm NUMERIC(6,2) NOT NULL DEFAULT 53.0,
-            ADD COLUMN IF NOT EXISTS largo_base_cm NUMERIC(6,2) NOT NULL DEFAULT 72.0,
-            ADD COLUMN IF NOT EXISTS modelo_3d_url VARCHAR(500) NULL;
-        """)
-        conn.commit()
+        cur.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = %s",
+            ("2026_10_23_multitenant_02",),
+        )
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migracion multitenant; ejecute init_db.py antes de iniciar la API.")
+        print("[Startup] Migracion multitenant verificada.")
+    finally:
         conn.close()
-        print("[Startup] Migraciones de base de datos verificadas con éxito.")
-    except Exception as e:
-        print("[Startup] Error al verificar migraciones:", e)
 
 
 @app.get("/api/v1/health")

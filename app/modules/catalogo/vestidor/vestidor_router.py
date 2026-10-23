@@ -6,8 +6,11 @@ import urllib.parse
 import uuid
 
 import aiohttp
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+
+from app.core.contexto_empresa import exigir_empresa_publica
+from app.core.plan_empresa import exigir_funcion_empresa
 
 from app.modules.catalogo.vestidor.schemas.vestidor_asset_schema import PrendaARResponse
 from app.modules.catalogo.vestidor.schemas.vestidor_sesion_schema import (
@@ -31,16 +34,18 @@ router = APIRouter(
     response_model=PrendaARResponse,
     summary="Obtener activos y dimensiones de prenda para vestidor virtual AR",
 )
-def get_prenda_vestidor(producto_id: int) -> PrendaARResponse:
-    return obtener_prenda_ar(producto_id)
+def get_prenda_vestidor(producto_id: int, empresa_id: int = Depends(exigir_empresa_publica)) -> PrendaARResponse:
+    exigir_funcion_empresa(empresa_id, "vestidor", permitir_consulta=True)
+    return obtener_prenda_ar(producto_id, empresa_id)
 
 
 @router.get(
     "/prendas-disponibles",
     summary="Listar prendas activas disponibles para el carrusel del vestidor",
 )
-def get_prendas_carrusel(limite: int = 30) -> list[dict[str, object]]:
-    return listar_prendas_vestidor(limite)
+def get_prendas_carrusel(limite: int = 30, empresa_id: int = Depends(exigir_empresa_publica)) -> list[dict[str, object]]:
+    exigir_funcion_empresa(empresa_id, "vestidor", permitir_consulta=True)
+    return listar_prendas_vestidor(limite, empresa_id)
 
 
 @router.post(
@@ -48,15 +53,17 @@ def get_prendas_carrusel(limite: int = 30) -> list[dict[str, object]]:
     response_model=SesionVestidorResponse,
     summary="Registrar trazabilidad de prueba virtual en vestidor",
 )
-def post_sesion_vestidor(request: CrearSesionVestidorRequest) -> SesionVestidorResponse:
-    return guardar_sesion_vestidor(request)
+def post_sesion_vestidor(request: CrearSesionVestidorRequest, empresa_id: int = Depends(exigir_empresa_publica)) -> SesionVestidorResponse:
+    exigir_funcion_empresa(empresa_id, "vestidor")
+    return guardar_sesion_vestidor(request, empresa_id)
 
 
 @router.get(
     "/config",
     summary="Configuración del motor de vestidor para la app móvil",
 )
-def get_vestidor_config() -> dict[str, str]:
+def get_vestidor_config(empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, str]:
+    exigir_funcion_empresa(empresa_id, "vestidor", permitir_consulta=True)
     return {
         "engine": "DECART_LUCY_VTON",
         "realtime_supported": "true",
@@ -101,15 +108,18 @@ async def _keep_decart_alive(session_id: str, ws: aiohttp.ClientWebSocketRespons
         print(f"[Decart WS Bridge] Limpieza de sesión {session_id} finalizada.")
 
 
-async def _obtener_imagen_prenda_b64(producto_id: int) -> tuple[str, str]:
+async def _obtener_imagen_prenda_b64(producto_id: int, empresa_id: int) -> tuple[str, str]:
     """Obtiene la imagen real del producto desde la base de datos o almacenamiento en Base64."""
     from app.modules.catalogo.vestidor.vestidor_repository import obtener_datos_prenda_vestidor
+
+    datos = obtener_datos_prenda_vestidor(producto_id, empresa_id)
+    if not datos or not datos.get("prenda"):
+        raise HTTPException(status_code=404, detail="Prenda no encontrada en esta empresa.")
 
     nombre_prenda = "Prenda"
     img_bytes = None
 
     try:
-        datos = obtener_datos_prenda_vestidor(producto_id)
         if datos and datos.get("prenda"):
             prenda = datos["prenda"]
             nombre_prenda = prenda.get("nombre") or "Prenda"
@@ -161,7 +171,8 @@ async def _obtener_imagen_prenda_b64(producto_id: int) -> tuple[str, str]:
     "/sesion-realtime",
     summary="Crear sesión WebRTC en vivo con Decart Lucy VTON 3.5 (WebSocket persistente)",
 )
-async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
+async def post_sesion_realtime(producto_id: int = 1, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
+    exigir_funcion_empresa(empresa_id, "vestidor")
     from app.modules.catalogo.vestidor.vestidor_ia_service import _get_decart_api_key
 
     api_key = _get_decart_api_key()
@@ -169,7 +180,7 @@ async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
         raise HTTPException(status_code=503, detail="DECART_API_KEY no configurada.")
     api_key = api_key.strip()
 
-    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id)
+    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id, empresa_id)
 
     url = f"wss://api3.decart.ai/v1/stream?api_key={urllib.parse.quote(api_key)}&model=lucy-vton-3.5&livekit_early_room_info=true"
 
@@ -195,6 +206,7 @@ async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
             "session": session,
             "task": task,
             "producto_id": producto_id,
+            "empresa_id": empresa_id,
         }
 
         return {
@@ -215,14 +227,17 @@ async def post_sesion_realtime(producto_id: int = 1) -> dict[str, object]:
     "/cambiar-prenda-realtime",
     summary="Cambiar prenda en la sesión WebRTC de Decart en vivo sin reiniciar la cámara",
 )
-async def post_cambiar_prenda_realtime(session_id: str, producto_id: int) -> dict[str, object]:
+async def post_cambiar_prenda_realtime(session_id: str, producto_id: int, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
+    exigir_funcion_empresa(empresa_id, "vestidor")
     print(f"[Cambiar Prenda] Buscando {session_id}. Sesiones activas: {list(ACTIVE_DECART_SESSIONS.keys())}")
     sess = ACTIVE_DECART_SESSIONS.get(session_id)
+    if sess and sess.get("empresa_id") != empresa_id:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada.")
     if not sess or not sess.get("ws") or sess["ws"].closed:
         print(f"[Cambiar Prenda] No activa o cerrada. sess={sess is not None}")
         return {"status": "reconnect_needed", "message": "Sesión expirada"}
 
-    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id)
+    img_b64, prompt = await _obtener_imagen_prenda_b64(producto_id, empresa_id)
 
     ws = sess["ws"]
     set_img_msg = {
@@ -246,7 +261,10 @@ async def post_cambiar_prenda_realtime(session_id: str, producto_id: int) -> dic
     "/pausar-realtime",
     summary="Pausar o cerrar sesión WebRTC de Decart para congelar consumo de créditos",
 )
-async def post_pausar_realtime(session_id: str) -> dict[str, str]:
+async def post_pausar_realtime(session_id: str, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, str]:
+    sess = ACTIVE_DECART_SESSIONS.get(session_id)
+    if sess and sess.get("empresa_id") != empresa_id:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada.")
     sess = ACTIVE_DECART_SESSIONS.pop(session_id, None)
     if sess:
         try:
@@ -269,7 +287,9 @@ async def post_pausar_realtime(session_id: str) -> dict[str, str]:
     response_class=HTMLResponse,
     summary="Visor interactivo WebRTC 30 FPS para vestidor en vivo con Decart Lucy VTON",
 )
-def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
+def get_en_vivo_view(request: Request, producto_id: int = 1, empresa_id: int = Depends(exigir_empresa_publica)) -> HTMLResponse:
+    exigir_funcion_empresa(empresa_id, "vestidor", permitir_consulta=True)
+    empresa_codigo = request.headers["X-Empresa-Codigo"].strip().lower()
     html_content = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -314,6 +334,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
     let localStream = null;
     let currentRoom = null;
     let currentProductId = {producto_id};
+    const empresaHeaders = {{ 'X-Empresa-Codigo': {json.dumps(empresa_codigo)} }};
     let currentSessionId = null;
     let isPaused = false;
     let manualRot = 0;
@@ -463,6 +484,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
         const res = await fetch('/api/v1/catalogo/vestidor/sesion-realtime?producto_id=' + productId, {{
           method: 'POST',
           headers: {{
+            ...empresaHeaders,
             'Content-Type': 'application/json',
             'ngrok-skip-browser-warning': 'true'
           }}
@@ -614,7 +636,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
       if (currentSessionId) {{
         fetch('/api/v1/catalogo/vestidor/pausar-realtime?session_id=' + currentSessionId, {{
           method: 'POST',
-          headers: {{ 'ngrok-skip-browser-warning': 'true' }}
+          headers: {{ ...empresaHeaders, 'ngrok-skip-browser-warning': 'true' }}
         }}).catch(() => {{}});
       }}
       if (currentRoom) {{
@@ -643,6 +665,7 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
           const res = await fetch('/api/v1/catalogo/vestidor/cambiar-prenda-realtime?session_id=' + currentSessionId + '&producto_id=' + productId, {{
             method: 'POST',
             headers: {{
+              ...empresaHeaders,
               'Content-Type': 'application/json',
               'ngrok-skip-browser-warning': 'true'
             }}
@@ -672,7 +695,8 @@ def get_en_vivo_view(producto_id: int = 1) -> HTMLResponse:
     "/token-en-vivo",
     summary="Generar token efímero de sesión para streaming de vestidor en vivo con Decart AI",
 )
-def post_token_en_vivo(duracion_segundos: int = 300) -> dict[str, object]:
+def post_token_en_vivo(duracion_segundos: int = 300, empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
+    exigir_funcion_empresa(empresa_id, "vestidor")
     from app.modules.catalogo.vestidor.vestidor_ia_service import generar_token_webrtc_decart
 
     return generar_token_webrtc_decart(duracion_segundos=duracion_segundos)
@@ -680,7 +704,7 @@ def post_token_en_vivo(duracion_segundos: int = 300) -> dict[str, object]:
 
 try:
     import multipart  # noqa: F401
-    from fastapi import File, Form, Request, UploadFile
+    from fastapi import File, Form, Request, Response, UploadFile
 
     MULTIPART_DISPONIBLE = True
 except ModuleNotFoundError:
@@ -695,12 +719,16 @@ if MULTIPART_DISPONIBLE:
     )
     async def post_probar_ia(
         request: Request,
+        response: Response,
         imagen: UploadFile = File(...),
         producto_id: int = Form(...),
         talla: str | None = Form(None),
         color: str | None = Form(None),
         cliente_id: int | None = Form(None),
+        empresa_id: int = Depends(exigir_empresa_publica),
     ) -> dict[str, object]:
+        exigir_funcion_empresa(empresa_id, "vestidor")
+        response.headers["Cache-Control"] = "no-store, private"
         try:
             from app.modules.catalogo.vestidor.vestidor_ia_service import procesar_tryon_ia
         except ModuleNotFoundError as error:
@@ -725,6 +753,7 @@ if MULTIPART_DISPONIBLE:
             talla=talla,
             color=color,
             cliente_id=cliente_id,
+            empresa_id=empresa_id,
             host_base_url=host_base_url,
         )
 
@@ -734,7 +763,7 @@ else:
         "/probar-ia",
         summary="Procesar prueba virtual de prenda sobre foto de usuario con IA",
     )
-    async def post_probar_ia_no_disponible() -> dict[str, object]:
+    async def post_probar_ia_no_disponible(empresa_id: int = Depends(exigir_empresa_publica)) -> dict[str, object]:
         raise HTTPException(
             status_code=503,
             detail=(

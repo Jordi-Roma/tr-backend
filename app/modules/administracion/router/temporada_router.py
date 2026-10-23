@@ -34,7 +34,7 @@ def _ua(req: Request) -> str | None:
 def listar_temporadas_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[TemporadaResponse]:
-    return obtener_temporadas()
+    return obtener_temporadas(usuario_actual)
 
 
 @router.post("", response_model=TemporadaResponse)
@@ -51,7 +51,7 @@ def obtener_temporada_endpoint(
     temporada_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> TemporadaResponse:
-    return obtener_temporada(temporada_id)
+    return obtener_temporada(temporada_id, usuario_actual)
 
 
 @router.put("/{temporada_id}", response_model=TemporadaResponse)

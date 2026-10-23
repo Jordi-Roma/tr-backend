@@ -5,12 +5,12 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 
 
-def listar_prendas_catalogo(filtros: dict[str, object]) -> tuple[list[dict[str, object]], int]:
+def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tuple[list[dict[str, object]], int]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        where_sql, params = _construir_filtros(filtros)
+        where_sql, params = _construir_filtros(filtros, empresa_id)
         orden_sql = _construir_orden(str(filtros.get("orden") or "relevancia"))
         pagina = int(filtros.get("pagina") or 1)
         por_pagina = int(filtros.get("por_pagina") or 12)
@@ -20,18 +20,18 @@ def listar_prendas_catalogo(filtros: dict[str, object]) -> tuple[list[dict[str, 
             f"""
             SELECT COUNT(DISTINCT p.id) AS total
             FROM producto p
-            JOIN categoria c ON c.id = p.categoria_id
-            LEFT JOIN marca m ON m.id = p.marca_id
-            LEFT JOIN producto_variante v ON v.producto_id = p.id AND v.activo = TRUE
-            LEFT JOIN talla t ON t.id = v.talla_id
-            LEFT JOIN color co ON co.id = v.color_id
+            JOIN categoria c ON c.id = p.categoria_id AND c.empresa_id = p.empresa_id
+            LEFT JOIN marca m ON m.id = p.marca_id AND m.empresa_id = p.empresa_id
+            LEFT JOIN producto_variante v ON v.producto_id = p.id AND v.empresa_id = p.empresa_id AND v.activo = TRUE
+            LEFT JOIN talla t ON t.id = v.talla_id AND t.empresa_id = p.empresa_id
+            LEFT JOIN color co ON co.id = v.color_id AND co.empresa_id = p.empresa_id
             LEFT JOIN precio_producto pp
-                ON pp.producto_variante_id = v.id
+                ON pp.producto_variante_id = v.id AND pp.empresa_id = p.empresa_id
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
-            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.activo = TRUE
+            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
             LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id
-            LEFT JOIN coleccion col ON col.id = pc.coleccion_id
+            LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql};
             """,
             params,
@@ -42,18 +42,18 @@ def listar_prendas_catalogo(filtros: dict[str, object]) -> tuple[list[dict[str, 
             f"""
             SELECT p.id
             FROM producto p
-            JOIN categoria c ON c.id = p.categoria_id
-            LEFT JOIN marca m ON m.id = p.marca_id
-            LEFT JOIN producto_variante v ON v.producto_id = p.id AND v.activo = TRUE
-            LEFT JOIN talla t ON t.id = v.talla_id
-            LEFT JOIN color co ON co.id = v.color_id
+            JOIN categoria c ON c.id = p.categoria_id AND c.empresa_id = p.empresa_id
+            LEFT JOIN marca m ON m.id = p.marca_id AND m.empresa_id = p.empresa_id
+            LEFT JOIN producto_variante v ON v.producto_id = p.id AND v.empresa_id = p.empresa_id AND v.activo = TRUE
+            LEFT JOIN talla t ON t.id = v.talla_id AND t.empresa_id = p.empresa_id
+            LEFT JOIN color co ON co.id = v.color_id AND co.empresa_id = p.empresa_id
             LEFT JOIN precio_producto pp
-                ON pp.producto_variante_id = v.id
+                ON pp.producto_variante_id = v.id AND pp.empresa_id = p.empresa_id
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
-            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.activo = TRUE
+            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
             LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id
-            LEFT JOIN coleccion col ON col.id = pc.coleccion_id
+            LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql}
             GROUP BY p.id, p.nombre
             {orden_sql}
@@ -66,7 +66,7 @@ def listar_prendas_catalogo(filtros: dict[str, object]) -> tuple[list[dict[str, 
         return [
             prenda
             for prenda in (
-                _armar_prenda(cursor, producto_id, filtros.get("sucursal_id")) for producto_id in producto_ids
+                _armar_prenda(cursor, producto_id, empresa_id, filtros.get("sucursal_id")) for producto_id in producto_ids
             )
             if prenda is not None
         ], total
@@ -77,13 +77,14 @@ def listar_prendas_catalogo(filtros: dict[str, object]) -> tuple[list[dict[str, 
 
 def obtener_prenda_catalogo(
     producto_id: int,
-    sucursal_id: int | None = None,
+    sucursal_id: int | None,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        return _armar_prenda(cursor, producto_id, sucursal_id, incluir_detalle=True)
+        return _armar_prenda(cursor, producto_id, empresa_id, sucursal_id, incluir_detalle=True)
     finally:
         cursor.close()
         connection.close()
@@ -91,21 +92,22 @@ def obtener_prenda_catalogo(
 
 def obtener_disponibilidad_producto(
     producto_id: int,
-    talla_id: int | None = None,
-    color_id: int | None = None,
-    sucursal_id: int | None = None,
+    talla_id: int | None,
+    color_id: int | None,
+    sucursal_id: int | None,
+    empresa_id: int,
 ) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        return _obtener_disponibilidad(cursor, producto_id, talla_id, color_id, sucursal_id)
+        return _obtener_disponibilidad(cursor, producto_id, empresa_id, talla_id, color_id, sucursal_id)
     finally:
         cursor.close()
         connection.close()
 
 
-def listar_sucursales_catalogo() -> list[dict[str, object]]:
+def listar_sucursales_catalogo(empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -115,9 +117,10 @@ def listar_sucursales_catalogo() -> list[dict[str, object]]:
             SELECT s.id, s.nombre, ci.nombre AS ciudad, s.latitud, s.longitud
             FROM sucursal s
             JOIN ciudad ci ON ci.id = s.ciudad_id
-            WHERE s.activo = TRUE AND ci.activo = TRUE
+            WHERE s.activo = TRUE AND ci.activo = TRUE AND s.empresa_id = %s
             ORDER BY ci.nombre ASC, s.nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         return [dict(row) for row in cursor.fetchall()]
     finally:
@@ -125,7 +128,7 @@ def listar_sucursales_catalogo() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
+def obtener_filtros_catalogo(empresa_id: int) -> dict[str, list[dict[str, object]]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -134,9 +137,10 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             """
             SELECT id, nombre
             FROM categoria
-            WHERE activo = TRUE
+            WHERE activo = TRUE AND empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         categorias = [dict(row) for row in cursor.fetchall()]
 
@@ -144,9 +148,10 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             """
             SELECT id, nombre
             FROM talla
-            WHERE activo = TRUE
+            WHERE activo = TRUE AND empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         tallas = [dict(row) for row in cursor.fetchall()]
 
@@ -154,9 +159,10 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             """
             SELECT id, nombre, codigo_hex AS hex
             FROM color
-            WHERE activo = TRUE
+            WHERE activo = TRUE AND empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         colores = [dict(row) for row in cursor.fetchall()]
 
@@ -164,9 +170,10 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             """
             SELECT id, nombre
             FROM temporada
-            WHERE activo = TRUE
+            WHERE activo = TRUE AND empresa_id = %s
             ORDER BY anio DESC, nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         temporadas = [dict(row) for row in cursor.fetchall()]
 
@@ -174,9 +181,10 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             """
             SELECT id, nombre
             FROM coleccion
-            WHERE activo = TRUE
+            WHERE activo = TRUE AND empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         colecciones = [dict(row) for row in cursor.fetchall()]
 
@@ -186,7 +194,7 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
             "colores": colores,
             "temporadas": temporadas,
             "colecciones": colecciones,
-            "sucursales": listar_sucursales_catalogo(),
+            "sucursales": listar_sucursales_catalogo(empresa_id),
         }
     finally:
         cursor.close()
@@ -196,6 +204,7 @@ def obtener_filtros_catalogo() -> dict[str, list[dict[str, object]]]:
 def _armar_prenda(
     cursor,
     producto_id: int,
+    empresa_id: int,
     sucursal_id: object | None = None,
     incluir_detalle: bool = False,
 ) -> dict[str, object] | None:
@@ -212,21 +221,21 @@ def _armar_prenda(
                    LIMIT 1
                ) AS imagen_principal
         FROM producto p
-        JOIN categoria c ON c.id = p.categoria_id
-        LEFT JOIN marca m ON m.id = p.marca_id
-        WHERE p.id = %s AND p.activo = TRUE
+        JOIN categoria c ON c.id = p.categoria_id AND c.empresa_id = p.empresa_id
+        LEFT JOIN marca m ON m.id = p.marca_id AND m.empresa_id = p.empresa_id
+        WHERE p.id = %s AND p.empresa_id = %s AND p.activo = TRUE
         LIMIT 1;
         """,
-        (producto_id,),
+        (producto_id, empresa_id),
     )
     row = cursor.fetchone()
 
     if row is None:
         return None
 
-    variantes = _obtener_variantes(cursor, producto_id, sucursal_id)
-    disponibilidad = _obtener_disponibilidad(cursor, producto_id, sucursal_id=sucursal_id)
-    promocion = _obtener_promocion(cursor, producto_id, sucursal_id)
+    variantes = _obtener_variantes(cursor, producto_id, empresa_id, sucursal_id)
+    disponibilidad = _obtener_disponibilidad(cursor, producto_id, empresa_id, sucursal_id=sucursal_id)
+    promocion = _obtener_promocion(cursor, producto_id, empresa_id, sucursal_id)
     precios = [v["precio_vigente"] for v in variantes if v["precio_vigente"] is not None]
     precio_vigente = min(precios) if precios else None
     precio_final = _calcular_precio_final(precio_vigente, promocion)
@@ -245,15 +254,15 @@ def _armar_prenda(
     )
 
     if incluir_detalle:
-        item["colecciones"] = _obtener_colecciones(cursor, producto_id)
+        item["colecciones"] = _obtener_colecciones(cursor, producto_id, empresa_id)
         item["variantes"] = variantes
         item["disponibilidad"] = disponibilidad
 
     return item
 
 
-def _obtener_variantes(cursor, producto_id: int, sucursal_id: object | None = None) -> list[dict[str, object]]:
-    params: list[object] = [producto_id]
+def _obtener_variantes(cursor, producto_id: int, empresa_id: int, sucursal_id: object | None = None) -> list[dict[str, object]]:
+    params: list[object] = [producto_id, empresa_id]
     sucursal_filter = ""
 
     if sucursal_id is not None:
@@ -268,25 +277,25 @@ def _obtener_variantes(cursor, producto_id: int, sucursal_id: object | None = No
                COALESCE(SUM(GREATEST(inv.stock_disponible - inv.stock_reservado, 0)), 0)::INT AS stock_total,
                v.activo
         FROM producto_variante v
-        JOIN talla t ON t.id = v.talla_id
-        JOIN color co ON co.id = v.color_id
+        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id
+        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id
         LEFT JOIN precio_producto pp
-            ON pp.producto_variante_id = v.id
+            ON pp.producto_variante_id = v.id AND pp.empresa_id = v.empresa_id
             AND pp.activo = TRUE
             AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
         LEFT JOIN inventario_sucursal inv
-            ON inv.producto_variante_id = v.id
+            ON inv.producto_variante_id = v.id AND inv.empresa_id = v.empresa_id
             AND inv.activo = TRUE
             {sucursal_filter}
-        WHERE v.producto_id = %s AND v.activo = TRUE
+        WHERE v.producto_id = %s AND v.empresa_id = %s AND v.activo = TRUE
         GROUP BY v.id, v.sku, v.talla_id, t.nombre, v.color_id, co.nombre, co.codigo_hex, pp.precio, v.activo
         ORDER BY t.nombre ASC, co.nombre ASC, v.id ASC;
         """,
-        [*params[1:], params[0]] if sucursal_id is not None else params,
+        [sucursal_id, *params] if sucursal_id is not None else params,
     )
     rows = [dict(row) for row in cursor.fetchall()]
 
-    promocion = _obtener_promocion(cursor, producto_id, sucursal_id)
+    promocion = _obtener_promocion(cursor, producto_id, empresa_id, sucursal_id)
     for row in rows:
         row["precio_final"] = _calcular_precio_final(row["precio_vigente"], promocion)
         row["tiene_promocion"] = (
@@ -301,12 +310,13 @@ def _obtener_variantes(cursor, producto_id: int, sucursal_id: object | None = No
 def _obtener_disponibilidad(
     cursor,
     producto_id: int,
+    empresa_id: int,
     talla_id: int | None = None,
     color_id: int | None = None,
     sucursal_id: object | None = None,
 ) -> list[dict[str, object]]:
-    filtros = ["v.producto_id = %s", "v.activo = TRUE", "inv.activo = TRUE"]
-    params: list[object] = [producto_id]
+    filtros = ["v.producto_id = %s", "v.empresa_id = %s", "inv.empresa_id = v.empresa_id", "s.empresa_id = %s", "v.activo = TRUE", "inv.activo = TRUE"]
+    params: list[object] = [producto_id, empresa_id, empresa_id]
 
     if talla_id is not None:
         filtros.append("v.talla_id = %s")
@@ -328,11 +338,11 @@ def _obtener_disponibilidad(
                inv.stock_disponible, inv.stock_reservado,
                (inv.stock_disponible - inv.stock_reservado) > 0 AS disponible
         FROM inventario_sucursal inv
-        JOIN sucursal s ON s.id = inv.sucursal_id
+        JOIN sucursal s ON s.id = inv.sucursal_id AND s.empresa_id = inv.empresa_id
         JOIN ciudad ci ON ci.id = s.ciudad_id
         JOIN producto_variante v ON v.id = inv.producto_variante_id
-        JOIN talla t ON t.id = v.talla_id
-        JOIN color co ON co.id = v.color_id
+        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id
+        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id
         WHERE {' AND '.join(filtros)}
         ORDER BY ci.nombre ASC, s.nombre ASC, t.nombre ASC, co.nombre ASC;
         """,
@@ -341,13 +351,13 @@ def _obtener_disponibilidad(
     return [dict(row) for row in cursor.fetchall()]
 
 
-def _obtener_promocion(cursor, producto_id: int, sucursal_id: object | None = None) -> dict[str, object] | None:
+def _obtener_promocion(cursor, producto_id: int, empresa_id: int, sucursal_id: object | None = None) -> dict[str, object] | None:
     cursor.execute(
         """
         SELECT pr.tipo_descuento, pr.valor
         FROM promocion pr
         JOIN promocion_producto pp ON pp.promocion_id = pr.id
-        WHERE pp.producto_id = %s
+        WHERE pp.producto_id = %s AND pr.empresa_id = %s
           AND pr.activo = TRUE
           AND CURRENT_DATE BETWEEN pr.fecha_inicio AND pr.fecha_fin
           AND (
@@ -366,22 +376,22 @@ def _obtener_promocion(cursor, producto_id: int, sucursal_id: object | None = No
         ORDER BY pr.valor DESC, pr.id DESC
         LIMIT 1;
         """,
-        (producto_id, sucursal_id, sucursal_id),
+        (producto_id, empresa_id, sucursal_id, sucursal_id),
     )
     row = cursor.fetchone()
     return dict(row) if row is not None else None
 
 
-def _obtener_colecciones(cursor, producto_id: int) -> list[str]:
+def _obtener_colecciones(cursor, producto_id: int, empresa_id: int) -> list[str]:
     cursor.execute(
         """
         SELECT col.nombre
         FROM producto_coleccion pc
         JOIN coleccion col ON col.id = pc.coleccion_id
-        WHERE pc.producto_id = %s AND col.activo = TRUE
+        WHERE pc.producto_id = %s AND col.empresa_id = %s AND col.activo = TRUE
         ORDER BY col.nombre ASC;
         """,
-        (producto_id,),
+        (producto_id, empresa_id),
     )
     return [str(row["nombre"]) for row in cursor.fetchall()]
 
@@ -421,9 +431,9 @@ def _extraer_colores(variantes: list[dict[str, object]]) -> list[dict[str, objec
     return sorted(colores.values(), key=lambda item: str(item["nombre"]))
 
 
-def _construir_filtros(filtros: dict[str, object]) -> tuple[str, list[object]]:
-    condiciones = ["p.activo = TRUE"]
-    params: list[object] = []
+def _construir_filtros(filtros: dict[str, object], empresa_id: int) -> tuple[str, list[object]]:
+    condiciones = ["p.activo = TRUE", "p.empresa_id = %s"]
+    params: list[object] = [empresa_id]
 
     q = filtros.get("q")
     if q:

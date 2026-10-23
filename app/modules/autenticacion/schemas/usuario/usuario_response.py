@@ -8,4 +8,6 @@ class UsuarioRegistroResponse(BaseModel):
     username: str
     correo: str
     rol: str
+    empresa_id: int
+    empresa_codigo: str
     mensaje: str

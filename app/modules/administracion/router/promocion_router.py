@@ -22,7 +22,7 @@ router = APIRouter(
 def listar_promociones_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[PromocionResponse]:
-    return obtener_promociones()
+    return obtener_promociones(usuario_actual)
 
 
 @router.post("", response_model=PromocionResponse)
@@ -30,7 +30,7 @@ def crear_promocion_endpoint(
     request: PromocionRequest,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> PromocionResponse:
-    return registrar_promocion(request)
+    return registrar_promocion(request, usuario_actual)
 
 
 @router.get("/{promocion_id}", response_model=PromocionResponse)
@@ -38,7 +38,7 @@ def obtener_promocion_endpoint(
     promocion_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> PromocionResponse:
-    return obtener_promocion(promocion_id)
+    return obtener_promocion(promocion_id, usuario_actual)
 
 
 @router.put("/{promocion_id}", response_model=PromocionResponse)
@@ -47,7 +47,7 @@ def actualizar_promocion_endpoint(
     request: PromocionRequest,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> PromocionResponse:
-    return editar_promocion(promocion_id, request)
+    return editar_promocion(promocion_id, request, usuario_actual)
 
 
 @router.patch("/{promocion_id}/desactivar", response_model=PromocionResponse)
@@ -55,7 +55,7 @@ def desactivar_promocion_endpoint(
     promocion_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> PromocionResponse:
-    return desactivar_promocion(promocion_id)
+    return desactivar_promocion(promocion_id, usuario_actual)
 
 
 @router.patch("/{promocion_id}/activar", response_model=PromocionResponse)
@@ -63,4 +63,4 @@ def activar_promocion_endpoint(
     promocion_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> PromocionResponse:
-    return activar_promocion(promocion_id)
+    return activar_promocion(promocion_id, usuario_actual)

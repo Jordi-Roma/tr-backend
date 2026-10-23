@@ -9,12 +9,12 @@ from app.modules.catalogo.repositories.catalogo_publico_repository import (
 )
 
 
-def obtener_cliente_id_por_usuario(usuario_id: int) -> int | None:
+def obtener_cliente_id_por_usuario(usuario_id: int, empresa_id: int) -> int | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        return _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        return _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
     finally:
         cursor.close()
         connection.close()
@@ -47,6 +47,20 @@ def agregar_item_carrito(
 
     try:
         carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
+        cursor.execute(
+            """
+            SELECT 1
+            FROM cliente c
+            JOIN producto_variante v ON v.empresa_id = c.empresa_id AND v.id = %s AND v.activo = TRUE
+            JOIN producto p ON p.id = v.producto_id AND p.empresa_id = c.empresa_id AND p.activo = TRUE
+            LEFT JOIN sucursal s ON s.id = %s AND s.empresa_id = c.empresa_id AND s.activo = TRUE
+            WHERE c.id = %s AND c.activo = TRUE AND (%s IS NULL OR s.id IS NOT NULL)
+            LIMIT 1;
+            """,
+            (producto_variante_id, sucursal_id, cliente_id, sucursal_id),
+        )
+        if cursor.fetchone() is None:
+            raise ValueError("La prenda o sucursal no pertenece a tu empresa.")
         precio = _obtener_precio_final_variante_cursor(cursor, producto_variante_id, sucursal_id)
 
         if precio is None:
@@ -234,15 +248,17 @@ def vaciar_carrito(cliente_id: int) -> dict[str, object]:
         connection.close()
 
 
-def _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id: int) -> int | None:
+def _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id: int, empresa_id: int | None = None) -> int | None:
     cursor.execute(
         """
-        SELECT id
-        FROM cliente
-        WHERE usuario_id = %s AND activo = TRUE
+        SELECT c.id
+        FROM cliente c
+        JOIN usuario u ON u.id = c.usuario_id AND u.empresa_id = c.empresa_id
+        WHERE c.usuario_id = %s AND (%s IS NULL OR c.empresa_id = %s)
+          AND c.activo = TRUE AND u.activo = TRUE
         LIMIT 1;
         """,
-        (usuario_id,),
+        (usuario_id, empresa_id, empresa_id),
     )
     row = cursor.fetchone()
     return int(row["id"]) if row is not None else None
@@ -253,11 +269,11 @@ def _obtener_o_crear_carrito_cursor(cursor, cliente_id: int) -> int:
         """
         SELECT id
         FROM carrito
-        WHERE cliente_id = %s AND activo = TRUE
+        WHERE cliente_id = %s AND empresa_id = (SELECT empresa_id FROM cliente WHERE id = %s) AND activo = TRUE
         ORDER BY id DESC
         LIMIT 1;
         """,
-        (cliente_id,),
+        (cliente_id, cliente_id),
     )
     row = cursor.fetchone()
 
@@ -266,13 +282,16 @@ def _obtener_o_crear_carrito_cursor(cursor, cliente_id: int) -> int:
 
     cursor.execute(
         """
-        INSERT INTO carrito (cliente_id)
-        VALUES (%s)
+        INSERT INTO carrito (cliente_id, empresa_id)
+        SELECT id, empresa_id FROM cliente WHERE id = %s AND activo = TRUE
         RETURNING id;
         """,
         (cliente_id,),
     )
-    return int(cursor.fetchone()["id"])
+    creado = cursor.fetchone()
+    if creado is None:
+        raise ValueError("Cliente no encontrado en una empresa activa.")
+    return int(creado["id"])
 
 
 def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
@@ -282,6 +301,7 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
             ci.id,
             ci.producto_variante_id,
             p.id AS producto_id,
+            p.empresa_id,
             p.nombre AS producto,
             ca.nombre AS categoria,
             t.nombre AS talla,
@@ -293,19 +313,20 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
             pp.precio AS precio_base,
             COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0)::INT AS stock_disponible
         FROM carrito_item ci
-        JOIN producto_variante pv ON pv.id = ci.producto_variante_id
-        JOIN producto p ON p.id = pv.producto_id
-        JOIN categoria ca ON ca.id = p.categoria_id
-        JOIN talla t ON t.id = pv.talla_id
-        JOIN color co ON co.id = pv.color_id
-        LEFT JOIN sucursal s ON s.id = ci.sucursal_id
+        JOIN carrito cart ON cart.id = ci.carrito_id
+        JOIN producto_variante pv ON pv.id = ci.producto_variante_id AND pv.empresa_id = cart.empresa_id
+        JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = cart.empresa_id
+        JOIN categoria ca ON ca.id = p.categoria_id AND ca.empresa_id = cart.empresa_id
+        JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = cart.empresa_id
+        JOIN color co ON co.id = pv.color_id AND co.empresa_id = cart.empresa_id
+        LEFT JOIN sucursal s ON s.id = ci.sucursal_id AND s.empresa_id = cart.empresa_id
         LEFT JOIN ciudad cd ON cd.id = s.ciudad_id
         LEFT JOIN precio_producto pp
-            ON pp.producto_variante_id = pv.id
+            ON pp.producto_variante_id = pv.id AND pp.empresa_id = cart.empresa_id
             AND pp.activo = TRUE
             AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
         LEFT JOIN inventario_sucursal inv
-            ON inv.producto_variante_id = pv.id
+            ON inv.producto_variante_id = pv.id AND inv.empresa_id = cart.empresa_id
             AND inv.sucursal_id = ci.sucursal_id
             AND inv.activo = TRUE
         WHERE ci.carrito_id = %s AND ci.activo = TRUE
@@ -316,8 +337,9 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
     items = []
     for row in cursor.fetchall():
         item = dict(row)
+        empresa_id = int(item.pop("empresa_id"))
         precio_base = item.pop("precio_base", None)
-        promocion = _obtener_promocion(cursor, int(item["producto_id"]), item["sucursal_id"])
+        promocion = _obtener_promocion(cursor, int(item["producto_id"]), empresa_id, item["sucursal_id"])
         precio_final = _calcular_precio_final(precio_base, promocion) or Decimal("0.00")
         item["precio_unitario"] = precio_final
         item["subtotal"] = precio_final * int(item["cantidad"])
@@ -349,6 +371,7 @@ def _obtener_sucursales_disponibles_carrito_cursor(cursor, carrito_id: int) -> l
             s.latitud,
             s.longitud
         FROM sucursal s
+        JOIN carrito cart ON cart.id = %s AND cart.empresa_id = s.empresa_id
         JOIN ciudad c ON c.id = s.ciudad_id
         WHERE s.activo = TRUE
           AND c.activo = TRUE
@@ -359,12 +382,13 @@ def _obtener_sucursales_disponibles_carrito_cursor(cursor, carrito_id: int) -> l
               LEFT JOIN inventario_sucursal inv
                 ON inv.sucursal_id = s.id
                AND inv.producto_variante_id = r.producto_variante_id
+               AND inv.empresa_id = cart.empresa_id
                AND inv.activo = TRUE
               WHERE COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0) < r.cantidad
           )
         ORDER BY c.nombre ASC, s.nombre ASC;
         """,
-        (carrito_id,),
+        (carrito_id, carrito_id),
     )
     return [dict(row) for row in cursor.fetchall()]
 
@@ -395,10 +419,10 @@ def _obtener_precio_final_variante_cursor(
 ) -> Decimal | None:
     cursor.execute(
         """
-        SELECT pv.producto_id, pp.precio
+        SELECT pv.producto_id, pv.empresa_id, pp.precio
         FROM producto_variante pv
         JOIN precio_producto pp
-            ON pp.producto_variante_id = pv.id
+            ON pp.producto_variante_id = pv.id AND pp.empresa_id = pv.empresa_id
             AND pp.activo = TRUE
             AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
         WHERE pv.id = %s AND pv.activo = TRUE
@@ -411,7 +435,7 @@ def _obtener_precio_final_variante_cursor(
     if row is None:
         return None
 
-    promocion = _obtener_promocion(cursor, int(row["producto_id"]), sucursal_id)
+    promocion = _obtener_promocion(cursor, int(row["producto_id"]), int(row["empresa_id"]), sucursal_id)
     return _calcular_precio_final(row["precio"], promocion)
 
 
@@ -419,10 +443,11 @@ def _obtener_stock_disponible_cursor(cursor, producto_variante_id: int, sucursal
     cursor.execute(
         """
         SELECT GREATEST(stock_disponible - stock_reservado, 0)::INT AS stock
-        FROM inventario_sucursal
-        WHERE producto_variante_id = %s
+        FROM inventario_sucursal inv
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        WHERE inv.producto_variante_id = %s
           AND sucursal_id = %s
-          AND activo = TRUE
+          AND inv.activo = TRUE
         LIMIT 1;
         """,
         (producto_variante_id, sucursal_id),
@@ -435,9 +460,10 @@ def _obtener_stock_disponible_total_cursor(cursor, producto_variante_id: int) ->
     cursor.execute(
         """
         SELECT COALESCE(SUM(GREATEST(stock_disponible - stock_reservado, 0)), 0)::INT AS stock
-        FROM inventario_sucursal
-        WHERE producto_variante_id = %s
-          AND activo = TRUE;
+        FROM inventario_sucursal inv
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        WHERE inv.producto_variante_id = %s
+          AND inv.activo = TRUE;
         """,
         (producto_variante_id,),
     )

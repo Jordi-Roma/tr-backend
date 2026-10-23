@@ -1,5 +1,7 @@
 from fastapi import HTTPException, status
 
+from app.core.contexto_empresa import exigir_empresa_id
+
 from app.modules.reservas.repositories.reserva_repository import (
     cancelar_reserva_cliente,
     cambiar_estado_reserva,
@@ -33,6 +35,7 @@ def crear_desde_carrito(
     try:
         reserva = crear_reserva_desde_carrito(
             int(usuario_actual["id"]),
+            exigir_empresa_id(usuario_actual),
             request.sucursal_id,
             request.fecha_cita,
             request.observacion,
@@ -44,7 +47,7 @@ def crear_desde_carrito(
 
 
 def listar_mis_reservas(usuario_actual: dict[str, object]) -> list[ReservaResponse]:
-    return [ReservaResponse(**reserva) for reserva in listar_reservas_cliente(int(usuario_actual["id"]))]
+    return [ReservaResponse(**reserva) for reserva in listar_reservas_cliente(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))]
 
 
 def listar_todas(
@@ -57,11 +60,11 @@ def listar_todas(
         _validar_estado(estado)
 
     sucursal_filtrada = _obtener_sucursal_permitida(usuario_actual, sucursal_id)
-    return [ReservaResponse(**reserva) for reserva in listar_reservas_admin(estado, sucursal_filtrada)]
+    return [ReservaResponse(**reserva) for reserva in listar_reservas_admin(exigir_empresa_id(usuario_actual), estado, sucursal_filtrada)]
 
 
 def obtener_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:
-    reserva = obtener_reserva_cliente(int(usuario_actual["id"]), reserva_id)
+    reserva = obtener_reserva_cliente(int(usuario_actual["id"]), reserva_id, exigir_empresa_id(usuario_actual))
 
     if reserva is None:
         raise HTTPException(
@@ -74,7 +77,7 @@ def obtener_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> Re
 
 def obtener_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:
     sucursal_id = _obtener_sucursal_permitida(usuario_actual, None)
-    reserva = obtener_reserva_admin(reserva_id, sucursal_id)
+    reserva = obtener_reserva_admin(reserva_id, exigir_empresa_id(usuario_actual), sucursal_id)
 
     if reserva is None:
         raise HTTPException(
@@ -87,7 +90,7 @@ def obtener_reserva(usuario_actual: dict[str, object], reserva_id: int) -> Reser
 
 def cancelar_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:
     try:
-        reserva = cancelar_reserva_cliente(int(usuario_actual["id"]), reserva_id)
+        reserva = cancelar_reserva_cliente(int(usuario_actual["id"]), reserva_id, exigir_empresa_id(usuario_actual))
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -110,7 +113,7 @@ def cambiar_estado(
     sucursal_id = _obtener_sucursal_permitida(usuario_actual, None)
 
     try:
-        reserva = cambiar_estado_reserva(int(usuario_actual["id"]), reserva_id, estado, sucursal_id)
+        reserva = cambiar_estado_reserva(int(usuario_actual["id"]), reserva_id, estado, exigir_empresa_id(usuario_actual), sucursal_id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -134,6 +137,7 @@ def finalizar_como_venta(
         reserva = finalizar_reserva_como_venta(
             int(usuario_actual["id"]),
             reserva_id,
+            exigir_empresa_id(usuario_actual),
             sucursal_id,
             request.metodo_pago,
             request.observacion,
@@ -156,7 +160,7 @@ def pagar_anticipo_con_stripe(
     reserva_id: int,
 ) -> ReservaPagoResponse:
     try:
-        orden = crear_orden_anticipo_reserva(int(usuario_actual["id"]), reserva_id)
+        orden = crear_orden_anticipo_reserva(int(usuario_actual["id"]), reserva_id, exigir_empresa_id(usuario_actual))
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
@@ -172,6 +176,7 @@ def pagar_anticipo_con_stripe(
         str(session["id"]),
         str(session["url"]),
         session.get("payment_intent"),
+        exigir_empresa_id(usuario_actual),
     )
     reserva = obtener_mi_reserva(usuario_actual, reserva_id)
     return ReservaPagoResponse(
@@ -193,6 +198,7 @@ def finalizar_mi_reserva(
         resultado = finalizar_reserva_cliente(
             int(usuario_actual["id"]),
             reserva_id,
+            exigir_empresa_id(usuario_actual),
             request.metodo_pago,
             request.observacion,
             [item.model_dump() for item in request.items],
@@ -220,6 +226,7 @@ def finalizar_mi_reserva(
             str(session["id"]),
             str(session["url"]),
             session.get("payment_intent"),
+            exigir_empresa_id(usuario_actual),
         )
         return ReservaPagoResponse(
             reserva=reserva,
@@ -255,7 +262,7 @@ def _obtener_sucursal_permitida(
         return sucursal_id_solicitada
 
     if "ENCARGADO_SUCURSAL" in roles:
-        sucursal_id = obtener_sucursal_empleado_usuario(int(usuario_actual["id"]))
+        sucursal_id = obtener_sucursal_empleado_usuario(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))
 
         if sucursal_id is None:
             raise HTTPException(

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin
 from app.modules.autenticacion.schemas.usuario_admin.usuario_admin_request import (
     ActualizarUsuarioRequest,
@@ -40,7 +41,7 @@ def _ua(req: Request) -> str | None:
 def listar_usuarios_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[UsuarioAdminResponse]:
-    return obtener_usuarios()
+    return obtener_usuarios(exigir_empresa_id(usuario_actual))
 
 
 @router.post("/usuarios", response_model=UsuarioAdminResponse, status_code=201)
@@ -59,7 +60,7 @@ def obtener_usuario_endpoint(
     usuario_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> UsuarioAdminResponse:
-    return obtener_usuario(usuario_id)
+    return obtener_usuario(usuario_id, exigir_empresa_id(usuario_actual))
 
 
 @router.put("/usuarios/{usuario_id}", response_model=UsuarioAdminResponse)

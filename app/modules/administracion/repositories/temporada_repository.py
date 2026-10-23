@@ -1,7 +1,7 @@
 from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 
-def listar_temporadas() -> list[dict[str, object]]:
+def listar_temporadas(empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -9,15 +9,16 @@ def listar_temporadas() -> list[dict[str, object]]:
             """
             SELECT id, nombre, anio, activo, fecha_creacion
             FROM temporada
+            WHERE empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """, (empresa_id,)
         )
         return [dict(c) for c in cursor.fetchall()]
     finally:
         cursor.close()
         connection.close()
 
-def obtener_temporada_por_id(temporada_id: int) -> dict[str, object] | None:
+def obtener_temporada_por_id(temporada_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -25,10 +26,10 @@ def obtener_temporada_por_id(temporada_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, anio, activo, fecha_creacion
             FROM temporada
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             LIMIT 1;
             """,
-            (temporada_id,),
+            (temporada_id, empresa_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -36,7 +37,7 @@ def obtener_temporada_por_id(temporada_id: int) -> dict[str, object] | None:
         cursor.close()
         connection.close()
 
-def obtener_temporada_por_nombre_anio(nombre: str, anio: int) -> dict[str, object] | None:
+def obtener_temporada_por_nombre_anio(nombre: str, anio: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -44,10 +45,10 @@ def obtener_temporada_por_nombre_anio(nombre: str, anio: int) -> dict[str, objec
             """
             SELECT id
             FROM temporada
-            WHERE lower(nombre) = lower(%s) AND anio = %s
+            WHERE lower(nombre) = lower(%s) AND anio = %s AND empresa_id = %s
             LIMIT 1;
             """,
-            (nombre, anio),
+            (nombre, anio, empresa_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -55,17 +56,17 @@ def obtener_temporada_por_nombre_anio(nombre: str, anio: int) -> dict[str, objec
         cursor.close()
         connection.close()
 
-def crear_temporada(nombre: str, anio: int) -> dict[str, object]:
+def crear_temporada(nombre: str, anio: int, empresa_id: int) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute(
             """
-            INSERT INTO temporada (nombre, anio)
-            VALUES (%s, %s)
+            INSERT INTO temporada (nombre, anio, empresa_id)
+            VALUES (%s, %s, %s)
             RETURNING id, nombre, anio, activo, fecha_creacion;
             """,
-            (nombre, anio),
+            (nombre, anio, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
@@ -77,7 +78,7 @@ def crear_temporada(nombre: str, anio: int) -> dict[str, object]:
         cursor.close()
         connection.close()
 
-def actualizar_temporada(temporada_id: int, nombre: str, anio: int) -> dict[str, object]:
+def actualizar_temporada(temporada_id: int, nombre: str, anio: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -86,14 +87,14 @@ def actualizar_temporada(temporada_id: int, nombre: str, anio: int) -> dict[str,
             UPDATE temporada
             SET nombre = %s,
                 anio = %s
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             RETURNING id, nombre, anio, activo, fecha_creacion;
             """,
-            (nombre, anio, temporada_id),
+            (nombre, anio, temporada_id, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
-        return dict(row)
+        return dict(row) if row is not None else None
     except Exception:
         connection.rollback()
         raise
@@ -101,7 +102,7 @@ def actualizar_temporada(temporada_id: int, nombre: str, anio: int) -> dict[str,
         cursor.close()
         connection.close()
 
-def cambiar_estado_temporada(temporada_id: int, activo: bool) -> dict[str, object]:
+def cambiar_estado_temporada(temporada_id: int, activo: bool, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -109,14 +110,14 @@ def cambiar_estado_temporada(temporada_id: int, activo: bool) -> dict[str, objec
             """
             UPDATE temporada
             SET activo = %s
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             RETURNING id, nombre, anio, activo, fecha_creacion;
             """,
-            (activo, temporada_id),
+            (activo, temporada_id, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
-        return dict(row)
+        return dict(row) if row is not None else None
     except Exception:
         connection.rollback()
         raise

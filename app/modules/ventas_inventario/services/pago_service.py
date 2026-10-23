@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.ventas_inventario.repositories import pago_repository as repo
 from app.modules.ventas_inventario.schemas.pago.pago_request import (
     CrearCheckoutQrRequest,
@@ -22,20 +23,22 @@ from app.modules.ventas_inventario.services.delivery_service import preparar_del
 
 
 def crear_checkout_stripe_service(usuario_actual: dict[str, object], request: CrearCheckoutStripeRequest) -> CheckoutStripeResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     cliente_id = _cliente_id_obligatorio(usuario_actual)
     try:
         tipo_entrega = request.tipo_entrega.strip().upper()
         if tipo_entrega not in {"RECOJO_SUCURSAL", "DELIVERY"}:
             raise ValueError("Tipo de entrega no valido.")
-        delivery = preparar_delivery_para_checkout(request.delivery) if tipo_entrega == "DELIVERY" else None
+        delivery = preparar_delivery_para_checkout(request.delivery, empresa_id) if tipo_entrega == "DELIVERY" else None
         sucursal_id = int(delivery["sucursal_id"]) if delivery else request.sucursal_id
-        orden = repo.crear_orden_desde_carrito(cliente_id, int(usuario_actual["id"]), sucursal_id, delivery)
+        orden = repo.crear_orden_desde_carrito(cliente_id, int(usuario_actual["id"]), sucursal_id, delivery, empresa_id=empresa_id)
         session = _crear_session_stripe(orden)
         orden = repo.actualizar_checkout_stripe(
             int(orden["id"]),
             str(session["id"]),
             str(session["url"]),
             session.get("payment_intent"),
+            empresa_id,
         )
         return _checkout_response(orden)
     except ValueError as error:
@@ -46,12 +49,13 @@ def crear_checkout_qr_service(
     usuario_actual: dict[str, object],
     request: CrearCheckoutQrRequest,
 ) -> CheckoutQrResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     cliente_id = _cliente_id_obligatorio(usuario_actual)
     try:
         tipo_entrega = request.tipo_entrega.strip().upper()
         if tipo_entrega not in {"RECOJO_SUCURSAL", "DELIVERY"}:
             raise ValueError("Tipo de entrega no valido.")
-        delivery = preparar_delivery_para_checkout(request.delivery) if tipo_entrega == "DELIVERY" else None
+        delivery = preparar_delivery_para_checkout(request.delivery, empresa_id) if tipo_entrega == "DELIVERY" else None
         sucursal_id = int(delivery["sucursal_id"]) if delivery else request.sucursal_id
 
         qr_tx_id = f"QR-BO-{uuid4().hex[:10].upper()}"
@@ -63,6 +67,7 @@ def crear_checkout_qr_service(
             delivery=delivery,
             metodo="QR",
             proveedor="QR_SIMPLE",
+            empresa_id=empresa_id,
         )
 
         monto_str = f"{Decimal(str(orden['monto_total'])):.2f}"
@@ -83,6 +88,7 @@ def crear_checkout_qr_service(
             int(orden["id"]),
             qr_payload=qr_payload,
             session_id=qr_tx_id,
+            empresa_id=empresa_id,
         )
 
         return CheckoutQrResponse(
@@ -104,18 +110,19 @@ def crear_checkout_qr_service(
 
 
 def confirmar_pago_qr_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:
-    orden = repo.obtener_orden_pago(orden_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    orden = repo.obtener_orden_pago(orden_id, empresa_id)
     if orden is None:
         raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
     _validar_acceso_orden(usuario_actual, orden)
     try:
-        return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"])))
+        return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"]), empresa_id))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 def obtener_orden_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:
-    orden = repo.obtener_orden_pago(orden_id)
+    orden = repo.obtener_orden_pago(orden_id, exigir_empresa_id(usuario_actual))
     if orden is None:
         raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
     _validar_acceso_orden(usuario_actual, orden)
@@ -128,9 +135,11 @@ def listar_mis_pagos_service(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
 ) -> list[PagoHistorialItemResponse]:
+    empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso_historial(usuario_actual, "propios")
     cliente_id = _cliente_id_usuario(usuario_actual)
     pagos = repo.listar_historial_pagos(
+        empresa_id=empresa_id,
         cliente_id=cliente_id,
         estado=estado,
         fecha_desde=fecha_desde,
@@ -143,9 +152,10 @@ def obtener_mi_pago_service(
     usuario_actual: dict[str, object],
     orden_id: int,
 ) -> PagoHistorialDetalleResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso_historial(usuario_actual, "propios")
     cliente_id = _cliente_id_usuario(usuario_actual)
-    pago = repo.obtener_historial_pago_detalle(orden_id)
+    pago = repo.obtener_historial_pago_detalle(orden_id, empresa_id)
     if pago is None or int(pago["cliente_id"]) != cliente_id:
         raise HTTPException(status_code=404, detail="Pago no encontrado.")
     return _historial_detalle_response(pago)
@@ -161,9 +171,11 @@ def listar_pagos_service(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
 ) -> list[PagoHistorialItemResponse]:
+    empresa_id = exigir_empresa_id(usuario_actual)
     roles = _roles(usuario_actual)
     if _tiene_acceso_todos_pagos(usuario_actual):
         pagos = repo.listar_historial_pagos(
+            empresa_id=empresa_id,
             sucursal_id=sucursal_id,
             estado=estado,
             metodo=metodo,
@@ -179,6 +191,7 @@ def listar_pagos_service(
         if sucursal_id is not None and sucursal_id != sucursal_permitida:
             raise HTTPException(status_code=403, detail="Solo puede consultar pagos de su sucursal.")
         pagos = repo.listar_historial_pagos(
+            empresa_id=empresa_id,
             sucursal_id=sucursal_permitida,
             estado=estado,
             metodo=metodo,
@@ -196,7 +209,7 @@ def obtener_pago_service(
     usuario_actual: dict[str, object],
     orden_id: int,
 ) -> PagoHistorialDetalleResponse:
-    pago = repo.obtener_historial_pago_detalle(orden_id)
+    pago = repo.obtener_historial_pago_detalle(orden_id, exigir_empresa_id(usuario_actual))
     if pago is None:
         raise HTTPException(status_code=404, detail="Pago no encontrado.")
 
@@ -222,13 +235,12 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
     except ModuleNotFoundError as error:
         raise HTTPException(status_code=503, detail="La dependencia stripe no esta instalada.") from error
 
-    if endpoint_secret:
-        try:
-            event = stripe.Webhook.construct_event(payload, signature, endpoint_secret)
-        except Exception as error:
-            raise HTTPException(status_code=400, detail="Webhook de Stripe invalido.") from error
-    else:
-        event = await request.json()
+    if not endpoint_secret:
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET no esta configurado.")
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, endpoint_secret)
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Webhook de Stripe invalido.") from error
 
     tipo = event.get("type")
     data = event.get("data", {}).get("object", {})
@@ -236,12 +248,12 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
         session_id = data.get("id")
         if session_id:
             orden = repo.obtener_orden_por_session(session_id)
-            if orden:
-                repo.marcar_orden_pagada(int(orden["id"]))
+            if orden and data.get("payment_status") == "paid":
+                repo.marcar_orden_pagada(int(orden["id"]), empresa_id=int(orden["empresa_id"]))
     elif tipo == "checkout.session.expired":
         session_id = data.get("id")
         if session_id and (orden := repo.obtener_orden_por_session(session_id)):
-            repo.marcar_orden_no_pagada(int(orden["id"]), "EXPIRADO", "CANCELADA")
+            repo.marcar_orden_no_pagada(int(orden["id"]), "EXPIRADO", "CANCELADA", int(orden["empresa_id"]))
     elif tipo == "payment_intent.payment_failed":
         payment_intent = data.get("id")
         if payment_intent:
@@ -252,16 +264,19 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
         refund_estado = data.get("status") or ("failed" if tipo == "refund.failed" else "pending")
         metadata = data.get("metadata") or {}
         devolucion_id = metadata.get("devolucion_id")
+        empresa_id = metadata.get("empresa_id")
         fallo = data.get("failure_reason")
-        if refund_id and devolucion_id:
+        if refund_id and devolucion_id and empresa_id:
             from app.modules.ventas_inventario.services.devolucion_service import (
                 procesar_evento_refund_stripe,
             )
-
-            procesar_evento_refund_stripe(
-                str(refund_id), str(refund_estado), str(fallo) if fallo else None,
-                int(devolucion_id),
-            )
+            try:
+                procesar_evento_refund_stripe(
+                    str(refund_id), str(refund_estado), str(fallo) if fallo else None,
+                    int(devolucion_id), int(empresa_id),
+                )
+            except (TypeError, ValueError) as error:
+                raise HTTPException(status_code=400, detail="Metadatos de reembolso invalidos.") from error
         elif refund_id:
             from app.modules.ventas_inventario.repositories import devolucion_repository
 
@@ -272,14 +287,18 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
 
 
 def confirmar_pago_prueba_service(usuario_actual: dict[str, object], orden_id: int, aprobar: bool) -> OrdenPagoResponse:
-    orden = repo.obtener_orden_pago(orden_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
+    if not (secret_key.startswith("sk_test_") or secret_key == "MODO_PRUEBA"):
+        raise HTTPException(status_code=403, detail="La confirmacion de prueba solo esta disponible en modo de prueba.")
+    orden = repo.obtener_orden_pago(orden_id, empresa_id)
     if orden is None:
         raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
     _validar_acceso_orden(usuario_actual, orden)
     try:
         if aprobar:
-            return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"])))
-        return _orden_response(repo.marcar_orden_no_pagada(orden_id, "RECHAZADO", "RECHAZADA"))
+            return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"]), empresa_id))
+        return _orden_response(repo.marcar_orden_no_pagada(orden_id, "RECHAZADO", "RECHAZADA", empresa_id))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -289,6 +308,8 @@ def _crear_session_stripe(orden: dict) -> dict:
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:4200")
     if not secret_key:
         raise HTTPException(status_code=503, detail="STRIPE_SECRET_KEY no esta configurada en el backend.")
+    if not (secret_key.startswith("sk_test_") or secret_key == "MODO_PRUEBA"):
+        raise HTTPException(status_code=403, detail="Solo se permite Stripe en modo de prueba.")
 
     # Si se mantiene la clave placeholder o modo prueba, retornar sesión simulada
     if secret_key.startswith("sk_test_placeholder") or secret_key == "MODO_PRUEBA":
@@ -319,7 +340,7 @@ def _crear_session_stripe(orden: dict) -> dict:
             line_items=line_items,
             success_url=f"{frontend_url}/pago/resultado?orden_id={orden['id']}&estado=success",
             cancel_url=f"{frontend_url}/pago/cancelado?orden_id={orden['id']}&estado=cancel",
-            metadata={"orden_id": str(orden["id"]), "venta_id": str(orden["venta_id"])},
+            metadata={"orden_id": str(orden["id"]), "venta_id": str(orden["venta_id"]), "empresa_id": str(orden["empresa_id"])},
         )
         return {"id": session.id, "url": session.url, "payment_intent": session.payment_intent}
     except Exception as error:
@@ -393,6 +414,8 @@ def _cliente_id_usuario(usuario_actual: dict[str, object]) -> int:
 
 
 def _validar_acceso_orden(usuario_actual: dict[str, object], orden: dict) -> None:
+    if int(orden["empresa_id"]) != exigir_empresa_id(usuario_actual):
+        raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
     roles = {str(rol) for rol in usuario_actual.get("roles", [])}
     if "ADMINISTRADOR" in roles:
         return

@@ -61,7 +61,7 @@ def actualizar_stock_minimo_endpoint(
     request: ActualizarStockMinimoRequest,
     usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
 ) -> InventarioResponse:
-    return actualizar_stock_minimo_service(inventario_id, request)
+    return actualizar_stock_minimo_service(usuario_actual, inventario_id, request)
 
 
 @router.get("/api/v1/movimientos-inventario", response_model=list[MovimientoInventarioResponse])

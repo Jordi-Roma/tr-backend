@@ -9,9 +9,9 @@ def test_token_de_sesion_cerrada_es_rechazado(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         usuario_actual,
         "verificar_token_acceso",
-        lambda _token: {"sub": "7", "sid": "19"},
+        lambda _token: {"sub": "7", "sid": "19", "empresa_id": 10},
     )
-    monkeypatch.setattr(usuario_actual, "sesion_esta_activa", lambda _sid, _uid: False)
+    monkeypatch.setattr(usuario_actual, "sesion_esta_activa", lambda _sid, _uid, _empresa: False)
 
     with pytest.raises(HTTPException) as error:
         usuario_actual.obtener_usuario_actual(

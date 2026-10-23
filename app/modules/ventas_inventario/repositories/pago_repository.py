@@ -1,3 +1,4 @@
+from app.core.plan_empresa import exigir_operaciones_empresa
 from decimal import Decimal
 from uuid import uuid4
 
@@ -82,15 +83,31 @@ def crear_orden_desde_carrito(
     metodo: str = "TARJETA",
     proveedor: str = "STRIPE",
     checkout_url: str | None = None,
+    empresa_id: int = 0,
 ) -> dict:
+    if empresa_id <= 0:
+        raise ValueError("La empresa es obligatoria para crear una orden.")
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            carrito_id = _obtener_carrito_activo(cursor, cliente_id)
+            exigir_operaciones_empresa(empresa_id, cursor=cursor)
+            cursor.execute(
+                "SELECT 1 FROM cliente WHERE id = %s AND empresa_id = %s AND activo = TRUE",
+                (cliente_id, empresa_id),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Cliente no encontrado en la empresa.")
+            cursor.execute(
+                "SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE",
+                (sucursal_id, empresa_id),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Sucursal no encontrada en la empresa.")
+            carrito_id = _obtener_carrito_activo(cursor, cliente_id, empresa_id)
             if carrito_id is None:
                 raise ValueError("El carrito esta vacio.")
 
-            items = _obtener_items_carrito(cursor, carrito_id, sucursal_id)
+            items = _obtener_items_carrito(cursor, carrito_id, sucursal_id, empresa_id)
             if not items:
                 raise ValueError("El carrito esta vacio.")
 
@@ -119,6 +136,7 @@ def crear_orden_desde_carrito(
                 total,
                 costo_delivery,
                 "DELIVERY" if delivery else "RECOJO_SUCURSAL",
+                empresa_id,
             )
             for item in items:
                 cursor.execute(
@@ -145,6 +163,7 @@ def crear_orden_desde_carrito(
             cursor.execute(
                 """
                 INSERT INTO orden_pago (
+                    empresa_id,
                     venta_id,
                     cliente_id,
                     concepto,
@@ -155,10 +174,10 @@ def crear_orden_desde_carrito(
                     proveedor,
                     checkout_url
                 )
-                VALUES (%s, %s, 'COMPRA', %s, 'BOB', %s, 'PENDIENTE', %s, %s)
+                VALUES (%s, %s, %s, 'COMPRA', %s, 'BOB', %s, 'PENDIENTE', %s, %s)
                 RETURNING *;
                 """,
-                (venta_id, cliente_id, total, metodo, proveedor, checkout_url),
+                (empresa_id, venta_id, cliente_id, total, metodo, proveedor, checkout_url),
             )
             orden = dict(cursor.fetchone())
             if delivery:
@@ -176,6 +195,7 @@ def crear_orden_desde_carrito(
                     distancia_km=delivery["distancia_km"],
                     tiempo_estimado_min=int(delivery["tiempo_estimado_min"]),
                     costo_delivery=costo_delivery,
+                    empresa_id=empresa_id,
                 )
             connection.commit()
             orden["items"] = items
@@ -188,7 +208,7 @@ def crear_orden_desde_carrito(
         connection.close()
 
 
-def actualizar_checkout_stripe(orden_id: int, session_id: str, checkout_url: str, payment_intent_id: str | None) -> dict:
+def actualizar_checkout_stripe(orden_id: int, session_id: str, checkout_url: str, payment_intent_id: str | None, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -199,10 +219,10 @@ def actualizar_checkout_stripe(orden_id: int, session_id: str, checkout_url: str
                     proveedor_payment_intent_id = %s,
                     checkout_url = %s,
                     fecha_actualizacion = CURRENT_TIMESTAMP
-                WHERE id = %s
+                WHERE id = %s AND empresa_id = %s
                 RETURNING *;
                 """,
-                (session_id, payment_intent_id, checkout_url, orden_id),
+                (session_id, payment_intent_id, checkout_url, orden_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -216,7 +236,7 @@ def actualizar_checkout_stripe(orden_id: int, session_id: str, checkout_url: str
         connection.close()
 
 
-def actualizar_orden_qr(orden_id: int, qr_payload: str, session_id: str) -> dict:
+def actualizar_orden_qr(orden_id: int, qr_payload: str, session_id: str, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -226,10 +246,10 @@ def actualizar_orden_qr(orden_id: int, qr_payload: str, session_id: str) -> dict
                 SET proveedor_session_id = %s,
                     checkout_url = %s,
                     fecha_actualizacion = CURRENT_TIMESTAMP
-                WHERE id = %s
+                WHERE id = %s AND empresa_id = %s
                 RETURNING *;
                 """,
-                (session_id, qr_payload, orden_id),
+                (session_id, qr_payload, orden_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -243,7 +263,7 @@ def actualizar_orden_qr(orden_id: int, qr_payload: str, session_id: str) -> dict
         connection.close()
 
 
-def obtener_orden_pago(orden_id: int) -> dict | None:
+def obtener_orden_pago(orden_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -251,10 +271,10 @@ def obtener_orden_pago(orden_id: int) -> dict | None:
                 """
                 SELECT *
                 FROM orden_pago
-                WHERE id = %s AND activo = TRUE
+                WHERE id = %s AND empresa_id = %s AND activo = TRUE
                 LIMIT 1;
                 """,
-                (orden_id,),
+                (orden_id, empresa_id),
             )
             row = cursor.fetchone()
             return dict(row) if row else None
@@ -264,6 +284,7 @@ def obtener_orden_pago(orden_id: int) -> dict | None:
 
 def listar_historial_pagos(
     *,
+    empresa_id: int,
     cliente_id: int | None = None,
     sucursal_id: int | None = None,
     estado: str | None = None,
@@ -273,8 +294,8 @@ def listar_historial_pagos(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
 ) -> list[dict]:
-    where = ["op.activo = TRUE"]
-    params: list[object] = []
+    where = ["op.activo = TRUE", "op.empresa_id = %s", "v.empresa_id = op.empresa_id"]
+    params: list[object] = [empresa_id]
 
     if cliente_id is not None:
         where.append("op.cliente_id = %s")
@@ -355,7 +376,7 @@ def listar_historial_pagos(
         connection.close()
 
 
-def obtener_historial_pago_detalle(orden_id: int) -> dict | None:
+def obtener_historial_pago_detalle(orden_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -388,10 +409,12 @@ def obtener_historial_pago_detalle(orden_id: int) -> dict | None:
                 LEFT JOIN cliente c ON c.id = op.cliente_id
                 LEFT JOIN usuario u ON u.id = c.usuario_id
                 WHERE op.id = %s
+                  AND op.empresa_id = %s
+                  AND v.empresa_id = op.empresa_id
                   AND op.activo = TRUE
                 LIMIT 1;
                 """,
-                (orden_id,),
+                (orden_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -434,9 +457,11 @@ def obtener_orden_por_session(session_id: str) -> dict | None:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT *
-                FROM orden_pago
-                WHERE proveedor_session_id = %s AND activo = TRUE
+                SELECT op.*
+                FROM orden_pago op
+                JOIN venta v ON v.id = op.venta_id AND v.empresa_id = op.empresa_id
+                WHERE op.proveedor_session_id = %s AND op.activo = TRUE
+                  AND op.proveedor = 'STRIPE'
                 LIMIT 1;
                 """,
                 (session_id,),
@@ -447,7 +472,7 @@ def obtener_orden_por_session(session_id: str) -> dict | None:
         connection.close()
 
 
-def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None) -> dict:
+def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None, empresa_id: int | None = None) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -457,9 +482,11 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
                 FROM orden_pago op
                 JOIN venta v ON v.id = op.venta_id
                 WHERE op.id = %s AND op.activo = TRUE
+                  AND v.empresa_id = op.empresa_id
+                  AND (%s::bigint IS NULL OR op.empresa_id = %s)
                 FOR UPDATE;
                 """,
-                (orden_id,),
+                (orden_id, empresa_id, empresa_id),
             )
             orden = cursor.fetchone()
             if orden is None:
@@ -475,7 +502,7 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
                 connection.rollback()
                 from app.modules.reservas.repositories.reserva_repository import confirmar_pago_stripe_reserva
 
-                return confirmar_pago_stripe_reserva(orden_id, usuario_id_movimiento)
+                return confirmar_pago_stripe_reserva(orden_id, usuario_id_movimiento, int(orden["empresa_id"]))
 
             cursor.execute(
                 """
@@ -545,7 +572,7 @@ def marcar_orden_pagada(orden_id: int, usuario_id_movimiento: int | None = None)
         connection.close()
 
 
-def marcar_orden_no_pagada(orden_id: int, estado_orden: str, estado_venta: str) -> dict:
+def marcar_orden_no_pagada(orden_id: int, estado_orden: str, estado_venta: str, empresa_id: int | None = None) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -554,9 +581,10 @@ def marcar_orden_no_pagada(orden_id: int, estado_orden: str, estado_venta: str) 
                 SELECT venta_id, estado
                 FROM orden_pago
                 WHERE id = %s AND activo = TRUE
+                  AND (%s::bigint IS NULL OR empresa_id = %s)
                 FOR UPDATE;
                 """,
-                (orden_id,),
+                (orden_id, empresa_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -590,23 +618,23 @@ def marcar_orden_no_pagada(orden_id: int, estado_orden: str, estado_venta: str) 
         connection.close()
 
 
-def _obtener_carrito_activo(cursor, cliente_id: int) -> int | None:
+def _obtener_carrito_activo(cursor, cliente_id: int, empresa_id: int) -> int | None:
     cursor.execute(
         """
         SELECT c.id
         FROM carrito c
         JOIN carrito_item ci ON ci.carrito_id = c.id AND ci.activo = TRUE
-        WHERE c.cliente_id = %s AND c.activo = TRUE
+        WHERE c.cliente_id = %s AND c.empresa_id = %s AND c.activo = TRUE
         ORDER BY c.id DESC
         LIMIT 1;
         """,
-        (cliente_id,),
+        (cliente_id, empresa_id),
     )
     row = cursor.fetchone()
     return int(row["id"]) if row else None
 
 
-def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None) -> list[dict]:
+def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None, empresa_id: int) -> list[dict]:
     cursor.execute(
         """
         SELECT
@@ -629,10 +657,10 @@ def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None) -> 
             ON inv.producto_variante_id = pv.id
             AND inv.sucursal_id = %s
             AND inv.activo = TRUE
-        WHERE ci.carrito_id = %s AND ci.activo = TRUE
+        WHERE ci.carrito_id = %s AND ci.activo = TRUE AND p.empresa_id = %s
         ORDER BY ci.id ASC;
         """,
-        (sucursal_id, sucursal_id, carrito_id),
+        (sucursal_id, sucursal_id, carrito_id, empresa_id),
     )
     items = []
     for row in cursor.fetchall():
@@ -657,11 +685,13 @@ def _crear_venta_pendiente(
     total: Decimal,
     costo_delivery: Decimal,
     tipo_entrega: str,
+    empresa_id: int,
 ) -> int:
     codigo = f"WEB-{uuid4().hex[:10].upper()}"
     cursor.execute(
         """
         INSERT INTO venta (
+            empresa_id,
             codigo,
             sucursal_id,
             usuario_id,
@@ -676,10 +706,10 @@ def _crear_venta_pendiente(
             metodo_pago,
             observacion
         )
-        VALUES (%s, %s, %s, %s, 'WEB', 'PENDIENTE_PAGO', %s, 0, %s, %s, %s, 'STRIPE', 'Compra digital pendiente de pago')
+        VALUES (%s, %s, %s, %s, %s, 'WEB', 'PENDIENTE_PAGO', %s, 0, %s, %s, %s, 'STRIPE', 'Compra digital pendiente de pago')
         RETURNING id;
         """,
-        (codigo, sucursal_id, usuario_id, cliente_id, subtotal, total, tipo_entrega, costo_delivery),
+        (empresa_id, codigo, sucursal_id, usuario_id, cliente_id, subtotal, total, tipo_entrega, costo_delivery),
     )
     return int(cursor.fetchone()["id"])
 

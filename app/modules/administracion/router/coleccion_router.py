@@ -34,7 +34,7 @@ def _ua(req: Request) -> str | None:
 def listar_colecciones_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[ColeccionDetalleResponse]:
-    return obtener_colecciones()
+    return obtener_colecciones(usuario_actual)
 
 
 @router.post("", response_model=ColeccionDetalleResponse)
@@ -51,7 +51,7 @@ def obtener_coleccion_endpoint(
     coleccion_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> ColeccionDetalleResponse:
-    return obtener_coleccion(coleccion_id)
+    return obtener_coleccion(coleccion_id, usuario_actual)
 
 
 @router.put("/{coleccion_id}", response_model=ColeccionDetalleResponse)

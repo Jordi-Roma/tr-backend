@@ -10,11 +10,11 @@ CENTAVO = Decimal("0.01")
 ESTADOS_QUE_RESERVAN = ("SOLICITADA", "EN_REVISION", "APROBADA", "REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO", "REEMBOLSADA")
 
 
-def cliente_id_por_usuario(usuario_id: int) -> int | None:
+def cliente_id_por_usuario(usuario_id: int, empresa_id: int) -> int | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT id FROM cliente WHERE usuario_id = %s AND activo = TRUE LIMIT 1;", (usuario_id,))
+            cursor.execute("SELECT id FROM cliente WHERE usuario_id = %s AND empresa_id = %s AND activo = TRUE LIMIT 1;", (usuario_id, empresa_id))
             row = cursor.fetchone()
             return int(row["id"]) if row else None
     finally:
@@ -49,23 +49,23 @@ def sucursal_id_por_usuario(usuario_id: int) -> int | None:
         connection.close()
 
 
-def listar_ventas_elegibles(cliente_id: int, dias_plazo: int) -> list[dict]:
+def listar_ventas_elegibles(cliente_id: int, dias_plazo: int, empresa_id: int) -> list[dict]:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT v.id FROM venta v
-                   WHERE v.cliente_id = %s AND v.activo = TRUE AND v.estado = 'COMPLETADA'
+                   WHERE v.cliente_id = %s AND v.empresa_id = %s AND v.activo = TRUE AND v.estado = 'COMPLETADA'
                      AND v.fecha_venta >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
                      AND (v.tipo = 'PRESENCIAL' OR EXISTS (
-                         SELECT 1 FROM orden_pago op WHERE op.venta_id = v.id AND op.estado = 'PAGADO' AND op.activo = TRUE
+                         SELECT 1 FROM orden_pago op WHERE op.venta_id = v.id AND op.empresa_id = v.empresa_id AND op.estado = 'PAGADO' AND op.activo = TRUE
                      ))
                    ORDER BY v.fecha_venta DESC, v.id DESC;""",
-                (cliente_id, dias_plazo),
+                (cliente_id, empresa_id, dias_plazo),
             )
             ventas = []
             for row in cursor.fetchall():
-                venta = _obtener_venta_elegible_cursor(cursor, int(row["id"]))
+                venta = _obtener_venta_elegible_cursor(cursor, int(row["id"]), empresa_id)
                 if venta and any(item["cantidad_disponible"] > 0 for item in venta["detalles"]):
                     ventas.append(venta)
             return ventas
@@ -81,11 +81,12 @@ def crear_devolucion(
     observacion: str | None,
     items: list[dict],
     dias_plazo: int,
+    empresa_id: int,
 ) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT * FROM venta WHERE id = %s FOR UPDATE;", (venta_id,))
+            cursor.execute("SELECT * FROM venta WHERE id = %s AND empresa_id = %s FOR UPDATE;", (venta_id, empresa_id))
             venta = cursor.fetchone()
             if venta is None or int(venta["cliente_id"] or 0) != cliente_id or not venta["activo"]:
                 raise ValueError("No se encontró una compra elegible para este cliente.")
@@ -94,7 +95,7 @@ def crear_devolucion(
             if venta["fecha_venta"] < _fecha_limite_cursor(cursor, dias_plazo):
                 raise ValueError(f"El plazo para solicitar la devolución es de {dias_plazo} días desde la compra.")
             if venta["tipo"] != "PRESENCIAL":
-                cursor.execute("SELECT 1 FROM orden_pago WHERE venta_id = %s AND estado = 'PAGADO' AND activo = TRUE LIMIT 1;", (venta_id,))
+                cursor.execute("SELECT 1 FROM orden_pago WHERE venta_id = %s AND empresa_id = %s AND estado = 'PAGADO' AND activo = TRUE LIMIT 1;", (venta_id, empresa_id))
                 if cursor.fetchone() is None:
                     raise ValueError("La compra digital todavía no tiene un pago confirmado.")
 
@@ -119,11 +120,11 @@ def crear_devolucion(
             clave_idempotencia = f"devolucion-{uuid4().hex}"
             cursor.execute(
                 """INSERT INTO devolucion (
-                       codigo, venta_id, cliente_id, sucursal_id, solicitado_por_usuario_id,
+                       empresa_id, codigo, venta_id, cliente_id, sucursal_id, solicitado_por_usuario_id,
                        estado, motivo, observacion, monto_solicitado, clave_idempotencia
-                   ) VALUES (%s, %s, %s, %s, %s, 'SOLICITADA', %s, %s, %s, %s)
+                   ) VALUES (%s, %s, %s, %s, %s, %s, 'SOLICITADA', %s, %s, %s, %s)
                    RETURNING id;""",
-                (codigo, venta_id, cliente_id, venta["sucursal_id"], usuario_id, motivo.strip(), observacion, monto_solicitado, clave_idempotencia),
+                (empresa_id, codigo, venta_id, cliente_id, venta["sucursal_id"], usuario_id, motivo.strip(), observacion, monto_solicitado, clave_idempotencia),
             )
             devolucion_id = int(cursor.fetchone()["id"])
             for item in items:
@@ -131,7 +132,7 @@ def crear_devolucion(
                     "INSERT INTO devolucion_detalle (devolucion_id, venta_detalle_id, cantidad_solicitada) VALUES (%s, %s, %s);",
                     (devolucion_id, int(item["venta_detalle_id"]), int(item["cantidad"])),
                 )
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -141,33 +142,33 @@ def crear_devolucion(
         connection.close()
 
 
-def listar_devoluciones_propias(cliente_id: int, estado: str | None = None) -> list[dict]:
-    return _listar_devoluciones(cliente_id=cliente_id, estado=estado)
+def listar_devoluciones_propias(cliente_id: int, empresa_id: int, estado: str | None = None) -> list[dict]:
+    return _listar_devoluciones(empresa_id=empresa_id, cliente_id=cliente_id, estado=estado)
 
 
 def listar_devoluciones_sucursal(
-    *, sucursal_id: int | None, ver_todas: bool, estado: str | None = None,
+    *, empresa_id: int, sucursal_id: int | None, ver_todas: bool, estado: str | None = None,
     venta_id: int | None = None, cliente: str | None = None,
 ) -> list[dict]:
     return _listar_devoluciones(
-        sucursal_id=sucursal_id, ver_todas=ver_todas, estado=estado, venta_id=venta_id, cliente=cliente
+        empresa_id=empresa_id, sucursal_id=sucursal_id, ver_todas=ver_todas, estado=estado, venta_id=venta_id, cliente=cliente
     )
 
 
-def obtener_devolucion(devolucion_id: int) -> dict | None:
+def obtener_devolucion(devolucion_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            return _obtener_devolucion_cursor(cursor, devolucion_id)
+            return _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
     finally:
         connection.close()
 
 
-def revisar_devolucion(devolucion_id: int, usuario_id: int, aprobar: bool, observacion: str | None) -> dict:
+def revisar_devolucion(devolucion_id: int, usuario_id: int, aprobar: bool, observacion: str | None, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT estado FROM devolucion WHERE id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id,))
+            cursor.execute("SELECT estado FROM devolucion WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id, empresa_id))
             row = cursor.fetchone()
             if row is None:
                 raise LookupError("Devolución no encontrada.")
@@ -177,10 +178,10 @@ def revisar_devolucion(devolucion_id: int, usuario_id: int, aprobar: bool, obser
             cursor.execute(
                 """UPDATE devolucion SET estado = %s, revisado_por_usuario_id = %s,
                        observacion = COALESCE(%s, observacion), fecha_revision = CURRENT_TIMESTAMP
-                   WHERE id = %s;""",
-                (estado, usuario_id, observacion, devolucion_id),
+                   WHERE id = %s AND empresa_id = %s;""",
+                (estado, usuario_id, observacion, devolucion_id, empresa_id),
             )
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -190,11 +191,11 @@ def revisar_devolucion(devolucion_id: int, usuario_id: int, aprobar: bool, obser
         connection.close()
 
 
-def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict]) -> dict:
+def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT * FROM devolucion WHERE id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id,))
+            cursor.execute("SELECT * FROM devolucion WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id, empresa_id))
             devolucion = cursor.fetchone()
             if devolucion is None:
                 raise LookupError("Devolución no encontrada.")
@@ -272,7 +273,7 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict]) 
                    WHERE id = %s;""",
                 (estado, monto_aprobado, usuario_id, devolucion_id),
             )
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -282,20 +283,20 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict]) 
         connection.close()
 
 
-def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int) -> dict | None:
+def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT d.*, v.metodo_pago, op.id AS orden_pago_id,
                           op.proveedor, op.proveedor_payment_intent_id, op.estado AS estado_pago
-                   FROM devolucion d JOIN venta v ON v.id = d.venta_id
+                   FROM devolucion d JOIN venta v ON v.id = d.venta_id AND v.empresa_id = d.empresa_id
                    LEFT JOIN LATERAL (
-                       SELECT * FROM orden_pago WHERE venta_id = v.id AND activo = TRUE
+                       SELECT * FROM orden_pago WHERE venta_id = v.id AND empresa_id = d.empresa_id AND activo = TRUE
                        ORDER BY id DESC LIMIT 1
                    ) op ON TRUE
-                   WHERE d.id = %s AND d.activo = TRUE FOR UPDATE OF d;""",
-                (devolucion_id,),
+                   WHERE d.id = %s AND d.empresa_id = %s AND d.activo = TRUE FOR UPDATE OF d;""",
+                (devolucion_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -314,8 +315,8 @@ def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int) -> dict | Non
                        error_reembolso = NULL,
                        reembolso_iniciado_por_usuario_id = COALESCE(reembolso_iniciado_por_usuario_id, %s),
                        fecha_reembolso_solicitud = COALESCE(fecha_reembolso_solicitud, CURRENT_TIMESTAMP)
-                   WHERE id = %s;""",
-                (usuario_id, devolucion_id),
+                   WHERE id = %s AND empresa_id = %s;""",
+                (usuario_id, devolucion_id, empresa_id),
             )
             resultado = dict(row)
             resultado["estado"] = "REEMBOLSO_PENDIENTE"
@@ -328,19 +329,19 @@ def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int) -> dict | Non
         connection.close()
 
 
-def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str, referencia: str, observacion: str | None) -> dict:
+def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str, referencia: str, observacion: str | None, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT d.estado, d.monto_aprobado, op.proveedor
-                   FROM devolucion d JOIN venta v ON v.id = d.venta_id
+                   FROM devolucion d JOIN venta v ON v.id = d.venta_id AND v.empresa_id = d.empresa_id
                    LEFT JOIN LATERAL (
-                       SELECT proveedor FROM orden_pago WHERE venta_id = v.id AND activo = TRUE
+                       SELECT proveedor FROM orden_pago WHERE venta_id = v.id AND empresa_id = d.empresa_id AND activo = TRUE
                        ORDER BY id DESC LIMIT 1
                    ) op ON TRUE
-                   WHERE d.id = %s AND d.activo = TRUE FOR UPDATE OF d;""",
-                (devolucion_id,),
+                   WHERE d.id = %s AND d.empresa_id = %s AND d.activo = TRUE FOR UPDATE OF d;""",
+                (devolucion_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -358,10 +359,10 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
                        referencia_reembolso = %s, observacion = COALESCE(%s, observacion),
                        reembolsada_por_usuario_id = %s,
                        fecha_reembolso = CURRENT_TIMESTAMP, error_reembolso = NULL
-                   WHERE id = %s;""",
-                (metodo, referencia.strip(), observacion, usuario_id, devolucion_id),
+                   WHERE id = %s AND empresa_id = %s;""",
+                (metodo, referencia.strip(), observacion, usuario_id, devolucion_id, empresa_id),
             )
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -373,8 +374,10 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
 
 def actualizar_resultado_stripe(
     devolucion_id: int, refund_id: str, estado: str, error: str | None = None,
-    usuario_id: int | None = None,
+    usuario_id: int | None = None, empresa_id: int | None = None,
 ) -> dict | None:
+    if empresa_id is None:
+        raise ValueError("La empresa es obligatoria para conciliar un reembolso.")
     estado_normalizado = estado.lower()
     estado_devolucion = "REEMBOLSADA" if estado_normalizado == "succeeded" else "ERROR_REEMBOLSO" if estado_normalizado == "failed" else "REEMBOLSO_PENDIENTE"
     connection = get_connection()
@@ -387,14 +390,15 @@ def actualizar_resultado_stripe(
                    reembolsada_por_usuario_id = CASE WHEN %s = 'REEMBOLSADA'
                        THEN COALESCE(reembolsada_por_usuario_id, %s) ELSE reembolsada_por_usuario_id END,
                    error_reembolso = %s
-                   WHERE id = %s AND activo = TRUE AND estado <> 'REEMBOLSADA' RETURNING id;""",
+                   WHERE id = %s AND empresa_id = %s AND activo = TRUE AND estado <> 'REEMBOLSADA'
+                     AND (proveedor_refund_id IS NULL OR proveedor_refund_id = %s) RETURNING id;""",
                 (estado_devolucion, refund_id, estado_normalizado, estado_devolucion,
-                 estado_devolucion, usuario_id, error, devolucion_id),
+                 estado_devolucion, usuario_id, error, devolucion_id, empresa_id, refund_id),
             )
             if cursor.fetchone() is None:
                 connection.commit()
                 return None
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -408,29 +412,29 @@ def actualizar_resultado_stripe_por_refund(refund_id: str, estado: str, error: s
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT id FROM devolucion WHERE proveedor_refund_id = %s LIMIT 1;", (refund_id,))
+            cursor.execute("SELECT id, empresa_id FROM devolucion WHERE proveedor_refund_id = %s LIMIT 1;", (refund_id,))
             row = cursor.fetchone()
         if row:
-            actualizar_resultado_stripe(int(row[0]), refund_id, estado, error)
+            actualizar_resultado_stripe(int(row[0]), refund_id, estado, error, empresa_id=int(row[1]))
     finally:
         connection.close()
 
 
 def actualizar_resultado_stripe_por_devolucion(
     devolucion_id: int, refund_id: str, estado: str, error: str | None = None,
-    usuario_id: int | None = None,
+    usuario_id: int | None = None, empresa_id: int | None = None,
 ) -> None:
-    actualizar_resultado_stripe(devolucion_id, refund_id, estado, error, usuario_id)
+    actualizar_resultado_stripe(devolucion_id, refund_id, estado, error, usuario_id, empresa_id)
 
 
-def cancelar_devolucion(devolucion_id: int, cliente_id: int, usuario_id: int) -> dict:
+def cancelar_devolucion(devolucion_id: int, cliente_id: int, usuario_id: int, empresa_id: int) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """SELECT estado, cliente_id FROM devolucion
-                   WHERE id = %s AND activo = TRUE FOR UPDATE;""",
-                (devolucion_id,),
+                   WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;""",
+                (devolucion_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None or int(row["cliente_id"] or 0) != cliente_id:
@@ -439,10 +443,10 @@ def cancelar_devolucion(devolucion_id: int, cliente_id: int, usuario_id: int) ->
                 raise ValueError("Solo puedes cancelar una solicitud que aún no fue revisada.")
             cursor.execute(
                 """UPDATE devolucion SET estado = 'CANCELADA', cancelada_por_usuario_id = %s,
-                       fecha_cancelacion = CURRENT_TIMESTAMP WHERE id = %s;""",
-                (usuario_id, devolucion_id),
+                       fecha_cancelacion = CURRENT_TIMESTAMP WHERE id = %s AND empresa_id = %s;""",
+                (usuario_id, devolucion_id, empresa_id),
             )
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -452,19 +456,19 @@ def cancelar_devolucion(devolucion_id: int, cliente_id: int, usuario_id: int) ->
         connection.close()
 
 
-def marcar_error_reembolso(devolucion_id: int, mensaje: str) -> dict | None:
+def marcar_error_reembolso(devolucion_id: int, mensaje: str, empresa_id: int) -> dict | None:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """UPDATE devolucion SET estado = 'ERROR_REEMBOLSO', error_reembolso = %s
-                   WHERE id = %s AND estado = 'REEMBOLSO_PENDIENTE' RETURNING id;""",
-                (mensaje[:1000], devolucion_id),
+                   WHERE id = %s AND empresa_id = %s AND estado = 'REEMBOLSO_PENDIENTE' RETURNING id;""",
+                (mensaje[:1000], devolucion_id, empresa_id),
             )
             if cursor.fetchone() is None:
                 connection.commit()
                 return None
-            resultado = _obtener_devolucion_cursor(cursor, devolucion_id)
+            resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
     except Exception:
@@ -475,11 +479,11 @@ def marcar_error_reembolso(devolucion_id: int, mensaje: str) -> dict | None:
 
 
 def _listar_devoluciones(
-    *, cliente_id: int | None = None, sucursal_id: int | None = None, ver_todas: bool = False,
+    *, empresa_id: int, cliente_id: int | None = None, sucursal_id: int | None = None, ver_todas: bool = False,
     estado: str | None = None, venta_id: int | None = None, cliente: str | None = None,
 ) -> list[dict]:
-    condiciones = ["d.activo = TRUE"]
-    parametros: list[object] = []
+    condiciones = ["d.activo = TRUE", "d.empresa_id = %s"]
+    parametros: list[object] = [empresa_id]
     if cliente_id is not None:
         condiciones.append("d.cliente_id = %s")
         parametros.append(cliente_id)
@@ -501,28 +505,28 @@ def _listar_devoluciones(
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 f"""SELECT d.id FROM devolucion d
-                    LEFT JOIN cliente c ON c.id = d.cliente_id
-                    LEFT JOIN usuario u ON u.id = c.usuario_id
+                    LEFT JOIN cliente c ON c.id = d.cliente_id AND c.empresa_id = d.empresa_id
+                    LEFT JOIN usuario u ON u.id = c.usuario_id AND u.empresa_id = d.empresa_id
                     WHERE {' AND '.join(condiciones)}
                     ORDER BY d.fecha_solicitud DESC, d.id DESC;""",
                 parametros,
             )
             return [
                 item for row in cursor.fetchall()
-                if (item := _obtener_devolucion_cursor(cursor, int(row["id"]))) is not None
+                if (item := _obtener_devolucion_cursor(cursor, int(row["id"]), empresa_id)) is not None
             ]
     finally:
         connection.close()
 
 
-def _obtener_venta_elegible_cursor(cursor, venta_id: int) -> dict | None:
+def _obtener_venta_elegible_cursor(cursor, venta_id: int, empresa_id: int) -> dict | None:
     cursor.execute(
         """SELECT v.id AS venta_id, v.codigo AS venta_codigo, v.tipo AS venta_tipo,
                   v.estado AS estado_venta, v.fecha_venta, v.sucursal_id, s.nombre AS sucursal,
                   v.metodo_pago, v.total
-           FROM venta v JOIN sucursal s ON s.id = v.sucursal_id
-           WHERE v.id = %s AND v.activo = TRUE;""",
-        (venta_id,),
+           FROM venta v JOIN sucursal s ON s.id = v.sucursal_id AND s.empresa_id = v.empresa_id
+           WHERE v.id = %s AND v.empresa_id = %s AND v.activo = TRUE;""",
+        (venta_id, empresa_id),
     )
     venta = cursor.fetchone()
     if venta is None:
@@ -541,34 +545,35 @@ def _obtener_venta_elegible_cursor(cursor, venta_id: int) -> dict | None:
                       WHERE dd.venta_detalle_id = vd.id AND d.activo = TRUE
                   ), 0), 0)::INTEGER AS cantidad_disponible
            FROM venta_detalle vd
+           JOIN venta v ON v.id = vd.venta_id
            JOIN producto_variante pv ON pv.id = vd.producto_variante_id
-           JOIN producto p ON p.id = pv.producto_id
+           JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = v.empresa_id
            JOIN talla t ON t.id = pv.talla_id
            JOIN color co ON co.id = pv.color_id
-           WHERE vd.venta_id = %s ORDER BY vd.id;""",
-        (venta_id,),
+           WHERE vd.venta_id = %s AND v.empresa_id = %s ORDER BY vd.id;""",
+        (venta_id, empresa_id),
     )
     data["detalles"] = [dict(row) for row in cursor.fetchall()]
     return data
 
 
-def _obtener_devolucion_cursor(cursor, devolucion_id: int) -> dict | None:
+def _obtener_devolucion_cursor(cursor, devolucion_id: int, empresa_id: int) -> dict | None:
     cursor.execute(
         """SELECT d.*, v.codigo AS venta_codigo, v.metodo_pago AS metodo_pago_original,
                   op.proveedor AS proveedor_pago_original,
                   c.usuario_id AS cliente_usuario_id,
                   NULLIF(TRIM(CONCAT_WS(' ', u.nombre, u.apellido)), '') AS cliente_nombre,
                   u.correo AS cliente_correo, s.nombre AS sucursal
-           FROM devolucion d JOIN venta v ON v.id = d.venta_id
-           JOIN sucursal s ON s.id = d.sucursal_id
-           LEFT JOIN cliente c ON c.id = d.cliente_id
-           LEFT JOIN usuario u ON u.id = c.usuario_id
+           FROM devolucion d JOIN venta v ON v.id = d.venta_id AND v.empresa_id = d.empresa_id
+           JOIN sucursal s ON s.id = d.sucursal_id AND s.empresa_id = d.empresa_id
+           LEFT JOIN cliente c ON c.id = d.cliente_id AND c.empresa_id = d.empresa_id
+           LEFT JOIN usuario u ON u.id = c.usuario_id AND u.empresa_id = d.empresa_id
            LEFT JOIN LATERAL (
-               SELECT proveedor FROM orden_pago WHERE venta_id = v.id AND activo = TRUE
+               SELECT proveedor FROM orden_pago WHERE venta_id = v.id AND empresa_id = d.empresa_id AND activo = TRUE
                ORDER BY id DESC LIMIT 1
            ) op ON TRUE
-           WHERE d.id = %s AND d.activo = TRUE LIMIT 1;""",
-        (devolucion_id,),
+           WHERE d.id = %s AND d.empresa_id = %s AND d.activo = TRUE LIMIT 1;""",
+        (devolucion_id, empresa_id),
     )
     row = cursor.fetchone()
     if row is None:
@@ -581,13 +586,14 @@ def _obtener_devolucion_cursor(cursor, devolucion_id: int) -> dict | None:
                   vd.precio_unitario, vd.subtotal AS subtotal_original, dd.monto_aprobado,
                   dd.observacion, dd.inventario_repuesto
            FROM devolucion_detalle dd
+           JOIN devolucion d ON d.id = dd.devolucion_id
            JOIN venta_detalle vd ON vd.id = dd.venta_detalle_id
            JOIN producto_variante pv ON pv.id = vd.producto_variante_id
-           JOIN producto p ON p.id = pv.producto_id
+           JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = d.empresa_id
            JOIN talla t ON t.id = pv.talla_id
            JOIN color co ON co.id = pv.color_id
-           WHERE dd.devolucion_id = %s ORDER BY dd.id;""",
-        (devolucion_id,),
+           WHERE dd.devolucion_id = %s AND d.empresa_id = %s ORDER BY dd.id;""",
+        (devolucion_id, empresa_id),
     )
     data["detalles"] = [dict(item) for item in cursor.fetchall()]
     data.pop("cliente_usuario_id", None)

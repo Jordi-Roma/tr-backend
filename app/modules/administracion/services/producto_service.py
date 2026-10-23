@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 from app.modules.administracion.repositories.producto_repository import (
     actualizar_producto,
@@ -18,12 +19,12 @@ from app.modules.administracion.schemas.producto.producto_response import (
 )
 from app.modules.administracion.schemas.catalogo.catalogo_response import MensajeResponse
 
-def obtener_productos() -> list[ProductoResponse]:
-    productos = listar_productos()
+def obtener_productos(usuario_actual: dict[str, object]) -> list[ProductoResponse]:
+    productos = listar_productos(exigir_empresa_id(usuario_actual))
     return [construir_producto_response(p) for p in productos]
 
-def obtener_producto(producto_id: int) -> ProductoResponse:
-    producto = obtener_producto_por_id(producto_id)
+def obtener_producto(producto_id: int, usuario_actual: dict[str, object]) -> ProductoResponse:
+    producto = obtener_producto_por_id(producto_id, exigir_empresa_id(usuario_actual))
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado.")
     return construir_producto_response(producto)
@@ -44,22 +45,26 @@ def registrar_producto(
         for i in request.imagenes
     ]
     
-    producto_id = crear_producto(
-        categoria_id=request.categoria_id,
-        marca_id=request.marca_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion.strip() if request.descripcion else None,
-        material=request.material.strip() if request.material else None,
-        genero=request.genero.strip().upper() if request.genero else None,
-        colecciones_ids=request.colecciones_ids,
-        proveedores_ids=request.proveedores_ids,
-        imagenes=imagenes,
-        tipo_prenda=request.tipo_prenda,
-        tipo_corte=request.tipo_corte,
-        ancho_base_cm=request.ancho_base_cm,
-        largo_base_cm=request.largo_base_cm,
-        modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
-    )
+    try:
+        producto_id = crear_producto(
+            empresa_id=exigir_empresa_id(usuario_actual),
+            categoria_id=request.categoria_id,
+            marca_id=request.marca_id,
+            nombre=request.nombre.strip(),
+            descripcion=request.descripcion.strip() if request.descripcion else None,
+            material=request.material.strip() if request.material else None,
+            genero=request.genero.strip().upper() if request.genero else None,
+            colecciones_ids=request.colecciones_ids,
+            proveedores_ids=request.proveedores_ids,
+            imagenes=imagenes,
+            tipo_prenda=request.tipo_prenda,
+            tipo_corte=request.tipo_corte,
+            ancho_base_cm=request.ancho_base_cm,
+            largo_base_cm=request.largo_base_cm,
+            modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -70,7 +75,7 @@ def registrar_producto(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_producto(producto_id)
+    return obtener_producto(producto_id, usuario_actual)
 
 def editar_producto(
     producto_id: int,
@@ -79,7 +84,8 @@ def editar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ProductoResponse:
-    actual = obtener_producto_por_id(producto_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_producto_por_id(producto_id, empresa_id)
     if not actual:
         raise HTTPException(status_code=404, detail="Producto no encontrado.")
         
@@ -88,23 +94,27 @@ def editar_producto(
         for i in request.imagenes
     ]
 
-    actualizado = actualizar_producto(
-        producto_id=producto_id,
-        categoria_id=request.categoria_id,
-        marca_id=request.marca_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion.strip() if request.descripcion else None,
-        material=request.material.strip() if request.material else None,
-        genero=request.genero.strip().upper() if request.genero else None,
-        colecciones_ids=request.colecciones_ids,
-        proveedores_ids=request.proveedores_ids,
-        imagenes=imagenes,
-        tipo_prenda=request.tipo_prenda,
-        tipo_corte=request.tipo_corte,
-        ancho_base_cm=request.ancho_base_cm,
-        largo_base_cm=request.largo_base_cm,
-        modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
-    )
+    try:
+        actualizado = actualizar_producto(
+            producto_id=producto_id,
+            empresa_id=empresa_id,
+            categoria_id=request.categoria_id,
+            marca_id=request.marca_id,
+            nombre=request.nombre.strip(),
+            descripcion=request.descripcion.strip() if request.descripcion else None,
+            material=request.material.strip() if request.material else None,
+            genero=request.genero.strip().upper() if request.genero else None,
+            colecciones_ids=request.colecciones_ids,
+            proveedores_ids=request.proveedores_ids,
+            imagenes=imagenes,
+            tipo_prenda=request.tipo_prenda,
+            tipo_corte=request.tipo_corte,
+            ancho_base_cm=request.ancho_base_cm,
+            largo_base_cm=request.largo_base_cm,
+            modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     if not actualizado:
         raise HTTPException(status_code=404, detail="Producto no encontrado.")
@@ -118,7 +128,7 @@ def editar_producto(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_producto(producto_id)
+    return obtener_producto(producto_id, usuario_actual)
 
 def eliminar_producto(
     producto_id: int,
@@ -126,11 +136,12 @@ def eliminar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    actual = obtener_producto_por_id(producto_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_producto_por_id(producto_id, empresa_id)
     if not actual:
         raise HTTPException(status_code=404, detail="Producto no encontrado.")
 
-    if not desactivar_producto(producto_id):
+    if not desactivar_producto(producto_id, empresa_id):
         raise HTTPException(status_code=404, detail="No se pudo desactivar el producto.")
 
     registrar_bitacora(
@@ -150,11 +161,12 @@ def reactivar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ProductoResponse:
-    actual = obtener_producto_por_id(producto_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_producto_por_id(producto_id, empresa_id)
     if not actual:
         raise HTTPException(status_code=404, detail="Producto no encontrado.")
 
-    if not activar_producto(producto_id):
+    if not activar_producto(producto_id, empresa_id):
         raise HTTPException(status_code=404, detail="No se pudo reactivar el producto.")
 
     registrar_bitacora(
@@ -166,7 +178,7 @@ def reactivar_producto(
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
-    return obtener_producto(producto_id)
+    return obtener_producto(producto_id, usuario_actual)
 
 def construir_producto_response(producto: dict[str, object]) -> ProductoResponse:
     imagenes = [

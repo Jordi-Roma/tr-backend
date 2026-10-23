@@ -3,6 +3,7 @@ import math
 import os
 
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 
 from app.core.config import (
     AI_RECOMMENDATIONS_PROVIDER,
@@ -105,7 +106,7 @@ def _crear_embedding_gemini(texto: str) -> list[float]:
     return [float(value) for value in values]
 
 
-def indexar_productos() -> dict:
+def indexar_productos(empresa_id: int) -> dict:
     if AI_RECOMMENDATIONS_PROVIDER == 'VERTEX':
         if not VERTEX_PROJECT_ID:
             raise HTTPException(status_code=503, detail='VERTEX_PROJECT_ID no está configurado en el backend.')
@@ -119,8 +120,8 @@ def indexar_productos() -> dict:
         raise HTTPException(status_code=503, detail='Configura AI_RECOMMENDATIONS_PROVIDER=GEMINI, VERTEX u OPENAI para indexar recomendaciones con IA.')
     else:
         raise HTTPException(status_code=503, detail=f'Proveedor de recomendaciones no soportado: {AI_RECOMMENDATIONS_PROVIDER}.')
-    productos = repo.listar_productos_para_indice()
-    guardados = repo.obtener_embeddings(MODELO)
+    productos = repo.listar_productos_para_indice(empresa_id)
+    guardados = repo.obtener_embeddings(MODELO, empresa_id)
     actualizados = 0
     errores = 0
     detalle_errores: list[str] = []
@@ -132,7 +133,7 @@ def indexar_productos() -> dict:
             continue
         try:
             vector = _crear_embedding(texto)
-            repo.guardar_embedding(int(producto['id']), MODELO, texto_hash, vector)
+            repo.guardar_embedding(int(producto['id']), MODELO, texto_hash, vector, empresa_id)
             actualizados += 1
         except Exception as exc:
             errores += 1
@@ -176,18 +177,18 @@ def _coseno(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b)) / (norma_a * norma_b)
 
 
-def _candidatos_disponibles(sucursal_id: int | None, talla_id: int | None) -> list[dict]:
+def _candidatos_disponibles(sucursal_id: int | None, talla_id: int | None, empresa_id: int) -> list[dict]:
     filtros: dict[str, object] = {'solo_disponibles': True, 'por_pagina': 500, 'pagina': 1}
     if sucursal_id is not None:
         filtros['sucursal_id'] = sucursal_id
     if talla_id is not None:
         filtros['talla_id'] = talla_id
-    prendas, _ = listar_prendas_catalogo(filtros)
+    prendas, _ = listar_prendas_catalogo(filtros, empresa_id)
     return [p for p in prendas if p['stock_total'] > 0 and p['precio_final'] is not None]
 
 
-def _validar_respuesta(producto_id: int, sucursal_id: int | None, talla_id: int | None) -> dict | None:
-    prenda = obtener_prenda_catalogo(producto_id, sucursal_id)
+def _validar_respuesta(producto_id: int, sucursal_id: int | None, talla_id: int | None, empresa_id: int) -> dict | None:
+    prenda = obtener_prenda_catalogo(producto_id, sucursal_id, empresa_id)
     if not prenda or prenda['precio_final'] is None:
         return None
     if talla_id is None:
@@ -203,14 +204,14 @@ def _validar_respuesta(producto_id: int, sucursal_id: int | None, talla_id: int 
     return prenda
 
 
-def recomendar_desde_producto(producto_id: int, sucursal_id: int | None = None,
+def recomendar_desde_producto(producto_id: int, empresa_id: int, sucursal_id: int | None = None,
                               talla_id: int | None = None, limite: int = 6) -> list[dict]:
-    origen = obtener_prenda_catalogo(producto_id)
+    origen = obtener_prenda_catalogo(producto_id, None, empresa_id)
     if origen is None:
         raise HTTPException(status_code=404, detail='Producto no encontrado.')
-    embeddings = repo.obtener_embeddings(MODELO)
+    embeddings = repo.obtener_embeddings(MODELO, empresa_id)
     vector_origen = embeddings.get(producto_id)
-    disponibles = _candidatos_disponibles(sucursal_id, talla_id)
+    disponibles = _candidatos_disponibles(sucursal_id, talla_id, empresa_id)
     if not vector_origen:
         return _recomendaciones_iniciales(
             disponibles,
@@ -220,6 +221,7 @@ def recomendar_desde_producto(producto_id: int, sucursal_id: int | None = None,
             limite,
             int(origen.get('categoria_id') or 0),
             'Sugerencia inicial mientras se actualizan las recomendaciones con IA.',
+            empresa_id,
         )
     puntuados = []
     for item in disponibles:
@@ -232,7 +234,7 @@ def recomendar_desde_producto(producto_id: int, sucursal_id: int | None = None,
                 'Parecido a la prenda que estás viendo.',
             ))
     puntuados.sort(reverse=True)
-    resultado = _materializar(puntuados, sucursal_id, talla_id, limite)
+    resultado = _materializar(puntuados, sucursal_id, talla_id, limite, empresa_id)
     if resultado:
         return resultado
     return _recomendaciones_iniciales(
@@ -243,32 +245,34 @@ def recomendar_desde_producto(producto_id: int, sucursal_id: int | None = None,
         limite,
         int(origen.get('categoria_id') or 0),
         'Producto disponible relacionado por categoría.',
+        empresa_id,
     )
 
 
-def recomendar_para_cliente(cliente_id: int, limite: int = 8) -> list[dict]:
-    embeddings = repo.obtener_embeddings(MODELO)
-    preferencias = repo.obtener_preferencias(cliente_id)
+def recomendar_para_cliente(cliente_id: int, empresa_id: int, limite: int = 8) -> list[dict]:
+    embeddings = repo.obtener_embeddings(MODELO, empresa_id)
+    preferencias = repo.obtener_preferencias(cliente_id, empresa_id)
     if not preferencias['usar_historial']:
         return []
-    favoritos = repo.listar_favoritos(cliente_id)
-    compras = repo.listar_compras_confirmadas(cliente_id)
+    favoritos = repo.listar_favoritos(cliente_id, empresa_id)
+    compras = repo.listar_compras_confirmadas(cliente_id, empresa_id)
     semillas: list[tuple[int, float]] = [(id_, 3.0) for id_ in favoritos[:20]]
     semillas.extend((int(row['producto_id']), min(float(row['peso']), 3.0) * 1.5) for row in compras)
     categorias = set(int(id_) for id_ in preferencias['categorias'])
     if categorias:
-        semillas.extend((int(row['id']), 0.6) for row in repo.listar_productos_para_indice()
+        semillas.extend((int(row['id']), 0.6) for row in repo.listar_productos_para_indice(empresa_id)
                         if int(row['id']) in embeddings and int(row.get('categoria_id') or 0) in categorias)
     vectores = [(embeddings[id_]['embedding'], peso) for id_, peso in semillas if id_ in embeddings]
     if not vectores:
         return _recomendaciones_iniciales(
-            _candidatos_disponibles(None, None),
+            _candidatos_disponibles(None, None, empresa_id),
             None,
             None,
             None,
             limite,
             None,
             'Recomendación inicial con prendas disponibles mientras conocemos tus gustos.',
+            empresa_id,
         )
     dimension = len(vectores[0][0])
     perfil = [0.0] * dimension
@@ -280,32 +284,33 @@ def recomendar_para_cliente(cliente_id: int, limite: int = 8) -> list[dict]:
     excluidos = set(favoritos) | {int(row['producto_id']) for row in compras}
     puntuados = []
     motivo = _motivo_para_cliente(bool(favoritos), bool(compras), bool(categorias))
-    for item in _candidatos_disponibles(None, None):
+    for item in _candidatos_disponibles(None, None, empresa_id):
         id_ = int(item['producto_id'])
         vector = embeddings.get(id_)
         if id_ not in excluidos and vector:
             puntuados.append((_coseno(perfil, vector['embedding']), id_, motivo))
     puntuados.sort(reverse=True)
-    resultado = _materializar(puntuados, None, None, limite)
+    resultado = _materializar(puntuados, None, None, limite, empresa_id)
     if resultado:
         return resultado
     return _recomendaciones_iniciales(
-        _candidatos_disponibles(None, None),
+        _candidatos_disponibles(None, None, empresa_id),
         None,
         None,
         None,
         limite,
         None,
         'Recomendación inicial con prendas disponibles mientras conocemos tus gustos.',
+        empresa_id,
         excluidos,
     )
 
 
 def _materializar(puntuados: list[tuple[float, int, str]], sucursal_id: int | None,
-                 talla_id: int | None, limite: int) -> list[dict]:
+                 talla_id: int | None, limite: int, empresa_id: int) -> list[dict]:
     resultado = []
     for score, producto_id, motivo in puntuados:
-        prenda = _validar_respuesta(producto_id, sucursal_id, talla_id)
+        prenda = _validar_respuesta(producto_id, sucursal_id, talla_id, empresa_id)
         if prenda:
             resultado.append(_con_motivo(prenda, motivo, score))
         if len(resultado) == limite:
@@ -316,7 +321,7 @@ def _materializar(puntuados: list[tuple[float, int, str]], sucursal_id: int | No
 def _recomendaciones_iniciales(candidatos: list[dict], producto_id: int | None,
                               sucursal_id: int | None, talla_id: int | None,
                               limite: int, categoria_id: int | None,
-                              motivo: str, excluidos_extra: set[int] | None = None) -> list[dict]:
+                              motivo: str, empresa_id: int, excluidos_extra: set[int] | None = None) -> list[dict]:
     excluidos = set(excluidos_extra or set())
     if producto_id is not None:
         excluidos.add(producto_id)
@@ -333,7 +338,7 @@ def _recomendaciones_iniciales(candidatos: list[dict], producto_id: int | None,
         id_ = int(item['producto_id'])
         if id_ in excluidos:
             continue
-        prenda = _validar_respuesta(id_, sucursal_id, talla_id)
+        prenda = _validar_respuesta(id_, sucursal_id, talla_id, empresa_id)
         if prenda:
             resultado.append(_con_motivo(prenda, motivo, None))
         if len(resultado) == limite:
@@ -361,7 +366,7 @@ def _motivo_para_cliente(tiene_favoritos: bool, tiene_compras: bool, tiene_categ
 
 
 def cliente_id_obligatorio(usuario: dict) -> int:
-    cliente_id = repo.obtener_cliente_id(int(usuario['id']))
+    cliente_id = repo.obtener_cliente_id(int(usuario['id']), exigir_empresa_id(usuario))
     if cliente_id is None:
         raise HTTPException(status_code=403, detail='Solo clientes pueden usar estas recomendaciones.')
     return cliente_id

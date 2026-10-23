@@ -10,6 +10,8 @@ class LoginResponse(BaseModel):
     username: str
     correo: str
     roles: list[str]
+    empresa_id: int | None
+    empresa_codigo: str | None
     mensaje: str
 
 

@@ -107,13 +107,14 @@ RESPUESTAS_AYUDA_PROCESO = {
 }
 
 
-def responder_chat_asistente(request: AsistenteChatRequest, usuario_actual: dict[str, object] | None) -> AsistenteChatResponse:
+def responder_chat_asistente(request: AsistenteChatRequest, usuario_actual: dict[str, object] | None,
+                            empresa_id: int) -> AsistenteChatResponse:
     mensaje = request.mensaje.strip()
     mensaje_normalizado = _normalizar(mensaje)
     contexto = request.contexto
     producto_id = contexto.producto_id if contexto else None
     sucursal_id = contexto.sucursal_id if contexto else None
-    tipo, filtros, terminos = _interpretar_consulta_asistente(mensaje, mensaje_normalizado, producto_id, sucursal_id)
+    tipo, filtros, terminos = _interpretar_consulta_asistente(mensaje, mensaje_normalizado, producto_id, sucursal_id, empresa_id)
 
     if _requiere_login(mensaje_normalizado, tipo) and usuario_actual is None:
         return _respuesta_requiere_login()
@@ -128,20 +129,20 @@ def responder_chat_asistente(request: AsistenteChatRequest, usuario_actual: dict
         return AsistenteChatResponse(respuesta="¡De nada! Si quieres, también puedo ayudarte a buscar una prenda, consultar stock o explicarte reservas, delivery, pagos, carrito y favoritos.", tipo=tipo)
 
     if tipo == "consulta_personal_reservas":
-        return _respuesta_mis_reservas(usuario_actual)
+        return _respuesta_mis_reservas(usuario_actual, empresa_id)
     if tipo == "consulta_personal_favoritos":
-        return _respuesta_mis_favoritos(usuario_actual)
+        return _respuesta_mis_favoritos(usuario_actual, empresa_id)
     if tipo == "consulta_personal_recomendaciones":
-        return _respuesta_mis_recomendaciones(usuario_actual)
+        return _respuesta_mis_recomendaciones(usuario_actual, empresa_id)
 
     if tipo in TIPOS_AYUDA_PROCESO:
         return AsistenteChatResponse(respuesta=_respuesta_ayuda_proceso(tipo), tipo=tipo)
 
     if tipo == "sucursales":
-        return AsistenteChatResponse(respuesta=_respuesta_sucursales(listar_sucursales_para_asistente()), tipo=tipo)
+        return AsistenteChatResponse(respuesta=_respuesta_sucursales(listar_sucursales_para_asistente(empresa_id)), tipo=tipo)
 
     if tipo in {"recomendacion", "recomendacion_contextual"} and producto_id is not None:
-        recomendadas = _mapear_catalogo_a_productos(recomendar_desde_producto(producto_id, sucursal_id=sucursal_id))
+        recomendadas = _mapear_catalogo_a_productos(recomendar_desde_producto(producto_id, empresa_id, sucursal_id=sucursal_id))
         if recomendadas:
             return AsistenteChatResponse(respuesta="Encontré prendas reales parecidas a esta. Te muestro opciones disponibles con stock.", tipo="recomendacion_contextual", productos=recomendadas, filtros_detectados=_filtros_publicos(filtros))
 
@@ -153,11 +154,12 @@ def responder_chat_asistente(request: AsistenteChatRequest, usuario_actual: dict
         precio_max=filtros["precio_max"],
         producto_id=producto_id,
         sucursal_id=sucursal_id,
+        empresa_id=empresa_id,
     )
 
     alternativas: list[dict[str, object]] = []
     if not productos and _hay_filtros_estrictos(filtros):
-        alternativas = _buscar_alternativas(terminos, filtros, producto_id, sucursal_id)
+        alternativas = _buscar_alternativas(terminos, filtros, producto_id, sucursal_id, empresa_id)
 
     respuesta_base = _respuesta_productos(productos, tipo, alternativas, filtros)
     respuesta = _redactar_con_ia(mensaje, productos, respuesta_base, tipo, alternativas)
@@ -177,6 +179,7 @@ def _interpretar_consulta_asistente(
     mensaje_normalizado: str,
     producto_id: int | None,
     sucursal_id: int | None,
+    empresa_id: int,
 ) -> tuple[str, dict[str, object], list[str]]:
     tipo_reglas = _clasificar_intencion(mensaje_normalizado)
     if tipo_reglas in {
@@ -197,7 +200,7 @@ def _interpretar_consulta_asistente(
                 mensaje,
                 producto_id=producto_id,
                 sucursal_id=sucursal_id,
-                sucursales=listar_sucursales_para_asistente(),
+                sucursales=listar_sucursales_para_asistente(empresa_id),
             )
             tipo = str(interpretacion["tipo"])
             filtros = {
@@ -339,7 +342,8 @@ def _hay_filtros_estrictos(filtros: dict[str, object]) -> bool:
     return bool(filtros["color_patrones"] or filtros["talla_patrones"] or filtros["sucursal_patrones"])
 
 
-def _buscar_alternativas(terminos: list[str], filtros: dict[str, object], producto_id: int | None, sucursal_id: int | None) -> list[dict[str, object]]:
+def _buscar_alternativas(terminos: list[str], filtros: dict[str, object], producto_id: int | None,
+                         sucursal_id: int | None, empresa_id: int) -> list[dict[str, object]]:
     color_patrones = list(filtros["color_patrones"])
     talla_patrones = list(filtros["talla_patrones"])
     sucursal_patrones = list(filtros["sucursal_patrones"])
@@ -353,7 +357,7 @@ def _buscar_alternativas(terminos: list[str], filtros: dict[str, object], produc
     alternativas: list[dict[str, object]] = []
     vistos: set[tuple[object, object, object, object]] = set()
     for intento in intentos:
-        encontrados = buscar_productos_para_asistente(terminos=terminos, color_patrones=intento["color_patrones"], talla_patrones=intento["talla_patrones"], sucursal_patrones=intento["sucursal_patrones"], precio_max=precio_max, producto_id=producto_id, sucursal_id=sucursal_id, limite=4)
+        encontrados = buscar_productos_para_asistente(terminos=terminos, color_patrones=intento["color_patrones"], talla_patrones=intento["talla_patrones"], sucursal_patrones=intento["sucursal_patrones"], precio_max=precio_max, producto_id=producto_id, sucursal_id=sucursal_id, limite=4, empresa_id=empresa_id)
         for item in encontrados:
             key = (item.get("producto_id"), item.get("talla"), item.get("color"), item.get("sucursal"))
             if key not in vistos:
@@ -405,36 +409,36 @@ def _respuesta_ayuda_proceso(tipo: str) -> str:
     return RESPUESTAS_AYUDA_PROCESO.get(tipo, RESPUESTAS_AYUDA_PROCESO["ayuda_reservas"])
 
 
-def _respuesta_mis_reservas(usuario_actual: dict[str, object] | None) -> AsistenteChatResponse:
+def _respuesta_mis_reservas(usuario_actual: dict[str, object] | None, empresa_id: int) -> AsistenteChatResponse:
     if usuario_actual is None:
         return _respuesta_requiere_login()
-    reservas = listar_reservas_cliente(int(usuario_actual["id"]))
+    reservas = listar_reservas_cliente(int(usuario_actual["id"]), empresa_id)
     if not reservas:
         return AsistenteChatResponse(respuesta="No encontré reservas registradas para tu cuenta.", tipo="consulta_personal_reservas")
     resumen = [f"{reserva['codigo']} en {reserva['sucursal']} está {reserva['estado']}" for reserva in reservas[:3]]
     return AsistenteChatResponse(respuesta="Estas son tus reservas más recientes: " + "; ".join(resumen) + ".", tipo="consulta_personal_reservas")
 
 
-def _respuesta_mis_favoritos(usuario_actual: dict[str, object] | None) -> AsistenteChatResponse:
+def _respuesta_mis_favoritos(usuario_actual: dict[str, object] | None, empresa_id: int) -> AsistenteChatResponse:
     if usuario_actual is None:
         return _respuesta_requiere_login()
-    cliente_id = recomendacion_repository.obtener_cliente_id(int(usuario_actual["id"]))
+    cliente_id = recomendacion_repository.obtener_cliente_id(int(usuario_actual["id"]), empresa_id)
     if cliente_id is None:
         return AsistenteChatResponse(respuesta="Tu usuario no tiene un cliente asociado para consultar favoritos.", tipo="consulta_personal_favoritos")
-    favoritos = recomendacion_repository.listar_favoritos(cliente_id)
-    productos = _mapear_catalogo_a_productos([obtener_prenda_catalogo(producto_id) for producto_id in favoritos[:6]])
+    favoritos = recomendacion_repository.listar_favoritos(cliente_id, empresa_id)
+    productos = _mapear_catalogo_a_productos([obtener_prenda_catalogo(producto_id, None, empresa_id) for producto_id in favoritos[:6]])
     if not productos:
         return AsistenteChatResponse(respuesta="Todavía no tienes prendas marcadas como favoritas.", tipo="consulta_personal_favoritos")
     return AsistenteChatResponse(respuesta=f"Encontré {len(productos)} prenda(s) en tus favoritos.", tipo="consulta_personal_favoritos", productos=productos)
 
 
-def _respuesta_mis_recomendaciones(usuario_actual: dict[str, object] | None) -> AsistenteChatResponse:
+def _respuesta_mis_recomendaciones(usuario_actual: dict[str, object] | None, empresa_id: int) -> AsistenteChatResponse:
     if usuario_actual is None:
         return _respuesta_requiere_login()
-    cliente_id = recomendacion_repository.obtener_cliente_id(int(usuario_actual["id"]))
+    cliente_id = recomendacion_repository.obtener_cliente_id(int(usuario_actual["id"]), empresa_id)
     if cliente_id is None:
         return AsistenteChatResponse(respuesta="Tu usuario no tiene un cliente asociado para generar recomendaciones personales.", tipo="consulta_personal_recomendaciones")
-    productos = _mapear_catalogo_a_productos(recomendar_para_cliente(cliente_id))
+    productos = _mapear_catalogo_a_productos(recomendar_para_cliente(cliente_id, empresa_id))
     if not productos:
         return AsistenteChatResponse(respuesta="Aún no tengo suficientes favoritos, compras o preferencias para recomendarte prendas personalizadas.", tipo="consulta_personal_recomendaciones")
     return AsistenteChatResponse(respuesta="Con base en tus favoritos, compras o preferencias, estas prendas podrían gustarte.", tipo="consulta_personal_recomendaciones", productos=productos)

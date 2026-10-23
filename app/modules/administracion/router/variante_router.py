@@ -37,7 +37,7 @@ def listar_variantes_endpoint(
     producto_id: int | None = None,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[VarianteResponse]:
-    return obtener_variantes(producto_id)
+    return obtener_variantes(usuario_actual, producto_id)
 
 
 @router.post("", response_model=VarianteResponse)
@@ -54,7 +54,7 @@ def obtener_variante_endpoint(
     variante_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> VarianteResponse:
-    return obtener_variante(variante_id)
+    return obtener_variante(variante_id, usuario_actual)
 
 
 @router.put("/{variante_id}", response_model=VarianteResponse)

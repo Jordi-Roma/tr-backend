@@ -34,7 +34,7 @@ def _ua(req: Request) -> str | None:
 def listar_productos_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[ProductoResponse]:
-    return obtener_productos()
+    return obtener_productos(usuario_actual)
 
 
 @router.post("", response_model=ProductoResponse)
@@ -51,7 +51,7 @@ def obtener_producto_endpoint(
     producto_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> ProductoResponse:
-    return obtener_producto(producto_id)
+    return obtener_producto(producto_id, usuario_actual)
 
 
 @router.put("/{producto_id}", response_model=ProductoResponse)

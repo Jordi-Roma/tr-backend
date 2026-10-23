@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 from app.modules.administracion.repositories.temporada_repository import (
     actualizar_temporada,
@@ -24,12 +25,12 @@ def construir_temporada_response(row: dict[str, object]) -> TemporadaResponse:
         fecha_creacion=row["fecha_creacion"]
     )
 
-def obtener_temporadas() -> list[TemporadaResponse]:
-    temporadas = listar_temporadas()
+def obtener_temporadas(usuario_actual: dict[str, object]) -> list[TemporadaResponse]:
+    temporadas = listar_temporadas(exigir_empresa_id(usuario_actual))
     return [construir_temporada_response(t) for t in temporadas]
 
-def obtener_temporada(temporada_id: int) -> TemporadaResponse:
-    temporada = obtener_temporada_por_id(temporada_id)
+def obtener_temporada(temporada_id: int, usuario_actual: dict[str, object]) -> TemporadaResponse:
+    temporada = obtener_temporada_por_id(temporada_id, exigir_empresa_id(usuario_actual))
     if temporada is None:
         raise HTTPException(status_code=404, detail="Temporada no encontrada.")
     return construir_temporada_response(temporada)
@@ -40,7 +41,8 @@ def registrar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    if obtener_temporada_por_nombre_anio(request.nombre, request.anio) is not None:
+    empresa_id = exigir_empresa_id(usuario_actual)
+    if obtener_temporada_por_nombre_anio(request.nombre, request.anio, empresa_id) is not None:
         raise HTTPException(
             status_code=409,
             detail="Ya existe una temporada con ese nombre y año.",
@@ -48,6 +50,7 @@ def registrar_temporada(
     temporada = crear_temporada(
         nombre=request.nombre.strip(),
         anio=request.anio,
+        empresa_id=empresa_id,
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -67,11 +70,12 @@ def editar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    actual = obtener_temporada_por_id(temporada_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_temporada_por_id(temporada_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Temporada no encontrada.")
 
-    existente = obtener_temporada_por_nombre_anio(request.nombre, request.anio)
+    existente = obtener_temporada_por_nombre_anio(request.nombre, request.anio, empresa_id)
     if existente is not None and int(existente["id"]) != temporada_id:
         raise HTTPException(
             status_code=409,
@@ -82,6 +86,7 @@ def editar_temporada(
         temporada_id=temporada_id,
         nombre=request.nombre.strip(),
         anio=request.anio,
+        empresa_id=empresa_id,
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -100,14 +105,15 @@ def eliminar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    actual = obtener_temporada_por_id(temporada_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_temporada_por_id(temporada_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Temporada no encontrada.")
 
     if not actual["activo"]:
         raise HTTPException(status_code=400, detail="La temporada ya está inactiva.")
 
-    cambiar_estado_temporada(temporada_id, False)
+    cambiar_estado_temporada(temporada_id, False, empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="DESACTIVAR",
@@ -125,14 +131,15 @@ def reactivar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    actual = obtener_temporada_por_id(temporada_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    actual = obtener_temporada_por_id(temporada_id, empresa_id)
     if actual is None:
         raise HTTPException(status_code=404, detail="Temporada no encontrada.")
 
     if actual["activo"]:
         raise HTTPException(status_code=400, detail="La temporada ya está activa.")
 
-    temporada = cambiar_estado_temporada(temporada_id, True)
+    temporada = cambiar_estado_temporada(temporada_id, True, empresa_id)
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
         accion="ACTIVAR",

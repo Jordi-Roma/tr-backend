@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import requests
 from fastapi import HTTPException
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.ventas_inventario.repositories import delivery_repository as repo
 from app.modules.ventas_inventario.schemas.delivery.delivery_request import (
     DeliveryCotizarRequest,
@@ -30,8 +31,8 @@ TRANSICIONES = {
 }
 
 
-def cotizar_delivery_service(request: DeliveryCotizarRequest) -> DeliveryCotizacionResponse:
-    sucursal = repo.obtener_sucursal(request.sucursal_id)
+def cotizar_delivery_service(request: DeliveryCotizarRequest, empresa_id: int) -> DeliveryCotizacionResponse:
+    sucursal = repo.obtener_sucursal(request.sucursal_id, empresa_id)
     if sucursal is None:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
     if sucursal.get("latitud") is None or sucursal.get("longitud") is None:
@@ -109,9 +110,10 @@ def crear_delivery_service(
     usuario_actual: dict[str, object],
     request: DeliverySolicitarRequest,
 ) -> DeliveryDetalleResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso(usuario_actual, "delivery:solicitar")
     cliente_id = _cliente_id_obligatorio(usuario_actual)
-    cotizacion = cotizar_delivery_service(request)
+    cotizacion = cotizar_delivery_service(request, empresa_id)
     if not cotizacion.disponible:
         raise HTTPException(status_code=400, detail=cotizacion.mensaje)
     try:
@@ -122,11 +124,12 @@ def crear_delivery_service(
                 "distancia_km": cotizacion.distancia_km,
                 "tiempo_estimado_min": cotizacion.tiempo_estimado_min,
                 "costo_delivery": cotizacion.costo_delivery,
-            }
+            },
+            empresa_id,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    detalle = repo.obtener_delivery(int(delivery["id"]))
+    detalle = repo.obtener_delivery(int(delivery["id"]), empresa_id)
     if detalle is None:
         raise HTTPException(status_code=404, detail="Delivery no encontrado.")
     return _detalle_response(detalle)
@@ -136,15 +139,17 @@ def listar_mis_deliveries_service(
     usuario_actual: dict[str, object],
     estado: str | None = None,
 ) -> list[DeliveryItemResponse]:
+    empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso(usuario_actual, "delivery:ver_propios")
     cliente_id = _cliente_id_obligatorio(usuario_actual)
-    return [_item_response(item) for item in repo.listar_deliveries(cliente_id=cliente_id, estado=estado)]
+    return [_item_response(item) for item in repo.listar_deliveries(empresa_id=empresa_id, cliente_id=cliente_id, estado=estado)]
 
 
 def obtener_mi_delivery_service(usuario_actual: dict[str, object], delivery_id: int) -> DeliveryDetalleResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso(usuario_actual, "delivery:ver_propios")
     cliente_id = _cliente_id_obligatorio(usuario_actual)
-    delivery = repo.obtener_delivery(delivery_id)
+    delivery = repo.obtener_delivery(delivery_id, empresa_id)
     if delivery is None or int(delivery["cliente_id"]) != cliente_id:
         raise HTTPException(status_code=404, detail="Delivery no encontrado.")
     return _detalle_response(delivery)
@@ -158,8 +163,10 @@ def listar_deliveries_service(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
 ) -> list[DeliveryItemResponse]:
+    empresa_id = exigir_empresa_id(usuario_actual)
     if _tiene_permiso(usuario_actual, "delivery:ver_todos") or "ADMINISTRADOR" in _roles(usuario_actual):
         rows = repo.listar_deliveries(
+            empresa_id=empresa_id,
             estado=estado,
             cliente=cliente,
             sucursal_id=sucursal_id,
@@ -173,6 +180,7 @@ def listar_deliveries_service(
         if sucursal_id is not None and sucursal_id != sucursal_permitida:
             raise HTTPException(status_code=403, detail="Solo puede consultar deliveries de su sucursal.")
         rows = repo.listar_deliveries(
+            empresa_id=empresa_id,
             estado=estado,
             cliente=cliente,
             sucursal_id=sucursal_permitida,
@@ -185,7 +193,7 @@ def listar_deliveries_service(
 
 
 def obtener_delivery_service(usuario_actual: dict[str, object], delivery_id: int) -> DeliveryDetalleResponse:
-    delivery = repo.obtener_delivery(delivery_id)
+    delivery = repo.obtener_delivery(delivery_id, exigir_empresa_id(usuario_actual))
     if delivery is None:
         raise HTTPException(status_code=404, detail="Delivery no encontrado.")
     _validar_acceso_staff(usuario_actual, delivery)
@@ -197,11 +205,12 @@ def actualizar_estado_delivery_service(
     delivery_id: int,
     request: DeliveryEstadoRequest,
 ) -> DeliveryEstadoResponse:
+    empresa_id = exigir_empresa_id(usuario_actual)
     estado = request.estado.strip().upper()
     if estado not in ESTADOS:
         raise HTTPException(status_code=400, detail="Estado de delivery no valido.")
 
-    delivery = repo.obtener_delivery(delivery_id)
+    delivery = repo.obtener_delivery(delivery_id, empresa_id)
     if delivery is None:
         raise HTTPException(status_code=404, detail="Delivery no encontrado.")
     _validar_acceso_staff(usuario_actual, delivery)
@@ -216,16 +225,16 @@ def actualizar_estado_delivery_service(
         raise HTTPException(status_code=400, detail=f"No se puede cambiar de {estado_actual} a {estado}.")
 
     try:
-        actualizado = repo.actualizar_estado(delivery_id, estado, request.observacion)
+        actualizado = repo.actualizar_estado(delivery_id, estado, request.observacion, empresa_id)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return DeliveryEstadoResponse(mensaje="Estado de delivery actualizado.", delivery=_detalle_response(actualizado))
 
 
-def preparar_delivery_para_checkout(request) -> dict | None:
+def preparar_delivery_para_checkout(request, empresa_id: int) -> dict | None:
     if request is None:
         return None
-    cotizacion = cotizar_delivery_service(request)
+    cotizacion = cotizar_delivery_service(request, empresa_id)
     if not cotizacion.disponible:
         raise HTTPException(status_code=400, detail=cotizacion.mensaje)
     return {

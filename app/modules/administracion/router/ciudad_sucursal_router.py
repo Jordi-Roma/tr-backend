@@ -25,7 +25,7 @@ from app.modules.administracion.services.ciudad_sucursal_service import (
     registrar_ciudad,
     registrar_sucursal,
 )
-from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin, requerir_admin_saas
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 
 router = APIRouter(
@@ -54,7 +54,7 @@ def listar_ciudades_endpoint(
 def crear_ciudad_endpoint(
     request: CrearCiudadRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> CiudadResponse:
     return registrar_ciudad(request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -62,7 +62,7 @@ def crear_ciudad_endpoint(
 @router.get("/ciudades/{ciudad_id}", response_model=CiudadResponse)
 def obtener_ciudad_endpoint(
     ciudad_id: int,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> CiudadResponse:
     return obtener_ciudad(ciudad_id)
 
@@ -72,7 +72,7 @@ def actualizar_ciudad_endpoint(
     ciudad_id: int,
     request: ActualizarCiudadRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> CiudadResponse:
     return editar_ciudad(ciudad_id, request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -81,7 +81,7 @@ def actualizar_ciudad_endpoint(
 def desactivar_ciudad_endpoint(
     ciudad_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return eliminar_ciudad(ciudad_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -90,7 +90,7 @@ def desactivar_ciudad_endpoint(
 def activar_ciudad_endpoint(
     ciudad_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return reactivar_ciudad(ciudad_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -99,7 +99,7 @@ def activar_ciudad_endpoint(
 def listar_sucursales_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[SucursalResponse]:
-    return obtener_sucursales()
+    return obtener_sucursales(usuario_actual)
 
 
 @router.post("/sucursales", response_model=SucursalResponse)
@@ -116,7 +116,7 @@ def obtener_sucursal_endpoint(
     sucursal_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> SucursalResponse:
-    return obtener_sucursal(sucursal_id)
+    return obtener_sucursal(sucursal_id, usuario_actual)
 
 
 @router.put("/sucursales/{sucursal_id}", response_model=SucursalResponse)

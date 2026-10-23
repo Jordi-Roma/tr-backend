@@ -19,8 +19,8 @@ from app.modules.catalogo.schemas.catalogo_publico.catalogo_publico_response imp
 )
 
 
-def listar_prendas(filtros: CatalogoFiltros) -> CatalogoPrendasResponse:
-    items, total = listar_prendas_catalogo(filtros.model_dump())
+def listar_prendas(filtros: CatalogoFiltros, empresa_id: int) -> CatalogoPrendasResponse:
+    items, total = listar_prendas_catalogo(filtros.model_dump(), empresa_id)
     return CatalogoPrendasResponse(
         items=items,
         total=total,
@@ -29,8 +29,8 @@ def listar_prendas(filtros: CatalogoFiltros) -> CatalogoPrendasResponse:
     )
 
 
-def obtener_prenda(producto_id: int, sucursal_id: int | None = None) -> CatalogoPrendaDetalleResponse:
-    prenda = obtener_prenda_catalogo(producto_id, sucursal_id)
+def obtener_prenda(producto_id: int, sucursal_id: int | None, empresa_id: int) -> CatalogoPrendaDetalleResponse:
+    prenda = obtener_prenda_catalogo(producto_id, sucursal_id, empresa_id)
 
     if prenda is None:
         raise HTTPException(
@@ -46,8 +46,11 @@ def obtener_disponibilidad(
     talla_id: int | None = None,
     color_id: int | None = None,
     sucursal_id: int | None = None,
+    empresa_id: int | None = None,
 ) -> CatalogoDisponibilidadProductoResponse:
-    prenda = obtener_prenda_catalogo(producto_id)
+    if empresa_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Falta la empresa del catalogo.")
+    prenda = obtener_prenda_catalogo(producto_id, None, empresa_id)
 
     if prenda is None:
         raise HTTPException(
@@ -57,13 +60,13 @@ def obtener_disponibilidad(
 
     return CatalogoDisponibilidadProductoResponse(
         producto_id=producto_id,
-        disponibilidad=obtener_disponibilidad_producto(producto_id, talla_id, color_id, sucursal_id),
+        disponibilidad=obtener_disponibilidad_producto(producto_id, talla_id, color_id, sucursal_id, empresa_id),
     )
 
 
-def listar_sucursales() -> list[CatalogoSucursalResponse]:
-    return [CatalogoSucursalResponse(**row) for row in listar_sucursales_catalogo()]
+def listar_sucursales(empresa_id: int) -> list[CatalogoSucursalResponse]:
+    return [CatalogoSucursalResponse(**row) for row in listar_sucursales_catalogo(empresa_id)]
 
 
-def obtener_filtros() -> CatalogoFiltrosResponse:
-    return CatalogoFiltrosResponse(**obtener_filtros_catalogo())
+def obtener_filtros(empresa_id: int) -> CatalogoFiltrosResponse:
+    return CatalogoFiltrosResponse(**obtener_filtros_catalogo(empresa_id))

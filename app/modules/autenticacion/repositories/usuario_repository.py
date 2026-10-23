@@ -1,3 +1,4 @@
+from app.core.plan_empresa import exigir_cupo_usuarios
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
@@ -68,11 +69,15 @@ def obtener_usuario_por_id(usuario_id: int) -> dict[str, object] | None:
                 u.username,
                 u.correo,
                 u.activo,
+                u.empresa_id,
+                e.codigo AS empresa_codigo,
+                e.estado AS empresa_estado,
                 COALESCE(
                     array_agg(r.nombre) FILTER (WHERE r.nombre IS NOT NULL),
                     ARRAY[]::VARCHAR[]
                 ) AS roles
             FROM usuario u
+            LEFT JOIN empresa e ON e.id = u.empresa_id
             LEFT JOIN usuario_rol ur
                 ON ur.usuario_id = u.id
                 AND ur.activo = TRUE
@@ -86,7 +91,10 @@ def obtener_usuario_por_id(usuario_id: int) -> dict[str, object] | None:
                 u.apellido,
                 u.username,
                 u.correo,
-                u.activo
+                u.activo,
+                u.empresa_id,
+                e.codigo,
+                e.estado
             LIMIT 1;
             """,
             (usuario_id,),
@@ -130,11 +138,13 @@ def obtener_rol_por_nombre(nombre: str) -> dict[str, object] | None:
 def crear_usuario_cliente(
     usuario: UsuarioEntity,
     telefono: str | None,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        exigir_cupo_usuarios(cursor, empresa_id)
         cursor.execute(
             """
             SELECT id, nombre
@@ -157,9 +167,10 @@ def crear_usuario_cliente(
                 username,
                 correo,
                 password_hash,
+                empresa_id,
                 activo
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id, nombre, apellido, username, correo;
             """,
             (
@@ -168,6 +179,7 @@ def crear_usuario_cliente(
                 usuario.username,
                 usuario.correo,
                 usuario.password_hash,
+                empresa_id,
                 usuario.activo,
             ),
         )
@@ -181,10 +193,10 @@ def crear_usuario_cliente(
 
         cursor.execute(
             """
-            INSERT INTO cliente (usuario_id, telefono)
-            VALUES (%s, %s);
+            INSERT INTO cliente (usuario_id, telefono, empresa_id)
+            VALUES (%s, %s, %s);
             """,
-            (usuario_id, telefono),
+            (usuario_id, telefono, empresa_id),
         )
 
         cursor.execute(
@@ -199,15 +211,17 @@ def crear_usuario_cliente(
             """
             INSERT INTO bitacora (
                 usuario_id,
+                empresa_id,
                 accion,
                 modulo,
                 descripcion,
                 resultado
             )
-            VALUES (%s, %s, %s, %s, %s);
+            VALUES (%s, %s, %s, %s, %s, %s);
             """,
             (
                 usuario_id,
+                empresa_id,
                 "REGISTRO_CLIENTE",
                 "AUTENTICACION",
                 "Registro de cliente en el sistema",

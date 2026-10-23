@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from app.core.contexto_empresa import resolver_empresa_por_codigo
 from app.core.security import hashear_password
 from app.modules.autenticacion.entities.usuario_entity import UsuarioEntity
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
@@ -21,6 +22,10 @@ def registrar_cliente(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> UsuarioRegistroResponse:
+    empresa = resolver_empresa_por_codigo(request.empresa_codigo)
+    if empresa is None or empresa["estado"] != "ACTIVA":
+        raise HTTPException(status_code=404, detail="Empresa no encontrada.")
+    empresa_id = int(empresa["id"])
     correo = request.correo.strip().lower()
     username = request.username.strip().lower()
     usuario_existente = obtener_usuario_por_correo(correo)
@@ -54,7 +59,7 @@ def registrar_cliente(
     )
 
     try:
-        usuario_creado = crear_usuario_cliente(usuario, request.telefono)
+        usuario_creado = crear_usuario_cliente(usuario, request.telefono, empresa_id)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -75,5 +80,7 @@ def registrar_cliente(
         username=str(usuario_creado["username"]),
         correo=str(usuario_creado["correo"]),
         rol=str(usuario_creado["rol"]),
+        empresa_id=empresa_id,
+        empresa_codigo=str(empresa["codigo"]),
         mensaje="Cliente registrado correctamente.",
     )

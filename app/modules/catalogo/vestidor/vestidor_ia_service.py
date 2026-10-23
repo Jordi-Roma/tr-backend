@@ -652,6 +652,7 @@ def _calzar_prenda_superior(user_pil: Image.Image, producto_id: int, landmarks, 
 def procesar_tryon_ia(
     imagen_bytes: bytes,
     producto_id: int,
+    empresa_id: int,
     talla: str | None = None,
     color: str | None = None,
     cliente_id: int | None = None,
@@ -666,19 +667,16 @@ def procesar_tryon_ia(
         SELECT p.id, p.nombre, p.tipo_prenda, p.tipo_corte, c.nombre as categoria
         FROM producto p
         LEFT JOIN categoria c ON c.id = p.categoria_id
-        WHERE p.id = %s;
-    """, (producto_id,))
+        WHERE p.id = %s AND p.empresa_id = %s;
+    """, (producto_id, empresa_id))
     row = cursor.fetchone()
     conn.close()
 
     if not row:
-        nombre_prenda = f"Prenda #{producto_id}"
-        tipo_prenda = "SUPERIOR"
-        tipo_corte = "REGULAR_FIT"
-    else:
-        nombre_prenda = row[1]
-        tipo_prenda = str(row[2] or ("INFERIOR" if "jean" in str(row[1]).lower() or "pant" in str(row[1]).lower() else "SUPERIOR")).upper()
-        tipo_corte = str(row[3] or "REGULAR_FIT").upper()
+        raise HTTPException(status_code=404, detail="Prenda no encontrada en esta empresa.")
+    nombre_prenda = row[1]
+    tipo_prenda = str(row[2] or ("INFERIOR" if "jean" in str(row[1]).lower() or "pant" in str(row[1]).lower() else "SUPERIOR")).upper()
+    tipo_corte = str(row[3] or "REGULAR_FIT").upper()
 
     # 2. Cargar y normalizar foto del usuario
     user_img = Image.open(BytesIO(imagen_bytes))
@@ -745,6 +743,7 @@ def procesar_tryon_ia(
             cliente_id=cliente_id,
             producto_id=producto_id,
             variante_id=None,
+            empresa_id=empresa_id,
             origen=f"MOVIL_{metodo_usado}",
         )
     except Exception:

@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from app.core.contexto_empresa import exigir_empresa_id
 
 from app.core.security import hashear_password
 from app.modules.administracion.repositories.empleado_repository import (
@@ -31,7 +32,7 @@ from app.modules.administracion.schemas.empleado.empleado_response import (
 
 def obtener_empleados(usuario_actual: dict[str, object]) -> list[EmpleadoResponse]:
     sucursal_id = obtener_sucursal_permitida(usuario_actual)
-    empleados = listar_empleados(sucursal_id)
+    empleados = listar_empleados(exigir_empresa_id(usuario_actual), sucursal_id)
 
     return [construir_empleado_response(empleado) for empleado in empleados]
 
@@ -40,7 +41,7 @@ def obtener_empleado(
     empleado_id: int,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
-    empleado = obtener_empleado_por_id(empleado_id)
+    empleado = obtener_empleado_por_id(empleado_id, exigir_empresa_id(usuario_actual))
 
     if empleado is None or empleado["activo"] is not True:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
@@ -54,15 +55,16 @@ def asignar_usuario_empleado(
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
     validar_acceso_sucursal(usuario_actual, request.sucursal_id)
-    usuario = obtener_usuario_por_id(request.usuario_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    usuario = obtener_usuario_por_id(request.usuario_id, empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-    validar_sucursal_activa(request.sucursal_id)
+    validar_sucursal_activa(request.sucursal_id, empresa_id)
     rol = validar_rol_laboral(request.rol)
 
-    if usuario_tiene_empleado_activo(request.usuario_id):
+    if usuario_tiene_empleado_activo(request.usuario_id, empresa_id):
         raise HTTPException(
             status_code=409,
             detail="El usuario ya tiene un empleado activo.",
@@ -75,6 +77,7 @@ def asignar_usuario_empleado(
         request.cargo.strip(),
         int(rol["id"]),
         int(usuario_actual["id"]),
+        empresa_id,
     )
     return construir_empleado_response(empleado)
 
@@ -100,7 +103,8 @@ def registrar_usuario_empleado(
     if obtener_usuario_por_correo(correo) is not None:
         raise HTTPException(status_code=409, detail="El correo ya esta registrado.")
 
-    validar_sucursal_activa(request.sucursal_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    validar_sucursal_activa(request.sucursal_id, empresa_id)
     rol = validar_rol_laboral(request.rol)
 
     try:
@@ -119,6 +123,7 @@ def registrar_usuario_empleado(
         request.cargo.strip(),
         int(rol["id"]),
         int(usuario_actual["id"]),
+        empresa_id,
     )
     return construir_empleado_response(empleado)
 
@@ -128,14 +133,15 @@ def editar_empleado(
     request: ActualizarEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
-    empleado_actual = obtener_empleado_por_id(empleado_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    empleado_actual = obtener_empleado_por_id(empleado_id, empresa_id)
 
     if empleado_actual is None or empleado_actual["activo"] is not True:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
 
     validar_acceso_sucursal(usuario_actual, int(empleado_actual["sucursal_id"]))
     validar_acceso_sucursal(usuario_actual, request.sucursal_id)
-    validar_sucursal_activa(request.sucursal_id)
+    validar_sucursal_activa(request.sucursal_id, empresa_id)
     rol = validar_rol_laboral(request.rol)
 
     empleado = actualizar_empleado(
@@ -145,6 +151,7 @@ def editar_empleado(
         request.cargo.strip(),
         int(rol["id"]),
         int(usuario_actual["id"]),
+        empresa_id,
     )
 
     if empleado is None:
@@ -157,13 +164,14 @@ def eliminar_empleado(
     empleado_id: int,
     usuario_actual: dict[str, object],
 ) -> MensajeResponse:
-    empleado = obtener_empleado_por_id(empleado_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    empleado = obtener_empleado_por_id(empleado_id, empresa_id)
 
     if empleado is None or empleado["activo"] is not True:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
 
     validar_acceso_sucursal(usuario_actual, int(empleado["sucursal_id"]))
-    desactivado = desactivar_empleado(empleado_id, int(usuario_actual["id"]))
+    desactivado = desactivar_empleado(empleado_id, int(usuario_actual["id"]), empresa_id)
 
     if not desactivado:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
@@ -176,25 +184,27 @@ def reactivar_empleado(
     request: ActivarEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
-    empleado_actual = obtener_empleado_por_id(empleado_id)
+    empresa_id = exigir_empresa_id(usuario_actual)
+    empleado_actual = obtener_empleado_por_id(empleado_id, empresa_id)
 
     if empleado_actual is None:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
 
     validar_acceso_sucursal(usuario_actual, int(empleado_actual["sucursal_id"]))
 
-    usuario = obtener_usuario_por_id(int(empleado_actual["usuario_id"]))
+    usuario = obtener_usuario_por_id(int(empleado_actual["usuario_id"]), empresa_id)
 
     if usuario is None or usuario["activo"] is not True:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
-    validar_sucursal_activa(int(empleado_actual["sucursal_id"]))
+    validar_sucursal_activa(int(empleado_actual["sucursal_id"]), empresa_id)
     rol = validar_rol_laboral(request.rol)
 
     empleado = activar_empleado(
         empleado_id,
         int(rol["id"]),
         int(usuario_actual["id"]),
+        empresa_id,
     )
 
     if empleado is None:
@@ -220,8 +230,8 @@ def validar_rol_laboral(nombre_rol: str) -> dict[str, object]:
     return rol
 
 
-def validar_sucursal_activa(sucursal_id: int) -> None:
-    sucursal = obtener_sucursal_por_id(sucursal_id)
+def validar_sucursal_activa(sucursal_id: int, empresa_id: int) -> None:
+    sucursal = obtener_sucursal_por_id(sucursal_id, empresa_id)
 
     if sucursal is None or sucursal["activo"] is not True:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
@@ -233,7 +243,7 @@ def obtener_sucursal_permitida(usuario_actual: dict[str, object]) -> int | None:
     if "ADMINISTRADOR" in roles:
         return None
 
-    empleado = obtener_empleado_activo_por_usuario_id(int(usuario_actual["id"]))
+    empleado = obtener_empleado_activo_por_usuario_id(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))
 
     if empleado is None:
         raise HTTPException(

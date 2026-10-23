@@ -13,18 +13,22 @@ def obtener_usuario_para_login(identificador: str) -> dict[str, object] | None:
         cursor.execute(
             """
             SELECT
-                id,
-                nombre,
-                apellido,
-                username,
-                correo,
-                password_hash,
-                intentos_fallidos,
-                bloqueado_hasta,
-                activo
-            FROM usuario
-            WHERE lower(correo) = lower(%s)
-               OR username = lower(%s)
+                u.id,
+                u.nombre,
+                u.apellido,
+                u.username,
+                u.correo,
+                u.password_hash,
+                u.intentos_fallidos,
+                u.bloqueado_hasta,
+                u.activo,
+                u.empresa_id,
+                e.codigo AS empresa_codigo,
+                e.estado AS empresa_estado
+            FROM usuario u
+            LEFT JOIN empresa e ON e.id = u.empresa_id
+            WHERE lower(u.correo) = lower(%s)
+               OR u.username = lower(%s)
             LIMIT 1;
             """,
             (identificador, identificador),
@@ -118,6 +122,7 @@ def reiniciar_intentos_login(usuario_id: int) -> None:
 
 def crear_sesion(
     usuario_id: int,
+    empresa_id: int | None,
     refresh_token_hash: str | None = None,
 ) -> dict[str, object]:
     connection = get_connection()
@@ -128,6 +133,7 @@ def crear_sesion(
             """
             INSERT INTO sesion (
                 usuario_id,
+                empresa_id,
                 refresh_token_hash,
                 fecha_expiracion,
                 activa
@@ -135,12 +141,13 @@ def crear_sesion(
             VALUES (
                 %s,
                 %s,
+                %s,
                 CURRENT_TIMESTAMP + (%s * INTERVAL '1 minute'),
                 TRUE
             )
             RETURNING id, fecha_inicio, fecha_expiracion;
             """,
-            (usuario_id, refresh_token_hash, ACCESS_TOKEN_EXPIRE_MINUTES),
+            (usuario_id, empresa_id, refresh_token_hash, ACCESS_TOKEN_EXPIRE_MINUTES),
         )
         sesion = cursor.fetchone()
         connection.commit()
@@ -219,7 +226,7 @@ def cerrar_sesion_por_id(sesion_id: int, usuario_id: int) -> bool:
         connection.close()
 
 
-def sesion_esta_activa(sesion_id: int, usuario_id: int) -> bool:
+def sesion_esta_activa(sesion_id: int, usuario_id: int, empresa_id: int | None) -> bool:
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -230,12 +237,13 @@ def sesion_esta_activa(sesion_id: int, usuario_id: int) -> bool:
             FROM sesion
             WHERE id = %s
               AND usuario_id = %s
+              AND empresa_id IS NOT DISTINCT FROM %s
               AND activa = TRUE
               AND fecha_cierre IS NULL
               AND fecha_expiracion > CURRENT_TIMESTAMP
             LIMIT 1;
             """,
-            (sesion_id, usuario_id),
+            (sesion_id, usuario_id, empresa_id),
         )
         return cursor.fetchone() is not None
     finally:

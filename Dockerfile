@@ -8,6 +8,7 @@ ENV PORT=8000
 
 # Install system dependencies required by OpenCV/MediaPipe on Linux
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
     libxcb1 \
     libgl1 \
     libglib2.0-0 \

@@ -1,3 +1,4 @@
+from app.core.plan_empresa import exigir_operaciones_empresa
 from datetime import date
 from decimal import Decimal
 from uuid import uuid4
@@ -19,6 +20,7 @@ MONTO_RESERVA_POR_DIA = Decimal("10.00")
 
 def crear_reserva_desde_carrito(
     usuario_id: int,
+    empresa_id: int,
     sucursal_id: int,
     fecha_cita: date,
     observacion: str | None,
@@ -27,10 +29,18 @@ def crear_reserva_desde_carrito(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        exigir_operaciones_empresa(empresa_id, cursor=cursor)
+        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
         if cliente_id is None:
             raise ValueError("El usuario no tiene cliente asociado.")
+
+        cursor.execute(
+            "SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE LIMIT 1",
+            (sucursal_id, empresa_id),
+        )
+        if cursor.fetchone() is None:
+            raise ValueError("La sucursal no pertenece a tu empresa.")
 
         carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
         carrito = _armar_carrito_cursor(cursor, carrito_id)
@@ -50,7 +60,7 @@ def crear_reserva_desde_carrito(
                 raise ValueError("Una prenda no tiene precio vigente.")
             item["precio_unitario"] = precio
             item["subtotal"] = precio * cantidad
-            _validar_y_reservar_stock_cursor(cursor, variante_id, sucursal_id, cantidad)
+            _validar_y_reservar_stock_cursor(cursor, variante_id, sucursal_id, cantidad, empresa_id)
 
         total = sum((item["subtotal"] or Decimal("0.00") for item in items), Decimal("0.00"))
         monto_reserva = _calcular_monto_reserva(fecha_cita)
@@ -62,6 +72,7 @@ def crear_reserva_desde_carrito(
         cursor.execute(
             """
             INSERT INTO reserva (
+                empresa_id,
                 cliente_id,
                 sucursal_id,
                 codigo,
@@ -82,12 +93,14 @@ def crear_reserva_desde_carrito(
                 %s,
                 %s,
                 %s,
+                %s,
                 (%s::date + INTERVAL '1 day'),
                 %s
             )
             RETURNING id;
             """,
             (
+                empresa_id,
                 cliente_id,
                 sucursal_id,
                 codigo,
@@ -144,7 +157,7 @@ def crear_reserva_desde_carrito(
         )
 
         connection.commit()
-        reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
         if reserva is None:
             raise RuntimeError("No se pudo recuperar la reserva creada.")
         return reserva
@@ -156,14 +169,14 @@ def crear_reserva_desde_carrito(
         connection.close()
 
 
-def listar_reservas_cliente(usuario_id: int) -> list[dict[str, object]]:
+def listar_reservas_cliente(usuario_id: int, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         connection.commit()
-        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
         if cliente_id is None:
             return []
@@ -172,14 +185,14 @@ def listar_reservas_cliente(usuario_id: int) -> list[dict[str, object]]:
             """
             SELECT id
             FROM reserva
-            WHERE cliente_id = %s AND activo = TRUE
+            WHERE cliente_id = %s AND empresa_id = %s AND activo = TRUE
             ORDER BY fecha_reserva DESC, id DESC;
             """,
-            (cliente_id,),
+            (cliente_id, empresa_id),
         )
         return [
             reserva
-            for reserva in (_obtener_reserva_por_id_cursor(cursor, int(row["id"])) for row in cursor.fetchall())
+            for reserva in (_obtener_reserva_por_id_cursor(cursor, int(row["id"]), empresa_id) for row in cursor.fetchall())
             if reserva is not None
         ]
     finally:
@@ -187,7 +200,7 @@ def listar_reservas_cliente(usuario_id: int) -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_sucursal_empleado_usuario(usuario_id: int) -> int | None:
+def obtener_sucursal_empleado_usuario(usuario_id: int, empresa_id: int) -> int | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -196,10 +209,10 @@ def obtener_sucursal_empleado_usuario(usuario_id: int) -> int | None:
             """
             SELECT sucursal_id
             FROM empleado
-            WHERE usuario_id = %s AND activo = TRUE
+            WHERE usuario_id = %s AND empresa_id = %s AND activo = TRUE
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         row = cursor.fetchone()
         return int(row["sucursal_id"]) if row is not None else None
@@ -209,6 +222,7 @@ def obtener_sucursal_empleado_usuario(usuario_id: int) -> int | None:
 
 
 def listar_reservas_admin(
+    empresa_id: int,
     estado: str | None = None,
     sucursal_id: int | None = None,
 ) -> list[dict[str, object]]:
@@ -216,9 +230,9 @@ def listar_reservas_admin(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         connection.commit()
-        params: list[object] = []
+        params: list[object] = [empresa_id]
         estado_sql = ""
         sucursal_sql = ""
 
@@ -236,14 +250,14 @@ def listar_reservas_admin(
             f"""
             SELECT id
             FROM reserva
-            WHERE activo = TRUE {estado_sql} {sucursal_sql}
+            WHERE activo = TRUE AND empresa_id = %s {estado_sql} {sucursal_sql}
             ORDER BY fecha_reserva DESC, id DESC;
             """,
             params,
         )
         return [
             reserva
-            for reserva in (_obtener_reserva_por_id_cursor(cursor, int(row["id"])) for row in cursor.fetchall())
+            for reserva in (_obtener_reserva_por_id_cursor(cursor, int(row["id"]), empresa_id) for row in cursor.fetchall())
             if reserva is not None
         ]
     finally:
@@ -251,14 +265,14 @@ def listar_reservas_admin(
         connection.close()
 
 
-def obtener_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, object] | None:
+def obtener_reserva_cliente(usuario_id: int, reserva_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         connection.commit()
-        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
         if cliente_id is None:
             return None
@@ -267,16 +281,16 @@ def obtener_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, objec
             """
             SELECT id
             FROM reserva
-            WHERE id = %s AND cliente_id = %s AND activo = TRUE
+            WHERE id = %s AND cliente_id = %s AND empresa_id = %s AND activo = TRUE
             LIMIT 1;
             """,
-            (reserva_id, cliente_id),
+            (reserva_id, cliente_id, empresa_id),
         )
 
         if cursor.fetchone() is None:
             return None
 
-        return _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     finally:
         cursor.close()
         connection.close()
@@ -284,15 +298,16 @@ def obtener_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, objec
 
 def obtener_reserva_admin(
     reserva_id: int,
+    empresa_id: int,
     sucursal_id: int | None = None,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         connection.commit()
-        reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
 
         if reserva is None:
             return None
@@ -306,12 +321,12 @@ def obtener_reserva_admin(
         connection.close()
 
 
-def cancelar_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, object] | None:
+def cancelar_reserva_cliente(usuario_id: int, reserva_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
         if cliente_id is None:
             connection.rollback()
@@ -321,10 +336,10 @@ def cancelar_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, obje
             """
             SELECT id, estado
             FROM reserva
-            WHERE id = %s AND cliente_id = %s AND activo = TRUE
+            WHERE id = %s AND cliente_id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
             """,
-            (reserva_id, cliente_id),
+            (reserva_id, cliente_id, empresa_id),
         )
         reserva = cursor.fetchone()
 
@@ -345,7 +360,7 @@ def cancelar_reserva_cliente(usuario_id: int, reserva_id: int) -> dict[str, obje
         )
 
         connection.commit()
-        return _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -358,6 +373,7 @@ def cambiar_estado_reserva(
     usuario_id: int,
     reserva_id: int,
     nuevo_estado: str,
+    empresa_id: int,
     sucursal_id: int | None = None,
 ) -> dict[str, object] | None:
     connection = get_connection()
@@ -368,10 +384,10 @@ def cambiar_estado_reserva(
             """
             SELECT id, estado, sucursal_id
             FROM reserva
-            WHERE id = %s AND activo = TRUE
+            WHERE id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
             """,
-            (reserva_id,),
+            (reserva_id, empresa_id),
         )
         reserva = cursor.fetchone()
 
@@ -400,7 +416,7 @@ def cambiar_estado_reserva(
         )
 
         connection.commit()
-        return _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -412,6 +428,7 @@ def cambiar_estado_reserva(
 def finalizar_reserva_como_venta(
     usuario_id: int,
     reserva_id: int,
+    empresa_id: int,
     sucursal_id: int | None,
     metodo_pago: str | None,
     observacion: str | None,
@@ -428,15 +445,15 @@ def finalizar_reserva_como_venta(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         cursor.execute(
             """
             SELECT id, cliente_id, sucursal_id, estado, total, monto_reserva, anticipo_pagado, fecha_expiracion
             FROM reserva
-            WHERE id = %s AND activo = TRUE
+            WHERE id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
             """,
-            (reserva_id,),
+            (reserva_id, empresa_id),
         )
         reserva = cursor.fetchone()
 
@@ -481,6 +498,7 @@ def finalizar_reserva_como_venta(
         cursor.execute(
             """
             INSERT INTO venta (
+                empresa_id,
                 codigo,
                 sucursal_id,
                 usuario_id,
@@ -493,10 +511,11 @@ def finalizar_reserva_como_venta(
                 metodo_pago,
                 observacion
             )
-            VALUES (%s, %s, %s, %s, 'PRESENCIAL', 'COMPLETADA', %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'PRESENCIAL', 'COMPLETADA', %s, %s, %s, %s, %s)
             RETURNING id;
             """,
             (
+                empresa_id,
                 codigo,
                 reserva["sucursal_id"],
                 usuario_id,
@@ -571,7 +590,7 @@ def finalizar_reserva_como_venta(
         )
 
         connection.commit()
-        return _obtener_reserva_por_id_cursor(cursor, reserva_id)
+        return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -583,25 +602,26 @@ def finalizar_reserva_como_venta(
 def crear_orden_anticipo_reserva(
     usuario_id: int,
     reserva_id: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
         if cliente_id is None:
             connection.rollback()
             return None
 
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         cursor.execute(
             """
             SELECT id, codigo, cliente_id, sucursal_id, estado, monto_reserva, anticipo_pagado
             FROM reserva
-            WHERE id = %s AND cliente_id = %s AND activo = TRUE
+            WHERE id = %s AND cliente_id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
             """,
-            (reserva_id, cliente_id),
+            (reserva_id, cliente_id, empresa_id),
         )
         reserva = cursor.fetchone()
 
@@ -622,6 +642,7 @@ def crear_orden_anticipo_reserva(
         cursor.execute(
             """
             INSERT INTO venta (
+                empresa_id,
                 codigo,
                 sucursal_id,
                 usuario_id,
@@ -634,10 +655,11 @@ def crear_orden_anticipo_reserva(
                 metodo_pago,
                 observacion
             )
-            VALUES (%s, %s, %s, %s, 'WEB', 'PENDIENTE_PAGO', %s, 0, %s, 'STRIPE', %s)
+            VALUES (%s, %s, %s, %s, %s, 'WEB', 'PENDIENTE_PAGO', %s, 0, %s, 'STRIPE', %s)
             RETURNING id;
             """,
             (
+                empresa_id,
                 codigo_venta,
                 reserva["sucursal_id"],
                 usuario_id,
@@ -652,6 +674,7 @@ def crear_orden_anticipo_reserva(
         cursor.execute(
             """
             INSERT INTO orden_pago (
+                empresa_id,
                 venta_id,
                 cliente_id,
                 reserva_id,
@@ -662,10 +685,10 @@ def crear_orden_anticipo_reserva(
                 estado,
                 proveedor
             )
-            VALUES (%s, %s, %s, 'RESERVA_ANTICIPO', %s, 'BOB', 'TARJETA', 'PENDIENTE', 'STRIPE')
+            VALUES (%s, %s, %s, %s, 'RESERVA_ANTICIPO', %s, 'BOB', 'TARJETA', 'PENDIENTE', 'STRIPE')
             RETURNING *;
             """,
-            (venta_id, reserva["cliente_id"], reserva_id, monto),
+            (empresa_id, venta_id, reserva["cliente_id"], reserva_id, monto),
         )
         orden = dict(cursor.fetchone())
 
@@ -710,16 +733,18 @@ def crear_orden_anticipo_reserva(
 def finalizar_reserva_cliente(
     usuario_id: int,
     reserva_id: int,
+    empresa_id: int,
     metodo_pago: str | None,
     observacion: str | None,
     items: list[dict[str, int]],
 ) -> dict[str, object] | None:
-    cliente_id = _obtener_cliente_id_por_usuario_global(usuario_id)
+    cliente_id = _obtener_cliente_id_por_usuario_global(usuario_id, empresa_id)
     if cliente_id is None:
         return None
     return _crear_o_completar_venta_reserva(
         usuario_id=usuario_id,
         reserva_id=reserva_id,
+        empresa_id=empresa_id,
         cliente_id=cliente_id,
         sucursal_id=None,
         metodo_pago=metodo_pago,
@@ -729,7 +754,7 @@ def finalizar_reserva_cliente(
     )
 
 
-def confirmar_pago_stripe_reserva(orden_id: int, usuario_id_movimiento: int | None = None) -> dict[str, object]:
+def confirmar_pago_stripe_reserva(orden_id: int, usuario_id_movimiento: int | None, empresa_id: int) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -738,11 +763,13 @@ def confirmar_pago_stripe_reserva(orden_id: int, usuario_id_movimiento: int | No
             """
             SELECT op.*, v.usuario_id, v.sucursal_id
             FROM orden_pago op
-            JOIN venta v ON v.id = op.venta_id
-            WHERE op.id = %s AND op.activo = TRUE
-            FOR UPDATE;
+            JOIN venta v ON v.id = op.venta_id AND v.empresa_id = op.empresa_id
+            JOIN reserva r ON r.id = op.reserva_id AND r.empresa_id = op.empresa_id
+              AND r.cliente_id = op.cliente_id AND r.sucursal_id = v.sucursal_id
+            WHERE op.id = %s AND op.empresa_id = %s AND op.activo = TRUE
+            FOR UPDATE OF op;
             """,
-            (orden_id,),
+            (orden_id, empresa_id),
         )
         orden = cursor.fetchone()
         if orden is None:
@@ -767,6 +794,7 @@ def _crear_o_completar_venta_reserva(
     *,
     usuario_id: int,
     reserva_id: int,
+    empresa_id: int,
     cliente_id: int | None,
     sucursal_id: int | None,
     metodo_pago: str | None,
@@ -789,15 +817,15 @@ def _crear_o_completar_venta_reserva(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        _vencer_reservas_expiradas_cursor(cursor)
+        _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         cursor.execute(
             """
             SELECT id, codigo, cliente_id, sucursal_id, estado, total, monto_reserva, anticipo_pagado
             FROM reserva
-            WHERE id = %s AND activo = TRUE
+            WHERE id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
             """,
-            (reserva_id,),
+            (reserva_id, empresa_id),
         )
         reserva = cursor.fetchone()
 
@@ -850,6 +878,7 @@ def _crear_o_completar_venta_reserva(
         cursor.execute(
             """
             INSERT INTO venta (
+                empresa_id,
                 codigo,
                 sucursal_id,
                 usuario_id,
@@ -862,10 +891,11 @@ def _crear_o_completar_venta_reserva(
                 metodo_pago,
                 observacion
             )
-            VALUES (%s, %s, %s, %s, 'PRESENCIAL', %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'PRESENCIAL', %s, %s, %s, %s, %s, %s)
             RETURNING id;
             """,
             (
+                empresa_id,
                 codigo,
                 reserva["sucursal_id"],
                 usuario_id,
@@ -903,6 +933,7 @@ def _crear_o_completar_venta_reserva(
             cursor.execute(
                 """
                 INSERT INTO orden_pago (
+                    empresa_id,
                     venta_id,
                     cliente_id,
                     reserva_id,
@@ -913,10 +944,10 @@ def _crear_o_completar_venta_reserva(
                     estado,
                     proveedor
                 )
-                VALUES (%s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', 'TARJETA', 'PENDIENTE', 'STRIPE')
+                VALUES (%s, %s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', 'TARJETA', 'PENDIENTE', 'STRIPE')
                 RETURNING *;
                 """,
-                (venta_id, reserva["cliente_id"], reserva_id, total_venta),
+                (empresa_id, venta_id, reserva["cliente_id"], reserva_id, total_venta),
             )
             orden = dict(cursor.fetchone())
             connection.commit()
@@ -932,7 +963,7 @@ def _crear_o_completar_venta_reserva(
                 }
                 for item in items_venta
             ]
-            return {"reserva": _obtener_reserva_por_id_cursor(cursor, reserva_id), "orden": orden}
+            return {"reserva": _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id), "orden": orden}
 
         _completar_reserva_con_venta_cursor(
             cursor,
@@ -948,6 +979,7 @@ def _crear_o_completar_venta_reserva(
         cursor.execute(
             """
             INSERT INTO orden_pago (
+                empresa_id,
                 venta_id,
                 cliente_id,
                 reserva_id,
@@ -959,9 +991,10 @@ def _crear_o_completar_venta_reserva(
                 proveedor,
                 fecha_pago
             )
-            VALUES (%s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', %s, 'PAGADO', %s, CURRENT_TIMESTAMP);
+            VALUES (%s, %s, %s, %s, 'RESERVA_SALDO', %s, 'BOB', %s, 'PAGADO', %s, CURRENT_TIMESTAMP);
             """,
             (
+                empresa_id,
                 venta_id,
                 reserva["cliente_id"],
                 reserva_id,
@@ -971,7 +1004,7 @@ def _crear_o_completar_venta_reserva(
             ),
         )
         connection.commit()
-        return {"reserva": _obtener_reserva_por_id_cursor(cursor, reserva_id), "orden": None}
+        return {"reserva": _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id), "orden": None}
     except Exception:
         connection.rollback()
         raise
@@ -1040,10 +1073,10 @@ def _confirmar_saldo_reserva_cursor(
         """
         SELECT id, codigo, cliente_id, sucursal_id, estado, total, monto_reserva, anticipo_pagado
         FROM reserva
-        WHERE id = %s AND activo = TRUE
+        WHERE id = %s AND empresa_id = %s AND activo = TRUE
         FOR UPDATE;
         """,
-        (reserva_id,),
+        (reserva_id, orden["empresa_id"]),
     )
     reserva = cursor.fetchone()
     if reserva is None:
@@ -1172,11 +1205,11 @@ def _obtener_orden_pago_cursor(cursor, orden_id: int) -> dict[str, object]:
     return dict(cursor.fetchone())
 
 
-def _obtener_cliente_id_por_usuario_global(usuario_id: int) -> int | None:
+def _obtener_cliente_id_por_usuario_global(usuario_id: int, empresa_id: int) -> int | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
-        return _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id)
+        return _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
     finally:
         cursor.close()
         connection.close()
@@ -1187,17 +1220,21 @@ def _validar_y_reservar_stock_cursor(
     producto_variante_id: int,
     sucursal_id: int,
     cantidad: int,
+    empresa_id: int,
 ) -> None:
     cursor.execute(
         """
-        SELECT id, stock_disponible, stock_reservado
-        FROM inventario_sucursal
-        WHERE producto_variante_id = %s
-          AND sucursal_id = %s
-          AND activo = TRUE
-        FOR UPDATE;
+        SELECT inv.id, inv.stock_disponible, inv.stock_reservado
+        FROM inventario_sucursal inv
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        JOIN sucursal s ON s.id = inv.sucursal_id AND s.empresa_id = inv.empresa_id
+        WHERE inv.producto_variante_id = %s
+          AND inv.sucursal_id = %s
+          AND inv.empresa_id = %s
+          AND inv.activo = TRUE
+        FOR UPDATE OF inv;
         """,
-        (producto_variante_id, sucursal_id),
+        (producto_variante_id, sucursal_id, empresa_id),
     )
     inventario = cursor.fetchone()
 
@@ -1246,17 +1283,18 @@ def _validar_items_reserva(items: list[dict[str, object]], sucursal_id: int) -> 
         raise ValueError("No puedes reservar mas de 2 unidades de la misma prenda.")
 
 
-def _vencer_reservas_expiradas_cursor(cursor) -> None:
+def _vencer_reservas_expiradas_cursor(cursor, empresa_id: int) -> None:
     cursor.execute(
         """
         SELECT id
         FROM reserva
-        WHERE activo = TRUE
+        WHERE activo = TRUE AND empresa_id = %s
           AND estado NOT IN ('COMPLETADA', 'CANCELADA', 'VENCIDA')
           AND fecha_expiracion IS NOT NULL
           AND fecha_expiracion < CURRENT_TIMESTAMP
         FOR UPDATE;
-        """
+        """,
+        (empresa_id,),
     )
     reservas = cursor.fetchall()
 
@@ -1269,9 +1307,9 @@ def _vencer_reservas_expiradas_cursor(cursor) -> None:
 def _liberar_stock_reserva_cursor(cursor, reserva_id: int) -> None:
     cursor.execute(
         """
-        SELECT r.sucursal_id, rd.producto_variante_id, rd.cantidad
+        SELECT r.sucursal_id, r.empresa_id, rd.producto_variante_id, rd.cantidad
         FROM reserva_detalle rd
-        JOIN reserva r ON r.id = rd.reserva_id
+        JOIN reserva r ON r.id = rd.reserva_id AND r.empresa_id = rd.empresa_id
         WHERE rd.reserva_id = %s AND rd.activo = TRUE;
         """,
         (reserva_id,),
@@ -1286,12 +1324,14 @@ def _liberar_stock_reserva_cursor(cursor, reserva_id: int) -> None:
                 fecha_actualizacion = CURRENT_TIMESTAMP
             WHERE sucursal_id = %s
               AND producto_variante_id = %s
+              AND empresa_id = %s
               AND activo = TRUE;
             """,
             (
                 detalle["cantidad"],
                 detalle["sucursal_id"],
                 detalle["producto_variante_id"],
+                detalle["empresa_id"],
             ),
         )
 
@@ -1304,12 +1344,14 @@ def _liberar_stock_variante_cursor(
 ) -> None:
     cursor.execute(
         """
-        UPDATE inventario_sucursal
+        UPDATE inventario_sucursal inv
         SET stock_reservado = GREATEST(stock_reservado - %s, 0),
             fecha_actualizacion = CURRENT_TIMESTAMP
-        WHERE sucursal_id = %s
-          AND producto_variante_id = %s
-          AND activo = TRUE;
+        FROM sucursal s, producto_variante v
+        WHERE inv.sucursal_id = %s AND s.id = inv.sucursal_id
+          AND inv.producto_variante_id = %s AND v.id = inv.producto_variante_id
+          AND inv.empresa_id = s.empresa_id AND inv.empresa_id = v.empresa_id
+          AND inv.activo = TRUE;
         """,
         (cantidad, sucursal_id, producto_variante_id),
     )
@@ -1326,12 +1368,14 @@ def _descontar_stock_reservado_vendido_cursor(
 ) -> None:
     cursor.execute(
         """
-        SELECT id, stock_disponible, stock_reservado
-        FROM inventario_sucursal
-        WHERE sucursal_id = %s
-          AND producto_variante_id = %s
-          AND activo = TRUE
-        FOR UPDATE;
+        SELECT inv.id, inv.stock_disponible, inv.stock_reservado
+        FROM inventario_sucursal inv
+        JOIN sucursal s ON s.id = inv.sucursal_id AND s.empresa_id = inv.empresa_id
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        WHERE inv.sucursal_id = %s
+          AND inv.producto_variante_id = %s
+          AND inv.activo = TRUE
+        FOR UPDATE OF inv;
         """,
         (sucursal_id, producto_variante_id),
     )
@@ -1398,11 +1442,12 @@ def _actualizar_estado_reserva_cursor(cursor, reserva_id: int, estado: str) -> N
     )
 
 
-def _obtener_reserva_por_id_cursor(cursor, reserva_id: int) -> dict[str, object] | None:
+def _obtener_reserva_por_id_cursor(cursor, reserva_id: int, empresa_id: int) -> dict[str, object] | None:
     cursor.execute(
         """
         SELECT
             r.id,
+            r.empresa_id,
             r.codigo,
             r.cliente_id,
             CONCAT(u.nombre, ' ', u.apellido) AS cliente,
@@ -1421,14 +1466,14 @@ def _obtener_reserva_por_id_cursor(cursor, reserva_id: int) -> dict[str, object]
             r.fecha_expiracion,
             r.observacion
         FROM reserva r
-        JOIN cliente cl ON cl.id = r.cliente_id
-        JOIN usuario u ON u.id = cl.usuario_id
-        JOIN sucursal s ON s.id = r.sucursal_id
+        JOIN cliente cl ON cl.id = r.cliente_id AND cl.empresa_id = r.empresa_id
+        JOIN usuario u ON u.id = cl.usuario_id AND u.empresa_id = r.empresa_id
+        JOIN sucursal s ON s.id = r.sucursal_id AND s.empresa_id = r.empresa_id
         JOIN ciudad ci ON ci.id = s.ciudad_id
-        WHERE r.id = %s AND r.activo = TRUE
+        WHERE r.id = %s AND r.empresa_id = %s AND r.activo = TRUE
         LIMIT 1;
         """,
-        (reserva_id,),
+        (reserva_id, empresa_id),
     )
     reserva = cursor.fetchone()
 
@@ -1449,15 +1494,16 @@ def _obtener_reserva_por_id_cursor(cursor, reserva_id: int) -> dict[str, object]
             rd.precio_unitario,
             rd.subtotal
         FROM reserva_detalle rd
-        JOIN producto_variante pv ON pv.id = rd.producto_variante_id
-        JOIN producto p ON p.id = pv.producto_id
-        JOIN categoria ca ON ca.id = p.categoria_id
-        JOIN talla t ON t.id = pv.talla_id
-        JOIN color co ON co.id = pv.color_id
-        WHERE rd.reserva_id = %s AND rd.activo = TRUE
+        JOIN reserva r ON r.id = rd.reserva_id AND r.empresa_id = rd.empresa_id
+        JOIN producto_variante pv ON pv.id = rd.producto_variante_id AND pv.empresa_id = r.empresa_id
+        JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = r.empresa_id
+        JOIN categoria ca ON ca.id = p.categoria_id AND ca.empresa_id = r.empresa_id
+        JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = r.empresa_id
+        JOIN color co ON co.id = pv.color_id AND co.empresa_id = r.empresa_id
+        WHERE rd.reserva_id = %s AND r.empresa_id = %s AND rd.activo = TRUE
         ORDER BY rd.id ASC;
         """,
-        (reserva_id,),
+        (reserva_id, int(reserva["empresa_id"])),
     )
 
     data = dict(reserva)

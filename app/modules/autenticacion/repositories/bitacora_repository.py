@@ -11,6 +11,7 @@ def registrar_bitacora(
     descripcion: str | None = None,
     direccion_ip: str | None = None,
     user_agent: str | None = None,
+    empresa_id: int | None = None,
 ) -> None:
     """
     Registra un evento en la bitacora del sistema.
@@ -34,6 +35,7 @@ def registrar_bitacora(
             """
             INSERT INTO bitacora (
                 usuario_id,
+                empresa_id,
                 accion,
                 modulo,
                 descripcion,
@@ -41,9 +43,11 @@ def registrar_bitacora(
                 direccion_ip,
                 user_agent
             )
-            VALUES (%s, %s, %s, %s, %s, %s::INET, %s);
+            VALUES (%s, COALESCE(%s, (SELECT empresa_id FROM usuario WHERE id = %s)), %s, %s, %s, %s, %s::INET, %s);
             """,
             (
+                usuario_id,
+                empresa_id,
                 usuario_id,
                 accion,
                 modulo,
@@ -63,6 +67,7 @@ def registrar_bitacora(
 
 
 def listar_bitacora(
+    empresa_id: int | None,
     usuario_id: int | None = None,
     accion: str | None = None,
     modulo: str | None = None,
@@ -76,8 +81,8 @@ def listar_bitacora(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        condiciones: list[str] = []
-        params: list[object] = []
+        condiciones: list[str] = ["b.empresa_id IS NOT DISTINCT FROM %s"]
+        params: list[object] = [empresa_id]
 
         if usuario_id is not None:
             condiciones.append("b.usuario_id = %s")
@@ -136,6 +141,7 @@ def listar_bitacora(
 
 
 def contar_bitacora(
+    empresa_id: int | None,
     usuario_id: int | None = None,
     accion: str | None = None,
     modulo: str | None = None,
@@ -147,8 +153,8 @@ def contar_bitacora(
     cursor = connection.cursor()
 
     try:
-        condiciones: list[str] = []
-        params: list[object] = []
+        condiciones: list[str] = ["b.empresa_id IS NOT DISTINCT FROM %s"]
+        params: list[object] = [empresa_id]
 
         if usuario_id is not None:
             condiciones.append("b.usuario_id = %s")
@@ -189,7 +195,7 @@ def contar_bitacora(
         connection.close()
 
 
-def obtener_registro_bitacora(registro_id: int) -> dict[str, object] | None:
+def obtener_registro_bitacora(registro_id: int, empresa_id: int | None) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -213,9 +219,10 @@ def obtener_registro_bitacora(registro_id: int) -> dict[str, object] | None:
             FROM bitacora b
             LEFT JOIN usuario u ON u.id = b.usuario_id
             WHERE b.id = %s
+              AND b.empresa_id IS NOT DISTINCT FROM %s
             LIMIT 1;
             """,
-            (registro_id,),
+            (registro_id, empresa_id),
         )
         row = cursor.fetchone()
         return dict(row) if row else None

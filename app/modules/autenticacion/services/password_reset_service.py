@@ -3,6 +3,7 @@ import secrets
 
 from fastapi import HTTPException
 
+from app.core.contexto_empresa import resolver_empresa_por_codigo
 from app.core.config import PASSWORD_RESET_EMAIL, PASSWORD_RESET_TOKEN_MINUTES, SECRET_KEY
 from app.core.email import enviar_correo
 from app.core.security import hashear_password
@@ -31,7 +32,11 @@ def solicitar_reset_password(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> PasswordResetMensajeResponse:
-    usuario = obtener_usuario_por_identificador(request.identificador)
+    empresa = resolver_empresa_por_codigo(request.empresa_codigo)
+    usuario = (
+        obtener_usuario_por_identificador(request.identificador, int(empresa["id"]))
+        if empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"} else None
+    )
 
     if usuario is None or not bool(usuario["activo"]):
         registrar_bitacora(
@@ -53,9 +58,9 @@ def solicitar_reset_password(
     )
     enviar_correo(
         PASSWORD_RESET_EMAIL,
-        "Codigo de recuperacion - StyleAR",
+        f"Codigo de recuperacion - {empresa['nombre']}",
         (
-            "Se solicito recuperar una contrasena en StyleAR.\n\n"
+            f"Se solicito recuperar una contrasena en {empresa['nombre']}.\n\n"
             f"Cuenta: {usuario['username']} ({usuario['correo']})\n"
             f"Codigo: {codigo}\n\n"
             f"Este codigo vence en {PASSWORD_RESET_TOKEN_MINUTES} minutos."
@@ -82,7 +87,11 @@ def confirmar_reset_password(
     if request.password_nuevo != request.confirmar_password_nuevo:
         raise HTTPException(status_code=400, detail="Las contrasenas no coinciden.")
 
-    usuario = obtener_usuario_por_identificador(request.identificador)
+    empresa = resolver_empresa_por_codigo(request.empresa_codigo)
+    usuario = (
+        obtener_usuario_por_identificador(request.identificador, int(empresa["id"]))
+        if empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"} else None
+    )
 
     if usuario is None or not bool(usuario["activo"]):
         raise HTTPException(status_code=400, detail="Codigo invalido o expirado.")

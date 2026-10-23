@@ -7,7 +7,7 @@ from app.database.connection import get_connection
 # CATEGORÍAS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def listar_categorias() -> list[dict[str, object]]:
+def listar_categorias(*, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -18,8 +18,10 @@ def listar_categorias() -> list[dict[str, object]]:
                    c.nombre, c.descripcion, c.activo, c.fecha_creacion
             FROM categoria c
             LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id
+            WHERE c.empresa_id = %s
             ORDER BY c.nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         return [dict(c) for c in cursor.fetchall()]
     finally:
@@ -27,7 +29,7 @@ def listar_categorias() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_categoria_por_id(categoria_id: int) -> dict[str, object] | None:
+def obtener_categoria_por_id(categoria_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -38,10 +40,10 @@ def obtener_categoria_por_id(categoria_id: int) -> dict[str, object] | None:
                    c.nombre, c.descripcion, c.activo, c.fecha_creacion
             FROM categoria c
             LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id
-            WHERE c.id = %s
+            WHERE c.empresa_id = %s AND c.id = %s
             LIMIT 1;
             """,
-            (categoria_id,),
+            (empresa_id, categoria_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -50,7 +52,7 @@ def obtener_categoria_por_id(categoria_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_descendientes_categoria(categoria_id: int) -> list[int]:
+def obtener_descendientes_categoria(categoria_id: int, *, empresa_id: int) -> list[int]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -58,14 +60,14 @@ def obtener_descendientes_categoria(categoria_id: int) -> list[int]:
         cursor.execute(
             """
             WITH RECURSIVE descendientes AS (
-                SELECT id FROM categoria WHERE id = %s
+                SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
                 UNION ALL
                 SELECT c.id FROM categoria c
-                INNER JOIN descendientes d ON c.categoria_padre_id = d.id
+                INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )
             SELECT id FROM descendientes WHERE id != %s;
             """,
-            (categoria_id, categoria_id),
+            (empresa_id, categoria_id, empresa_id, categoria_id),
         )
         return [c['id'] for c in cursor.fetchall()]
     finally:
@@ -73,7 +75,7 @@ def obtener_descendientes_categoria(categoria_id: int) -> list[int]:
         connection.close()
 
 
-def obtener_categoria_por_nombre(nombre: str) -> dict[str, object] | None:
+def obtener_categoria_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -82,10 +84,10 @@ def obtener_categoria_por_nombre(nombre: str) -> dict[str, object] | None:
             """
             SELECT id, nombre
             FROM categoria
-            WHERE lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
             LIMIT 1;
             """,
-            (nombre,),
+            (empresa_id, nombre),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -98,6 +100,8 @@ def crear_categoria(
     categoria_padre_id: int | None,
     nombre: str,
     descripcion: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -105,11 +109,11 @@ def crear_categoria(
     try:
         cursor.execute(
             """
-            INSERT INTO categoria (categoria_padre_id, nombre, descripcion)
-            VALUES (%s, %s, %s)
+            INSERT INTO categoria (categoria_padre_id, nombre, descripcion, empresa_id)
+            VALUES (%s, %s, %s, %s)
             RETURNING id, categoria_padre_id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (categoria_padre_id, nombre, descripcion),
+            (categoria_padre_id, nombre, descripcion, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
@@ -127,6 +131,8 @@ def actualizar_categoria(
     categoria_padre_id: int | None,
     nombre: str,
     descripcion: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -138,10 +144,10 @@ def actualizar_categoria(
             SET categoria_padre_id = %s,
                 nombre = %s,
                 descripcion = %s
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, categoria_padre_id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (categoria_padre_id, nombre, descripcion, categoria_id),
+            (categoria_padre_id, nombre, descripcion, empresa_id, categoria_id),
         )
         row = cursor.fetchone()
 
@@ -159,7 +165,7 @@ def actualizar_categoria(
         connection.close()
 
 
-def desactivar_categoria(categoria_id: int) -> bool:
+def desactivar_categoria(categoria_id: int, *, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -167,18 +173,18 @@ def desactivar_categoria(categoria_id: int) -> bool:
         cursor.execute(
             """
             WITH RECURSIVE descendientes AS (
-                SELECT id FROM categoria WHERE id = %s
+                SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
                 UNION ALL
                 SELECT c.id FROM categoria c
-                INNER JOIN descendientes d ON c.categoria_padre_id = d.id
+                INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )
             UPDATE categoria
             SET activo = FALSE
-            WHERE id IN (SELECT id FROM descendientes)
+            WHERE empresa_id = %s AND id IN (SELECT id FROM descendientes)
               AND activo = TRUE
             RETURNING id;
             """,
-            (categoria_id,),
+            (empresa_id, categoria_id, empresa_id, empresa_id),
         )
         rows = cursor.fetchall()
 
@@ -196,7 +202,7 @@ def desactivar_categoria(categoria_id: int) -> bool:
         connection.close()
 
 
-def activar_categoria(categoria_id: int) -> dict[str, object] | None:
+def activar_categoria(categoria_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -204,18 +210,18 @@ def activar_categoria(categoria_id: int) -> dict[str, object] | None:
         cursor.execute(
             """
             WITH RECURSIVE descendientes AS (
-                SELECT id FROM categoria WHERE id = %s
+                SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
                 UNION ALL
                 SELECT c.id FROM categoria c
-                INNER JOIN descendientes d ON c.categoria_padre_id = d.id
+                INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )
             UPDATE categoria
             SET activo = TRUE
-            WHERE id IN (SELECT id FROM descendientes)
+            WHERE empresa_id = %s AND id IN (SELECT id FROM descendientes)
               AND activo = FALSE
             RETURNING id, categoria_padre_id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (categoria_id,),
+            (empresa_id, categoria_id, empresa_id, empresa_id),
         )
         rows = cursor.fetchall()
         
@@ -236,7 +242,7 @@ def activar_categoria(categoria_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def contar_productos_activos_por_categoria(categoria_id: int) -> int:
+def contar_productos_activos_por_categoria(categoria_id: int, *, empresa_id: int) -> int:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -245,10 +251,10 @@ def contar_productos_activos_por_categoria(categoria_id: int) -> int:
             """
             SELECT COUNT(*) AS total
             FROM producto
-            WHERE categoria_id = %s
+            WHERE empresa_id = %s AND categoria_id = %s
                 AND activo = TRUE;
             """,
-            (categoria_id,),
+            (empresa_id, categoria_id),
         )
         row = cursor.fetchone()
         return int(row["total"]) if row else 0
@@ -261,18 +267,18 @@ def contar_productos_activos_por_categoria(categoria_id: int) -> int:
 # TALLAS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def listar_tallas(tipo_prenda: str | None = None) -> list[dict[str, object]]:
+def listar_tallas(tipo_prenda: str | None = None, *, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
         query = """
             SELECT id, nombre, descripcion, tipo_prenda, ancho_cm, largo_cm, activo, fecha_creacion
-            FROM talla
+            FROM talla WHERE empresa_id = %s
         """
-        params = []
+        params = [empresa_id]
         if tipo_prenda is not None:
-            query += " WHERE tipo_prenda = %s "
+            query += " AND tipo_prenda = %s "
             params.append(tipo_prenda.strip().upper())
             
         query += " ORDER BY tipo_prenda ASC, id ASC;"
@@ -283,7 +289,7 @@ def listar_tallas(tipo_prenda: str | None = None) -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_talla_por_id(talla_id: int) -> dict[str, object] | None:
+def obtener_talla_por_id(talla_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -292,10 +298,10 @@ def obtener_talla_por_id(talla_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, descripcion, tipo_prenda, ancho_cm, largo_cm, activo, fecha_creacion
             FROM talla
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             LIMIT 1;
             """,
-            (talla_id,),
+            (empresa_id, talla_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -304,7 +310,7 @@ def obtener_talla_por_id(talla_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_talla_por_nombre(nombre: str) -> dict[str, object] | None:
+def obtener_talla_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -313,10 +319,10 @@ def obtener_talla_por_nombre(nombre: str) -> dict[str, object] | None:
             """
             SELECT id, nombre, tipo_prenda
             FROM talla
-            WHERE lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
             LIMIT 1;
             """,
-            (nombre,),
+            (empresa_id, nombre),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -325,7 +331,7 @@ def obtener_talla_por_nombre(nombre: str) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_talla_por_nombre_y_tipo(nombre: str, tipo_prenda: str) -> dict[str, object] | None:
+def obtener_talla_por_nombre_y_tipo(nombre: str, tipo_prenda: str, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -334,10 +340,10 @@ def obtener_talla_por_nombre_y_tipo(nombre: str, tipo_prenda: str) -> dict[str, 
             """
             SELECT id, nombre, tipo_prenda
             FROM talla
-            WHERE lower(nombre) = lower(%s) AND tipo_prenda = %s
+            WHERE empresa_id = %s AND lower(nombre) = lower(%s) AND tipo_prenda = %s
             LIMIT 1;
             """,
-            (nombre, tipo_prenda.strip().upper()),
+            (empresa_id, nombre, tipo_prenda.strip().upper()),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -352,6 +358,8 @@ def crear_talla(
     tipo_prenda: str = "SUPERIOR",
     ancho_cm: float | None = None,
     largo_cm: float | None = None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -359,11 +367,11 @@ def crear_talla(
     try:
         cursor.execute(
             """
-            INSERT INTO talla (nombre, descripcion, tipo_prenda, ancho_cm, largo_cm)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO talla (nombre, descripcion, tipo_prenda, ancho_cm, largo_cm, empresa_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id, nombre, descripcion, tipo_prenda, ancho_cm, largo_cm, activo, fecha_creacion;
             """,
-            (nombre, descripcion, tipo_prenda.strip().upper(), ancho_cm, largo_cm),
+            (nombre, descripcion, tipo_prenda.strip().upper(), ancho_cm, largo_cm, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
@@ -383,6 +391,8 @@ def actualizar_talla(
     tipo_prenda: str = "SUPERIOR",
     ancho_cm: float | None = None,
     largo_cm: float | None = None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -396,10 +406,10 @@ def actualizar_talla(
                 tipo_prenda = %s,
                 ancho_cm = %s,
                 largo_cm = %s
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, descripcion, tipo_prenda, ancho_cm, largo_cm, activo, fecha_creacion;
             """,
-            (nombre, descripcion, tipo_prenda.strip().upper(), ancho_cm, largo_cm, talla_id),
+            (nombre, descripcion, tipo_prenda.strip().upper(), ancho_cm, largo_cm, empresa_id, talla_id),
         )
         row = cursor.fetchone()
 
@@ -417,7 +427,7 @@ def actualizar_talla(
         connection.close()
 
 
-def desactivar_talla(talla_id: int) -> bool:
+def desactivar_talla(talla_id: int, *, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -426,11 +436,11 @@ def desactivar_talla(talla_id: int) -> bool:
             """
             UPDATE talla
             SET activo = FALSE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
                 AND activo = TRUE
             RETURNING id;
             """,
-            (talla_id,),
+            (empresa_id, talla_id),
         )
         row = cursor.fetchone()
 
@@ -448,7 +458,7 @@ def desactivar_talla(talla_id: int) -> bool:
         connection.close()
 
 
-def activar_talla(talla_id: int) -> dict[str, object] | None:
+def activar_talla(talla_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -457,10 +467,10 @@ def activar_talla(talla_id: int) -> dict[str, object] | None:
             """
             UPDATE talla
             SET activo = TRUE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (talla_id,),
+            (empresa_id, talla_id),
         )
         row = cursor.fetchone()
 
@@ -478,7 +488,7 @@ def activar_talla(talla_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def contar_variantes_activas_por_talla(talla_id: int) -> int:
+def contar_variantes_activas_por_talla(talla_id: int, *, empresa_id: int) -> int:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -487,10 +497,10 @@ def contar_variantes_activas_por_talla(talla_id: int) -> int:
             """
             SELECT COUNT(*) AS total
             FROM producto_variante
-            WHERE talla_id = %s
+            WHERE empresa_id = %s AND talla_id = %s
                 AND activo = TRUE;
             """,
-            (talla_id,),
+            (empresa_id, talla_id),
         )
         row = cursor.fetchone()
         return int(row["total"]) if row else 0
@@ -503,7 +513,7 @@ def contar_variantes_activas_por_talla(talla_id: int) -> int:
 # COLORES
 # ═══════════════════════════════════════════════════════════════════════════
 
-def listar_colores() -> list[dict[str, object]]:
+def listar_colores(*, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -512,8 +522,10 @@ def listar_colores() -> list[dict[str, object]]:
             """
             SELECT id, nombre, codigo_hex, activo, fecha_creacion
             FROM color
+            WHERE empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         return [dict(c) for c in cursor.fetchall()]
     finally:
@@ -521,7 +533,7 @@ def listar_colores() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_color_por_id(color_id: int) -> dict[str, object] | None:
+def obtener_color_por_id(color_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -530,10 +542,10 @@ def obtener_color_por_id(color_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, codigo_hex, activo, fecha_creacion
             FROM color
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             LIMIT 1;
             """,
-            (color_id,),
+            (empresa_id, color_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -542,7 +554,7 @@ def obtener_color_por_id(color_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_color_por_nombre(nombre: str) -> dict[str, object] | None:
+def obtener_color_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -551,10 +563,10 @@ def obtener_color_por_nombre(nombre: str) -> dict[str, object] | None:
             """
             SELECT id, nombre
             FROM color
-            WHERE lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
             LIMIT 1;
             """,
-            (nombre,),
+            (empresa_id, nombre),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -566,6 +578,8 @@ def obtener_color_por_nombre(nombre: str) -> dict[str, object] | None:
 def crear_color(
     nombre: str,
     codigo_hex: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -573,11 +587,11 @@ def crear_color(
     try:
         cursor.execute(
             """
-            INSERT INTO color (nombre, codigo_hex)
-            VALUES (%s, %s)
+            INSERT INTO color (nombre, codigo_hex, empresa_id)
+            VALUES (%s, %s, %s)
             RETURNING id, nombre, codigo_hex, activo, fecha_creacion;
             """,
-            (nombre, codigo_hex),
+            (nombre, codigo_hex, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
@@ -594,6 +608,8 @@ def actualizar_color(
     color_id: int,
     nombre: str,
     codigo_hex: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -604,10 +620,10 @@ def actualizar_color(
             UPDATE color
             SET nombre = %s,
                 codigo_hex = %s
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, codigo_hex, activo, fecha_creacion;
             """,
-            (nombre, codigo_hex, color_id),
+            (nombre, codigo_hex, empresa_id, color_id),
         )
         row = cursor.fetchone()
 
@@ -625,7 +641,7 @@ def actualizar_color(
         connection.close()
 
 
-def desactivar_color(color_id: int) -> bool:
+def desactivar_color(color_id: int, *, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -634,11 +650,11 @@ def desactivar_color(color_id: int) -> bool:
             """
             UPDATE color
             SET activo = FALSE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
                 AND activo = TRUE
             RETURNING id;
             """,
-            (color_id,),
+            (empresa_id, color_id),
         )
         row = cursor.fetchone()
 
@@ -656,7 +672,7 @@ def desactivar_color(color_id: int) -> bool:
         connection.close()
 
 
-def activar_color(color_id: int) -> dict[str, object] | None:
+def activar_color(color_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -665,10 +681,10 @@ def activar_color(color_id: int) -> dict[str, object] | None:
             """
             UPDATE color
             SET activo = TRUE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, codigo_hex, activo, fecha_creacion;
             """,
-            (color_id,),
+            (empresa_id, color_id),
         )
         row = cursor.fetchone()
 
@@ -686,7 +702,7 @@ def activar_color(color_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def contar_variantes_activas_por_color(color_id: int) -> int:
+def contar_variantes_activas_por_color(color_id: int, *, empresa_id: int) -> int:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -695,10 +711,10 @@ def contar_variantes_activas_por_color(color_id: int) -> int:
             """
             SELECT COUNT(*) AS total
             FROM producto_variante
-            WHERE color_id = %s
+            WHERE empresa_id = %s AND color_id = %s
                 AND activo = TRUE;
             """,
-            (color_id,),
+            (empresa_id, color_id),
         )
         row = cursor.fetchone()
         return int(row["total"]) if row else 0
@@ -711,7 +727,7 @@ def contar_variantes_activas_por_color(color_id: int) -> int:
 # MARCAS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def listar_marcas() -> list[dict[str, object]]:
+def listar_marcas(*, empresa_id: int) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -720,8 +736,10 @@ def listar_marcas() -> list[dict[str, object]]:
             """
             SELECT id, nombre, descripcion, activo, fecha_creacion
             FROM marca
+            WHERE empresa_id = %s
             ORDER BY nombre ASC;
-            """
+            """,
+            (empresa_id,),
         )
         return [dict(c) for c in cursor.fetchall()]
     finally:
@@ -729,7 +747,7 @@ def listar_marcas() -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_marca_por_id(marca_id: int) -> dict[str, object] | None:
+def obtener_marca_por_id(marca_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -738,10 +756,10 @@ def obtener_marca_por_id(marca_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, descripcion, activo, fecha_creacion
             FROM marca
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             LIMIT 1;
             """,
-            (marca_id,),
+            (empresa_id, marca_id),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -750,7 +768,7 @@ def obtener_marca_por_id(marca_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_marca_por_nombre(nombre: str) -> dict[str, object] | None:
+def obtener_marca_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -759,10 +777,10 @@ def obtener_marca_por_nombre(nombre: str) -> dict[str, object] | None:
             """
             SELECT id, nombre
             FROM marca
-            WHERE lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
             LIMIT 1;
             """,
-            (nombre,),
+            (empresa_id, nombre),
         )
         row = cursor.fetchone()
         return dict(row) if row is not None else None
@@ -774,6 +792,8 @@ def obtener_marca_por_nombre(nombre: str) -> dict[str, object] | None:
 def crear_marca(
     nombre: str,
     descripcion: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -781,11 +801,11 @@ def crear_marca(
     try:
         cursor.execute(
             """
-            INSERT INTO marca (nombre, descripcion)
-            VALUES (%s, %s)
+            INSERT INTO marca (nombre, descripcion, empresa_id)
+            VALUES (%s, %s, %s)
             RETURNING id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (nombre, descripcion),
+            (nombre, descripcion, empresa_id),
         )
         row = cursor.fetchone()
         connection.commit()
@@ -802,6 +822,8 @@ def actualizar_marca(
     marca_id: int,
     nombre: str,
     descripcion: str | None,
+    *,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -812,10 +834,10 @@ def actualizar_marca(
             UPDATE marca
             SET nombre = %s,
                 descripcion = %s
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (nombre, descripcion, marca_id),
+            (nombre, descripcion, empresa_id, marca_id),
         )
         row = cursor.fetchone()
 
@@ -833,7 +855,7 @@ def actualizar_marca(
         connection.close()
 
 
-def desactivar_marca(marca_id: int) -> bool:
+def desactivar_marca(marca_id: int, *, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -842,11 +864,11 @@ def desactivar_marca(marca_id: int) -> bool:
             """
             UPDATE marca
             SET activo = FALSE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
                 AND activo = TRUE
             RETURNING id;
             """,
-            (marca_id,),
+            (empresa_id, marca_id),
         )
         row = cursor.fetchone()
 
@@ -864,7 +886,7 @@ def desactivar_marca(marca_id: int) -> bool:
         connection.close()
 
 
-def activar_marca(marca_id: int) -> dict[str, object] | None:
+def activar_marca(marca_id: int, *, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -873,10 +895,10 @@ def activar_marca(marca_id: int) -> dict[str, object] | None:
             """
             UPDATE marca
             SET activo = TRUE
-            WHERE id = %s
+            WHERE empresa_id = %s AND id = %s
             RETURNING id, nombre, descripcion, activo, fecha_creacion;
             """,
-            (marca_id,),
+            (empresa_id, marca_id),
         )
         row = cursor.fetchone()
 
@@ -894,7 +916,7 @@ def activar_marca(marca_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def contar_productos_activos_por_marca(marca_id: int) -> int:
+def contar_productos_activos_por_marca(marca_id: int, *, empresa_id: int) -> int:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -903,10 +925,10 @@ def contar_productos_activos_por_marca(marca_id: int) -> int:
             """
             SELECT COUNT(*) AS total
             FROM producto
-            WHERE marca_id = %s
+            WHERE empresa_id = %s AND marca_id = %s
                 AND activo = TRUE;
             """,
-            (marca_id,),
+            (empresa_id, marca_id),
         )
         row = cursor.fetchone()
         return int(row["total"]) if row else 0

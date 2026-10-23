@@ -3,7 +3,7 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 
 
-def obtener_usuario_por_identificador(identificador: str) -> dict[str, object] | None:
+def obtener_usuario_por_identificador(identificador: str, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -12,11 +12,12 @@ def obtener_usuario_por_identificador(identificador: str) -> dict[str, object] |
             """
             SELECT id, nombre, apellido, username, correo, activo
             FROM usuario
-            WHERE lower(correo) = lower(%s)
-               OR username = lower(%s)
+            WHERE empresa_id = %s
+              AND (lower(correo) = lower(%s)
+                   OR username = lower(%s))
             LIMIT 1;
             """,
-            (identificador, identificador),
+            (empresa_id, identificador, identificador),
         )
         usuario = cursor.fetchone()
         return dict(usuario) if usuario is not None else None

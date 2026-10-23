@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin_o_saas, requerir_admin_saas
 from app.modules.autenticacion.schemas.rol_permiso.rol_permiso_request import (
     ActualizarPermisosRolRequest,
     ActualizarRolRequest,
@@ -47,16 +47,19 @@ def _ua(req: Request) -> str | None:
 
 @router.get("/roles", response_model=list[RolResponse])
 def listar_roles_endpoint(
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_saas),
 ) -> list[RolResponse]:
-    return obtener_roles()
+    roles = obtener_roles()
+    if usuario_actual.get("empresa_id") is not None:
+        return [rol for rol in roles if rol.nombre != "ADMIN_SAAS"]
+    return roles
 
 
 @router.post("/roles", response_model=RolResponse)
 def crear_rol_endpoint(
     request: CrearRolRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> RolResponse:
     return registrar_rol(request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -66,7 +69,7 @@ def actualizar_rol_endpoint(
     rol_id: int,
     request: ActualizarRolRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> RolResponse:
     return editar_rol(rol_id, request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -75,7 +78,7 @@ def actualizar_rol_endpoint(
 def desactivar_rol_endpoint(
     rol_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return eliminar_rol(rol_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -84,14 +87,14 @@ def desactivar_rol_endpoint(
 def activar_rol_endpoint(
     rol_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return reactivar_rol(rol_id, usuario_actual, _ip(http_request), _ua(http_request))
 
 
 @router.get("/permisos", response_model=list[PermisoResponse])
 def listar_permisos_endpoint(
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_saas),
 ) -> list[PermisoResponse]:
     return obtener_permisos()
 
@@ -99,9 +102,12 @@ def listar_permisos_endpoint(
 @router.get("/roles/{rol_id}/permisos", response_model=RolPermisosResponse)
 def listar_permisos_rol_endpoint(
     rol_id: int,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_saas),
 ) -> RolPermisosResponse:
-    return obtener_permisos_por_rol(rol_id)
+    respuesta = obtener_permisos_por_rol(rol_id)
+    if usuario_actual.get("empresa_id") is not None and respuesta.rol.nombre == "ADMIN_SAAS":
+        raise HTTPException(status_code=404, detail="Rol no encontrado.")
+    return respuesta
 
 
 @router.put("/roles/{rol_id}/permisos", response_model=RolPermisosResponse)
@@ -109,7 +115,7 @@ def actualizar_permisos_rol_endpoint(
     rol_id: int,
     request: ActualizarPermisosRolRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> RolPermisosResponse:
     return actualizar_permisos_por_rol(
         rol_id,
@@ -124,7 +130,7 @@ def actualizar_permisos_rol_endpoint(
 def crear_permiso_endpoint(
     request: CrearPermisoRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> PermisoResponse:
     return registrar_permiso(request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -133,7 +139,7 @@ def crear_permiso_endpoint(
 def desactivar_permiso_endpoint(
     permiso_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return eliminar_permiso(permiso_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -142,7 +148,7 @@ def desactivar_permiso_endpoint(
 def activar_permiso_endpoint(
     permiso_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return reactivar_permiso(permiso_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -152,7 +158,7 @@ def asignar_permiso_endpoint(
     rol_id: int,
     permiso_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return asignar_permiso(rol_id, permiso_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -165,7 +171,7 @@ def quitar_permiso_endpoint(
     rol_id: int,
     permiso_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return quitar_permiso(rol_id, permiso_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -178,6 +184,6 @@ def activar_permiso_rol_endpoint(
     rol_id: int,
     permiso_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
 ) -> MensajeResponse:
     return reactivar_permiso_rol(rol_id, permiso_id, usuario_actual, _ip(http_request), _ua(http_request))

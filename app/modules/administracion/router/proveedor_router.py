@@ -50,7 +50,7 @@ def _ua(req: Request) -> str | None:
 def listar_proveedores_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
 ) -> list[ProveedorResponse]:
-    return obtener_proveedores()
+    return obtener_proveedores(usuario_actual)
 
 
 @router.post("/proveedores", response_model=ProveedorResponse)
@@ -67,7 +67,7 @@ def obtener_proveedor_endpoint(
     proveedor_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
 ) -> ProveedorResponse:
-    return obtener_proveedor(proveedor_id)
+    return obtener_proveedor(proveedor_id, usuario_actual)
 
 
 @router.put("/proveedores/{proveedor_id}", response_model=ProveedorResponse)

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
+from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.ventas_inventario.schemas.delivery.delivery_request import (
     DeliveryCotizarRequest,
@@ -28,8 +29,11 @@ router = APIRouter(prefix="/api/v1/delivery", tags=["Delivery"])
 
 
 @router.post("/cotizar", response_model=DeliveryCotizacionResponse)
-def cotizar_delivery(request: DeliveryCotizarRequest) -> DeliveryCotizacionResponse:
-    return cotizar_delivery_service(request)
+def cotizar_delivery(
+    request: DeliveryCotizarRequest,
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+) -> DeliveryCotizacionResponse:
+    return cotizar_delivery_service(request, exigir_empresa_id(usuario_actual))
 
 
 @router.get("/geocodificar", response_model=DeliveryGeocodificarResponse)

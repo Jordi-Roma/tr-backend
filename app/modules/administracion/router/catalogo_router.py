@@ -1,3 +1,4 @@
+from app.core.contexto_empresa import exigir_empresa_id
 from fastapi import APIRouter, Depends, Request
 
 from app.modules.administracion.schemas.catalogo.catalogo_request import (
@@ -66,7 +67,7 @@ def _ua(req: Request) -> str | None:
 def listar_categorias_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[CategoriaResponse]:
-    return obtener_categorias()
+    return obtener_categorias(empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.post("/categorias", response_model=CategoriaResponse)
@@ -83,7 +84,7 @@ def obtener_categoria_endpoint(
     categoria_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> CategoriaResponse:
-    return obtener_categoria(categoria_id)
+    return obtener_categoria(categoria_id, empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.put("/categorias/{categoria_id}", response_model=CategoriaResponse)
@@ -121,7 +122,7 @@ def listar_tallas_endpoint(
     tipo_prenda: str | None = None,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[TallaResponse]:
-    return obtener_tallas(tipo_prenda=tipo_prenda)
+    return obtener_tallas(tipo_prenda=tipo_prenda, empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.post("/tallas", response_model=TallaResponse)
@@ -138,7 +139,7 @@ def obtener_talla_endpoint(
     talla_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> TallaResponse:
-    return obtener_talla(talla_id)
+    return obtener_talla(talla_id, empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.put("/tallas/{talla_id}", response_model=TallaResponse)
@@ -175,7 +176,7 @@ def activar_talla_endpoint(
 def listar_colores_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[ColorResponse]:
-    return obtener_colores()
+    return obtener_colores(empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.post("/colores", response_model=ColorResponse)
@@ -192,7 +193,7 @@ def obtener_color_endpoint(
     color_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> ColorResponse:
-    return obtener_color(color_id)
+    return obtener_color(color_id, empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.put("/colores/{color_id}", response_model=ColorResponse)
@@ -229,7 +230,7 @@ def activar_color_endpoint(
 def listar_marcas_endpoint(
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[MarcaResponse]:
-    return obtener_marcas()
+    return obtener_marcas(empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.post("/marcas", response_model=MarcaResponse)
@@ -246,7 +247,7 @@ def obtener_marca_endpoint(
     marca_id: int,
     usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> MarcaResponse:
-    return obtener_marca(marca_id)
+    return obtener_marca(marca_id, empresa_id=exigir_empresa_id(usuario_actual))
 
 
 @router.put("/marcas/{marca_id}", response_model=MarcaResponse)

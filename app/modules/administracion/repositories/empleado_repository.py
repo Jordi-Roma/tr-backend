@@ -1,12 +1,16 @@
+from app.core.plan_empresa import exigir_cupo_usuarios
 from psycopg2.extras import RealDictCursor
+from fastapi import HTTPException
 
 from app.database.connection import get_connection
+from app.core.plan_empresa import bloquear_empresa_y_obtener_limite
 
 ROLES_LABORALES = ("CAJERO", "ENCARGADO_SUCURSAL", "PERSONAL_VENTAS")
 
 
 def obtener_empleado_activo_por_usuario_id(
     usuario_id: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -16,11 +20,11 @@ def obtener_empleado_activo_por_usuario_id(
             """
             SELECT id, usuario_id, sucursal_id, codigo_empleado, cargo, activo
             FROM empleado
-            WHERE usuario_id = %s
+            WHERE usuario_id = %s AND empresa_id = %s
                 AND activo = TRUE
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -33,17 +37,17 @@ def obtener_empleado_activo_por_usuario_id(
         connection.close()
 
 
-def listar_empleados(sucursal_id: int | None = None) -> list[dict[str, object]]:
+def listar_empleados(empresa_id: int, sucursal_id: int | None = None) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        parametros: tuple[object, ...] = ()
+        parametros: tuple[object, ...] = (empresa_id,)
         filtro_sucursal = ""
 
         if sucursal_id is not None:
             filtro_sucursal = "AND e.sucursal_id = %s"
-            parametros = (sucursal_id,)
+            parametros = (empresa_id, sucursal_id)
 
         cursor.execute(
             f"""
@@ -65,15 +69,15 @@ def listar_empleados(sucursal_id: int | None = None) -> list[dict[str, object]]:
                     ARRAY[]::VARCHAR[]
                 ) AS roles
             FROM empleado e
-            INNER JOIN usuario u ON u.id = e.usuario_id
-            INNER JOIN sucursal s ON s.id = e.sucursal_id
+            INNER JOIN usuario u ON u.id = e.usuario_id AND u.empresa_id = e.empresa_id
+            INNER JOIN sucursal s ON s.id = e.sucursal_id AND s.empresa_id = e.empresa_id
             LEFT JOIN usuario_rol ur
                 ON ur.usuario_id = u.id
                 AND ur.activo = TRUE
             LEFT JOIN rol r
                 ON r.id = ur.rol_id
                 AND r.activo = TRUE
-            WHERE e.activo = TRUE
+            WHERE e.empresa_id = %s AND e.activo = TRUE
                 AND u.activo = TRUE
                 AND s.activo = TRUE
                 {filtro_sucursal}
@@ -100,7 +104,7 @@ def listar_empleados(sucursal_id: int | None = None) -> list[dict[str, object]]:
         connection.close()
 
 
-def obtener_empleado_por_id(empleado_id: int) -> dict[str, object] | None:
+def obtener_empleado_por_id(empleado_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -125,15 +129,15 @@ def obtener_empleado_por_id(empleado_id: int) -> dict[str, object] | None:
                     ARRAY[]::VARCHAR[]
                 ) AS roles
             FROM empleado e
-            INNER JOIN usuario u ON u.id = e.usuario_id
-            INNER JOIN sucursal s ON s.id = e.sucursal_id
+            INNER JOIN usuario u ON u.id = e.usuario_id AND u.empresa_id = e.empresa_id
+            INNER JOIN sucursal s ON s.id = e.sucursal_id AND s.empresa_id = e.empresa_id
             LEFT JOIN usuario_rol ur
                 ON ur.usuario_id = u.id
                 AND ur.activo = TRUE
             LEFT JOIN rol r
                 ON r.id = ur.rol_id
                 AND r.activo = TRUE
-            WHERE e.id = %s
+            WHERE e.id = %s AND e.empresa_id = %s
             GROUP BY
                 e.id,
                 u.id,
@@ -149,7 +153,7 @@ def obtener_empleado_por_id(empleado_id: int) -> dict[str, object] | None:
                 e.activo
             LIMIT 1;
             """,
-            (empleado_id,),
+            (empleado_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -162,7 +166,7 @@ def obtener_empleado_por_id(empleado_id: int) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_usuario_por_id(usuario_id: int) -> dict[str, object] | None:
+def obtener_usuario_por_id(usuario_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -171,10 +175,10 @@ def obtener_usuario_por_id(usuario_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, apellido, username, correo, activo
             FROM usuario
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             LIMIT 1;
             """,
-            (usuario_id,),
+            (usuario_id, empresa_id),
         )
         usuario = cursor.fetchone()
 
@@ -237,7 +241,7 @@ def obtener_usuario_por_correo(correo: str) -> dict[str, object] | None:
         connection.close()
 
 
-def obtener_sucursal_por_id(sucursal_id: int) -> dict[str, object] | None:
+def obtener_sucursal_por_id(sucursal_id: int, empresa_id: int) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -246,10 +250,10 @@ def obtener_sucursal_por_id(sucursal_id: int) -> dict[str, object] | None:
             """
             SELECT id, nombre, direccion, telefono, activo
             FROM sucursal
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
             LIMIT 1;
             """,
-            (sucursal_id,),
+            (sucursal_id, empresa_id),
         )
         sucursal = cursor.fetchone()
 
@@ -287,8 +291,8 @@ def obtener_rol_por_nombre(nombre: str) -> dict[str, object] | None:
         connection.close()
 
 
-def usuario_tiene_empleado_activo(usuario_id: int) -> bool:
-    return obtener_empleado_activo_por_usuario_id(usuario_id) is not None
+def usuario_tiene_empleado_activo(usuario_id: int, empresa_id: int) -> bool:
+    return obtener_empleado_activo_por_usuario_id(usuario_id, empresa_id) is not None
 
 
 def crear_empleado_usuario_existente(
@@ -298,20 +302,28 @@ def crear_empleado_usuario_existente(
     cargo: str,
     rol_id: int,
     usuario_admin_id: int,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
+        cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
+        if limite is not None and int(cursor.fetchone()["total"]) >= limite:
+            raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
         cursor.execute(
             """
-            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id)
+            SELECT u.id, s.id, %s, %s, %s FROM usuario u JOIN sucursal s ON s.empresa_id = u.empresa_id
+            WHERE u.id = %s AND s.id = %s AND u.empresa_id = %s AND u.activo = TRUE AND s.activo = TRUE
             RETURNING id;
             """,
-            (usuario_id, sucursal_id, codigo_empleado, cargo),
+            (codigo_empleado, cargo, empresa_id, usuario_id, sucursal_id, empresa_id),
         )
         empleado = cursor.fetchone()
+        if empleado is None:
+            raise ValueError("Usuario o sucursal fuera de la empresa.")
 
         asignar_rol_con_cursor(cursor, usuario_id, rol_id)
         registrar_bitacora_con_cursor(
@@ -322,7 +334,7 @@ def crear_empleado_usuario_existente(
         )
 
         connection.commit()
-        return obtener_empleado_por_id(int(empleado["id"]))
+        return obtener_empleado_por_id(int(empleado["id"]), empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -342,11 +354,20 @@ def crear_usuario_empleado(
     cargo: str,
     rol_id: int,
     usuario_admin_id: int,
+    empresa_id: int,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        exigir_cupo_usuarios(cursor, empresa_id)
+        limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
+        cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
+        if limite is not None and int(cursor.fetchone()["total"]) >= limite:
+            raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
+        cursor.execute("SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE", (sucursal_id, empresa_id))
+        if cursor.fetchone() is None:
+            raise ValueError("Sucursal fuera de la empresa.")
         cursor.execute(
             """
             INSERT INTO usuario (
@@ -355,23 +376,24 @@ def crear_usuario_empleado(
                 username,
                 correo,
                 password_hash,
-                activo
+                activo,
+                empresa_id
             )
-            VALUES (%s, %s, %s, %s, %s, TRUE)
+            VALUES (%s, %s, %s, %s, %s, TRUE, %s)
             RETURNING id;
             """,
-            (nombre, apellido, username, correo, password_hash),
+            (nombre, apellido, username, correo, password_hash, empresa_id),
         )
         usuario = cursor.fetchone()
         usuario_id = int(usuario["id"])
 
         cursor.execute(
             """
-            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id;
             """,
-            (usuario_id, sucursal_id, codigo_empleado, cargo),
+            (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -384,7 +406,7 @@ def crear_usuario_empleado(
         )
 
         connection.commit()
-        return obtener_empleado_por_id(int(empleado["id"]))
+        return obtener_empleado_por_id(int(empleado["id"]), empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -400,6 +422,7 @@ def actualizar_empleado(
     cargo: str,
     rol_id: int,
     usuario_admin_id: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -411,11 +434,12 @@ def actualizar_empleado(
             SET sucursal_id = %s,
                 codigo_empleado = %s,
                 cargo = %s
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE
+                AND EXISTS (SELECT 1 FROM sucursal s WHERE s.id = %s AND s.empresa_id = %s AND s.activo = TRUE)
             RETURNING usuario_id;
             """,
-            (sucursal_id, codigo_empleado, cargo, empleado_id),
+            (sucursal_id, codigo_empleado, cargo, empleado_id, empresa_id, sucursal_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -434,7 +458,7 @@ def actualizar_empleado(
         )
 
         connection.commit()
-        return obtener_empleado_por_id(empleado_id)
+        return obtener_empleado_por_id(empleado_id, empresa_id)
     except Exception:
         connection.rollback()
         raise
@@ -443,7 +467,7 @@ def actualizar_empleado(
         connection.close()
 
 
-def desactivar_empleado(empleado_id: int, usuario_admin_id: int) -> bool:
+def desactivar_empleado(empleado_id: int, usuario_admin_id: int, empresa_id: int) -> bool:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -452,11 +476,11 @@ def desactivar_empleado(empleado_id: int, usuario_admin_id: int) -> bool:
             """
             UPDATE empleado
             SET activo = FALSE
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE
             RETURNING usuario_id;
             """,
-            (empleado_id,),
+            (empleado_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -486,19 +510,25 @@ def activar_empleado(
     empleado_id: int,
     rol_id: int,
     usuario_admin_id: int,
+    empresa_id: int,
 ) -> dict[str, object] | None:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
+        cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
+        if limite is not None and int(cursor.fetchone()["total"]) >= limite:
+            raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
         cursor.execute(
             """
             UPDATE empleado
             SET activo = TRUE
-            WHERE id = %s
+            WHERE id = %s AND empresa_id = %s AND activo = FALSE
+              AND EXISTS (SELECT 1 FROM sucursal s WHERE s.id = empleado.sucursal_id AND s.empresa_id = %s AND s.activo = TRUE)
             RETURNING usuario_id;
             """,
-            (empleado_id,),
+            (empleado_id, empresa_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -517,7 +547,7 @@ def activar_empleado(
         )
 
         connection.commit()
-        return obtener_empleado_por_id(empleado_id)
+        return obtener_empleado_por_id(empleado_id, empresa_id)
     except Exception:
         connection.rollback()
         raise

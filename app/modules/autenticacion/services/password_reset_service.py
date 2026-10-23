@@ -4,7 +4,7 @@ import secrets
 from fastapi import HTTPException
 
 from app.core.contexto_empresa import resolver_empresa_por_codigo
-from app.core.config import PASSWORD_RESET_EMAIL, PASSWORD_RESET_TOKEN_MINUTES, SECRET_KEY
+from app.core.config import PASSWORD_RESET_TOKEN_MINUTES, SECRET_KEY
 from app.core.email import enviar_correo
 from app.core.security import hashear_password
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
@@ -23,7 +23,7 @@ from app.modules.autenticacion.schemas.password_reset.password_reset_response im
 
 
 MENSAJE_SOLICITUD = (
-    "Si la cuenta existe, enviaremos un codigo de recuperacion al correo configurado."
+    "Si la cuenta está disponible, enviaremos un código de recuperación a su correo registrado."
 )
 
 
@@ -32,11 +32,10 @@ def solicitar_reset_password(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> PasswordResetMensajeResponse:
-    empresa = resolver_empresa_por_codigo(request.empresa_codigo)
-    usuario = (
-        obtener_usuario_por_identificador(request.identificador, int(empresa["id"]))
-        if empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"} else None
-    )
+    empresa = resolver_empresa_por_codigo(request.empresa_codigo) if request.empresa_codigo else None
+    empresa_id = int(empresa["id"]) if empresa else None
+    disponible = request.empresa_codigo is None or (empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"})
+    usuario = obtener_usuario_por_identificador(request.identificador, empresa_id) if disponible else None
 
     if usuario is None or not bool(usuario["activo"]):
         registrar_bitacora(
@@ -51,16 +50,21 @@ def solicitar_reset_password(
         return PasswordResetMensajeResponse(mensaje=MENSAJE_SOLICITUD)
 
     codigo = f"{secrets.randbelow(1_000_000):06d}"
-    guardar_token_reset(
+    creado = guardar_token_reset(
         int(usuario["id"]),
         _hashear_codigo(codigo),
         PASSWORD_RESET_TOKEN_MINUTES,
+        empresa_id,
+        identidad_verificada=usuario,
     )
+    if not creado:
+        return PasswordResetMensajeResponse(mensaje=MENSAJE_SOLICITUD)
+    nombre_empresa = empresa["nombre"] if empresa else "Plataforma StyleAR"
     enviar_correo(
-        PASSWORD_RESET_EMAIL,
-        f"Codigo de recuperacion - {empresa['nombre']}",
+        str(usuario["correo"]),
+        f"Codigo de recuperacion - {nombre_empresa}",
         (
-            f"Se solicito recuperar una contrasena en {empresa['nombre']}.\n\n"
+            f"Se solicito recuperar una contrasena en {nombre_empresa}.\n\n"
             f"Cuenta: {usuario['username']} ({usuario['correo']})\n"
             f"Codigo: {codigo}\n\n"
             f"Este codigo vence en {PASSWORD_RESET_TOKEN_MINUTES} minutos."
@@ -71,7 +75,7 @@ def solicitar_reset_password(
         accion="SOLICITUD_RESET_PASSWORD",
         modulo="AUTENTICACION",
         resultado="EXITOSO",
-        descripcion="Codigo de recuperacion enviado al correo configurado.",
+        descripcion="Código de recuperación enviado al correo registrado.",
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
@@ -87,11 +91,10 @@ def confirmar_reset_password(
     if request.password_nuevo != request.confirmar_password_nuevo:
         raise HTTPException(status_code=400, detail="Las contrasenas no coinciden.")
 
-    empresa = resolver_empresa_por_codigo(request.empresa_codigo)
-    usuario = (
-        obtener_usuario_por_identificador(request.identificador, int(empresa["id"]))
-        if empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"} else None
-    )
+    empresa = resolver_empresa_por_codigo(request.empresa_codigo) if request.empresa_codigo else None
+    empresa_id = int(empresa["id"]) if empresa else None
+    disponible = request.empresa_codigo is None or (empresa is not None and empresa["estado"] in {"ACTIVA", "SUSPENDIDA"})
+    usuario = obtener_usuario_por_identificador(request.identificador, empresa_id) if disponible else None
 
     if usuario is None or not bool(usuario["activo"]):
         raise HTTPException(status_code=400, detail="Codigo invalido o expirado.")
@@ -105,6 +108,7 @@ def confirmar_reset_password(
         int(usuario["id"]),
         _hashear_codigo(request.codigo),
         password_hash,
+        empresa_id,
     )
 
     if not actualizado:

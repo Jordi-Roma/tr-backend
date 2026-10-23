@@ -115,7 +115,8 @@ def test_migrador_repetido_preserva_datos_y_versiones():
     antes=consulta('SELECT id,username,empresa_id FROM usuario ORDER BY id')
     ejecutar_scripts()
     assert consulta('SELECT id,username,empresa_id FROM usuario ORDER BY id')==antes
-    assert len(consulta('SELECT version FROM schema_migrations'))==2
+    from init_db import VERSIONED_SQL_FILES
+    assert len(consulta('SELECT version FROM schema_migrations'))==len(VERSIONED_SQL_FILES)
 
 
 @pytest.mark.parametrize('entidad',['categoria','talla','color','marca'])

@@ -117,7 +117,7 @@ def iniciar_sesion(
         raise HTTPException(status_code=401, detail="Credenciales incorrectas.")
 
     reiniciar_intentos_login(usuario_id)
-    sesion = crear_sesion(usuario_id, empresa_id)
+    sesion = crear_sesion(usuario_id, empresa_id, identidad_verificada=usuario)
     access_token = crear_token_acceso(
         {
             "sub": str(usuario_id),

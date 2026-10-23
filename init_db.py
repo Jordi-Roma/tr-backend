@@ -39,6 +39,7 @@ SQL_FILES = [
 VERSIONED_SQL_FILES = [
     ("2026_10_23_multitenant_01", "database/migracion_multitenant_01.sql"),
     ("2026_10_23_multitenant_02", "database/migracion_multitenant_02.sql"),
+    ("2026_10_23_cu02_cu03_01", "database/migracion_cu02_cu03_01.sql"),
 ]
 
 

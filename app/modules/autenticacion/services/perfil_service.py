@@ -1,200 +1,80 @@
 from fastapi import HTTPException
 
 from app.core.security import hashear_password, verificar_password
-from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
-from app.modules.autenticacion.repositories.perfil_repository import (
-    actualizar_direccion_cliente,
-    actualizar_password_hash,
-    actualizar_perfil_cliente,
-    crear_direccion_cliente,
-    desactivar_direccion_cliente,
-    listar_direcciones_cliente,
-    obtener_password_hash,
-    obtener_perfil_cliente,
-)
+from app.modules.autenticacion.repositories import perfil_repository as repo
 from app.modules.autenticacion.schemas.perfil.perfil_request import (
-    ActualizarDireccionRequest,
-    ActualizarPerfilRequest,
-    CambiarPasswordRequest,
-    CrearDireccionRequest,
+    ActualizarDireccionRequest, ActualizarPerfilRequest, CambiarPasswordRequest,
+    CrearDireccionRequest, DesactivarCuentaRequest,
 )
 from app.modules.autenticacion.schemas.perfil.perfil_response import (
-    DireccionResponse,
-    ListaDireccionesResponse,
-    MensajeResponse,
-    PerfilResponse,
+    DireccionResponse, ListaDireccionesResponse, MensajeResponse, PerfilResponse,
 )
 
 
 def obtener_perfil(usuario_actual: dict[str, object]) -> PerfilResponse:
-    usuario_id = int(usuario_actual["id"])
-    perfil = obtener_perfil_cliente(usuario_id)
-
+    perfil=repo.obtener_perfil_cliente(int(usuario_actual["id"]),usuario_actual["empresa_id"])
     if perfil is None:
-        raise HTTPException(status_code=404, detail="Perfil no encontrado.")
+        raise HTTPException(404,"Perfil no encontrado.")
+    return PerfilResponse(**perfil)
 
-    return construir_perfil_response(perfil)
 
-
-def actualizar_perfil(
-    usuario_actual: dict[str, object],
-    request: ActualizarPerfilRequest,
-    direccion_ip: str | None = None,
-    user_agent: str | None = None,
-) -> PerfilResponse:
-    usuario_id = int(usuario_actual["id"])
-    perfil = actualizar_perfil_cliente(
-        usuario_id,
-        request.nombre.strip(),
-        request.apellido.strip(),
-        request.telefono,
-    )
-
+def actualizar_perfil(usuario_actual: dict[str, object], request: ActualizarPerfilRequest,
+    direccion_ip: str | None = None,user_agent: str | None = None) -> PerfilResponse:
+    perfil=repo.actualizar_perfil_cliente(int(usuario_actual["id"]),request.nombre,request.apellido,
+        request.telefono,usuario_actual["empresa_id"],request.username,request.correo,request.password_actual)
     if perfil is None:
-        raise HTTPException(status_code=404, detail="Perfil no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=usuario_id,
-        accion="ACTUALIZAR",
-        modulo="PERFIL",
-        resultado="EXITOSO",
-        descripcion="Perfil actualizado correctamente.",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_perfil_response(perfil)
+        raise HTTPException(404,"Perfil no encontrado.")
+    return PerfilResponse(**perfil)
 
 
-def cambiar_password(
-    usuario_actual: dict[str, object],
-    request: CambiarPasswordRequest,
-    direccion_ip: str | None = None,
-    user_agent: str | None = None,
-) -> MensajeResponse:
-    usuario_id = int(usuario_actual["id"])
-
-    if request.password_nuevo != request.confirmar_password_nuevo:
-        raise HTTPException(
-            status_code=400,
-            detail="Las contraseñas nuevas no coinciden.",
-        )
-
-    password_hash_actual = obtener_password_hash(usuario_id)
-
-    if password_hash_actual is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-
-    if not verificar_password(request.password_actual, password_hash_actual):
-        raise HTTPException(
-            status_code=400,
-            detail="La contraseña actual es incorrecta.",
-        )
-
+def cambiar_password(usuario_actual: dict[str, object],request: CambiarPasswordRequest,
+    direccion_ip: str | None = None,user_agent: str | None = None) -> MensajeResponse:
+    if request.password_nuevo!=request.confirmar_password_nuevo:
+        raise HTTPException(400,"Las contraseñas nuevas no coinciden.")
+    uid=int(usuario_actual["id"]); eid=usuario_actual["empresa_id"]
+    anterior=repo.obtener_password_hash(uid,eid)
+    if anterior is None:
+        raise HTTPException(404,"Usuario no encontrado.")
+    if not verificar_password(request.password_actual,anterior):
+        raise HTTPException(400,"La contraseña actual es incorrecta.")
     try:
-        nuevo_password_hash = hashear_password(request.password_nuevo)
+        nuevo=hashear_password(request.password_nuevo)
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(400,str(error)) from error
+    if not repo.actualizar_password_hash(uid,nuevo,eid,anterior):
+        raise HTTPException(404,"Usuario no encontrado.")
+    return MensajeResponse(mensaje="Contraseña actualizada. Inicia sesión nuevamente.")
 
-    actualizado = actualizar_password_hash(usuario_id, nuevo_password_hash)
 
-    if not actualizado:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=usuario_id,
-        accion="CAMBIAR_CONTRASENA",
-        modulo="PERFIL",
-        resultado="EXITOSO",
-        descripcion="Contraseña actualizada correctamente.",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Contraseña actualizada correctamente.")
+def desactivar_cuenta(usuario_actual: dict[str, object],request: DesactivarCuentaRequest) -> MensajeResponse:
+    if request.confirmacion!="DESACTIVAR MI CUENTA":
+        raise HTTPException(400,"Confirma explícitamente la desactivación de tu cuenta.")
+    if usuario_actual["empresa_id"] is None or set(usuario_actual["roles"])!={"CLIENTE"}:
+        raise HTTPException(403,"Esta opción corresponde a las cuentas de cliente.")
+    repo.desactivar_cuenta_cliente(int(usuario_actual["id"]),int(usuario_actual["empresa_id"]),request.password_actual)
+    return MensajeResponse(mensaje="Cuenta desactivada. Tu historial se conserva.")
 
 
 def listar_direcciones(usuario_actual: dict[str, object]) -> ListaDireccionesResponse:
-    usuario_id = int(usuario_actual["id"])
-    direcciones = listar_direcciones_cliente(usuario_id)
-
-    return ListaDireccionesResponse(
-        direcciones=[
-            construir_direccion_response(direccion) for direccion in direcciones
-        ]
-    )
+    filas=repo.listar_direcciones_cliente(int(usuario_actual["id"]),usuario_actual["empresa_id"])
+    return ListaDireccionesResponse(direcciones=[DireccionResponse(**f) for f in filas])
 
 
-def crear_direccion(
-    usuario_actual: dict[str, object],
-    request: CrearDireccionRequest,
-) -> DireccionResponse:
-    usuario_id = int(usuario_actual["id"])
-    direccion = crear_direccion_cliente(
-        usuario_id,
-        request.ciudad_id,
-        request.direccion.strip(),
-        request.referencia,
-        request.es_principal,
-    )
-
-    if direccion is None:
-        raise HTTPException(status_code=404, detail="Cliente no encontrado.")
-
-    return construir_direccion_response(direccion)
+def _guardar_direccion(usuario_actual,request,direccion_id):
+    fila=repo.guardar_direccion_cliente(int(usuario_actual["id"]),usuario_actual["empresa_id"],
+        direccion_id,request.ciudad_id,request.direccion,request.referencia,request.es_principal)
+    return DireccionResponse(**fila)
 
 
-def actualizar_direccion(
-    usuario_actual: dict[str, object],
-    direccion_id: int,
-    request: ActualizarDireccionRequest,
-) -> DireccionResponse:
-    usuario_id = int(usuario_actual["id"])
-    direccion = actualizar_direccion_cliente(
-        usuario_id,
-        direccion_id,
-        request.ciudad_id,
-        request.direccion.strip(),
-        request.referencia,
-        request.es_principal,
-    )
-
-    if direccion is None:
-        raise HTTPException(status_code=404, detail="Direccion no encontrada.")
-
-    return construir_direccion_response(direccion)
+def crear_direccion(usuario_actual: dict[str, object],request: CrearDireccionRequest) -> DireccionResponse:
+    return _guardar_direccion(usuario_actual,request,None)
 
 
-def desactivar_direccion(
-    usuario_actual: dict[str, object],
-    direccion_id: int,
-) -> MensajeResponse:
-    usuario_id = int(usuario_actual["id"])
-    desactivada = desactivar_direccion_cliente(usuario_id, direccion_id)
-
-    if not desactivada:
-        raise HTTPException(status_code=404, detail="Direccion no encontrada.")
-
-    return MensajeResponse(mensaje="Direccion desactivada correctamente.")
+def actualizar_direccion(usuario_actual: dict[str, object],direccion_id: int,request: ActualizarDireccionRequest) -> DireccionResponse:
+    return _guardar_direccion(usuario_actual,request,direccion_id)
 
 
-def construir_perfil_response(perfil: dict[str, object]) -> PerfilResponse:
-    return PerfilResponse(
-        id=int(perfil["id"]),
-        nombre=str(perfil["nombre"]),
-        apellido=str(perfil["apellido"]),
-        username=str(perfil["username"]),
-        correo=str(perfil["correo"]),
-        telefono=None if perfil["telefono"] is None else str(perfil["telefono"]),
-        roles=[str(rol) for rol in perfil["roles"]],
-    )
-
-
-def construir_direccion_response(direccion: dict[str, object]) -> DireccionResponse:
-    return DireccionResponse(
-        id=int(direccion["id"]),
-        ciudad_id=int(direccion["ciudad_id"]),
-        direccion=str(direccion["direccion"]),
-        referencia=(
-            None if direccion["referencia"] is None else str(direccion["referencia"])
-        ),
-        es_principal=bool(direccion["es_principal"]),
-    )
+def desactivar_direccion(usuario_actual: dict[str, object],direccion_id: int) -> MensajeResponse:
+    if not repo.desactivar_direccion_cliente(int(usuario_actual["id"]),direccion_id,usuario_actual["empresa_id"]):
+        raise HTTPException(404,"Dirección no encontrada.")
+    return MensajeResponse(mensaje="Dirección desactivada correctamente.")

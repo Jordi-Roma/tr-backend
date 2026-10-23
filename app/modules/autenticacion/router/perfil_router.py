@@ -6,6 +6,7 @@ from app.modules.autenticacion.schemas.perfil.perfil_request import (
     ActualizarPerfilRequest,
     CambiarPasswordRequest,
     CrearDireccionRequest,
+    DesactivarCuentaRequest,
 )
 from app.modules.autenticacion.schemas.perfil.perfil_response import (
     DireccionResponse,
@@ -21,6 +22,7 @@ from app.modules.autenticacion.services.perfil_service import (
     desactivar_direccion,
     listar_direcciones,
     obtener_perfil,
+    desactivar_cuenta,
 )
 
 router = APIRouter(
@@ -56,6 +58,12 @@ def editar_password(
     ip = http_request.client.host if http_request.client else None
     ua = http_request.headers.get("User-Agent")
     return cambiar_password(usuario_actual, request, direccion_ip=ip, user_agent=ua)
+
+
+@router.post("/desactivar", response_model=MensajeResponse)
+def desactivar_mi_cuenta(request: DesactivarCuentaRequest,
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual)) -> MensajeResponse:
+    return desactivar_cuenta(usuario_actual, request)
 
 
 @router.get("/direcciones", response_model=ListaDireccionesResponse)

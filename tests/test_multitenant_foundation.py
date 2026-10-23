@@ -53,7 +53,7 @@ class TestContextoEmpresa(unittest.TestCase):
              patch("app.modules.autenticacion.services.sesion_service.crear_sesion", return_value={"id": 7}) as crear, \
              patch("app.modules.autenticacion.services.sesion_service.crear_token_acceso", return_value="jwt") as token:
             respuesta = iniciar_sesion(LoginRequest(identificador="ana", password="secreto", empresa_codigo="stylear"))
-            crear.assert_called_once_with(5, 10)
+            crear.assert_called_once_with(5, 10, identidad_verificada=usuario)
             self.assertEqual(token.call_args.args[0]["empresa_id"], 10)
             self.assertEqual(respuesta.empresa_codigo, "stylear")
 

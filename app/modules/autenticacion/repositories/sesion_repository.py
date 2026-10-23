@@ -1,4 +1,5 @@
 from psycopg2.extras import RealDictCursor
+from fastapi import HTTPException
 
 from app.core.config import ACCESS_TOKEN_EXPIRE_MINUTES
 from app.database.connection import get_connection
@@ -124,11 +125,23 @@ def crear_sesion(
     usuario_id: int,
     empresa_id: int | None,
     refresh_token_hash: str | None = None,
+    identidad_verificada: dict[str, object] | None = None,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        # Serializa la apertura con cambios de contraseña, identidad y bajas.
+        # Una contraseña verificada antes de esos cambios no abre otra sesión.
+        cursor.execute('SELECT activo,empresa_id,password_hash,username,correo FROM usuario WHERE id=%s FOR UPDATE', (usuario_id,))
+        actual = cursor.fetchone()
+        if not actual or not actual['activo'] or actual['empresa_id'] != empresa_id or (
+            identidad_verificada is not None and any(
+                actual[campo] != identidad_verificada[campo]
+                for campo in ('password_hash', 'username', 'correo')
+            )
+        ):
+            raise HTTPException(401, 'La cuenta cambió durante el ingreso. Inicia sesión nuevamente.')
         cursor.execute(
             """
             INSERT INTO sesion (

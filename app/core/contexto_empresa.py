@@ -18,6 +18,24 @@ def normalizar_codigo_empresa(codigo: str) -> str:
     return normalizado
 
 
+def listar_empresas_publicas() -> list[dict[str, object]]:
+    """Identidad pública de tiendas accesibles, sin datos de administración SaaS."""
+    connection = get_connection()
+    try:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, codigo, nombre, estado
+                FROM empresa
+                WHERE estado IN ('ACTIVA', 'SUSPENDIDA')
+                ORDER BY LOWER(nombre), id;
+                """
+            )
+            return [dict(empresa) for empresa in cursor.fetchall()]
+    finally:
+        connection.close()
+
+
 def resolver_empresa_por_codigo(codigo: str) -> dict[str, object] | None:
     """El codigo es un selector publico, nunca una autorizacion privada."""
     try:

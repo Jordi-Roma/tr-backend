@@ -16,6 +16,12 @@ Fecha: 23 de octubre de 2026. Carpeta: `TiendaAR/tr-backend`.
 - Se añadieron eventos de plataforma transaccionales para altas/cambios SaaS y operaciones de respaldo. El actor AS y la empresa afectada quedan separados de la bitácora comercial.
 - Se añadieron respaldos cifrados globales y selectivos, previsualización, restauración, eliminación y purga por conservación configurada.
 
+## Directorio público de empresas
+
+Actualización posterior del 23/10/2026: se añadió `GET /api/v1/empresas/publicas` para elegir la tienda por nombre desde Angular. Publica exclusivamente `id`, `codigo`, `nombre` y `estado` de empresas activas o suspendidas; las canceladas quedan excluidas. El código sigue siendo un identificador interno y de enlaces. No expone la configuración SaaS ni requiere migración nueva.
+
+La integración se comprobó en PostgreSQL 16 desechable y con datos ficticios: **50 pruebas backend aprobadas**, incluidas la consulta anónima del directorio, exclusión de empresas canceladas y limitación de campos públicos. No hubo cambios en el motor del vestidor, QR, base real ni despliegue durante esta actualización.
+
 ## Migraciones y despliegue
 
 Se conserva `2026_10_23_multitenant_01`. La nueva versión `2026_10_23_multitenant_02` crea `evento_plataforma` y `respaldo`, y permite diferir las comprobaciones FK durante la restauración selectiva. Las operaciones normales conservan comprobación inmediata.

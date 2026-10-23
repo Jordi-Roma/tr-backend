@@ -91,6 +91,25 @@ def mercaderia(empresa,stock=4):
     return sucursal,producto,variante
 
 
+def test_directorio_publico_incluye_consultables_y_no_expone_datos_saas(empresas):
+    import httpx
+    from app.main import app
+    a,b,_,_=empresas
+    consulta("UPDATE empresa SET estado='SUSPENDIDA' WHERE id=%s", (a['id'],))
+    consulta("UPDATE empresa SET estado='CANCELADA' WHERE id=%s", (b['id'],))
+
+    async def verificar():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://pruebas') as c:
+            respuesta=await c.get('/api/v1/empresas/publicas')
+            assert respuesta.status_code==200,respuesta.text
+            empresas_publicas=respuesta.json()
+            assert all(set(e)=={'id','nombre','codigo','estado'} for e in empresas_publicas)
+            assert any(e['id']==a['id'] and e['estado']=='SUSPENDIDA' for e in empresas_publicas)
+            assert not any(e['id']==b['id'] for e in empresas_publicas)
+            assert (await c.get('/api/v1/empresas/publica/'+b['codigo'])).status_code==404
+    asyncio.run(verificar())
+
+
 def test_migrador_repetido_preserva_datos_y_versiones():
     from init_db import ejecutar_scripts
     antes=consulta('SELECT id,username,empresa_id FROM usuario ORDER BY id')

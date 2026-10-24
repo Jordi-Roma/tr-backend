@@ -122,11 +122,11 @@ def verificar_migracion_multitenant():
         cur = conn.cursor()
         cur.execute(
             "SELECT 1 FROM schema_migrations WHERE version = %s",
-            ("2026_10_23_multitenant_02",),
+            ("2026_10_23_cu04_cu05_01",),
         )
         if cur.fetchone() is None:
-            raise RuntimeError("Falta la migracion multitenant; ejecute init_db.py antes de iniciar la API.")
-        print("[Startup] Migracion multitenant verificada.")
+            raise RuntimeError("Falta la migración CU04/CU05; ejecute init_db.py antes de iniciar la API.")
+        print("[Startup] Esquema CU04/CU05 verificado.")
     finally:
         conn.close()
 

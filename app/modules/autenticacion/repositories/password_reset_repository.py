@@ -6,7 +6,7 @@ from app.modules.autenticacion.repositories.perfil_repository import _transaccio
 def obtener_usuario_por_identificador(identificador: str, empresa_id: int | None):
     with _transaccion() as cur:
         cur.execute("""
-            SELECT u.id,u.nombre,u.apellido,u.username,u.correo,u.activo
+            SELECT u.id,u.nombre,u.apellido,u.username,u.correo,u.activo,u.version_acceso
             FROM usuario u
             WHERE u.empresa_id IS NOT DISTINCT FROM %s
               AND (LOWER(u.correo)=LOWER(%s) OR u.username=LOWER(%s))
@@ -21,11 +21,11 @@ def obtener_usuario_por_identificador(identificador: str, empresa_id: int | None
 
 def guardar_token_reset(usuario_id: int,token_hash: str,minutos_expiracion: int,empresa_id: int | None,identidad_verificada: dict | None = None) -> bool:
     with _transaccion() as cur:
-        cur.execute('SELECT id,username,correo FROM usuario WHERE id=%s AND empresa_id IS NOT DISTINCT FROM %s AND activo=TRUE FOR UPDATE',(usuario_id,empresa_id))
+        cur.execute('SELECT id,username,correo,version_acceso FROM usuario WHERE id=%s AND empresa_id IS NOT DISTINCT FROM %s AND activo=TRUE FOR UPDATE',(usuario_id,empresa_id))
         actual = cur.fetchone()
         if not actual or (identidad_verificada is not None and any(
             actual[campo] != identidad_verificada[campo] for campo in ('username','correo')
-        )):
+        )) or (actual and identidad_verificada is not None and actual['version_acceso']!=identidad_verificada.get('version_acceso',0)):
             return False
         cur.execute("SELECT id FROM password_reset_token WHERE usuario_id=%s AND fecha_creacion>CURRENT_TIMESTAMP-INTERVAL '60 seconds' LIMIT 1",(usuario_id,))
         if cur.fetchone():

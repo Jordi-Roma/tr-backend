@@ -7,6 +7,8 @@ def es_operacion_nueva(metodo: str, ruta: str) -> bool:
     if metodo.upper() in {"GET", "HEAD", "OPTIONS"}:
         return False
     ruta = ruta.rstrip("/")
+    if ruta == "/api/v1/usuarios" or ruta.startswith("/api/v1/usuarios/"):
+        return False
     if ruta.startswith(("/api/v1/saas/", "/api/v1/perfil", "/api/v1/autenticacion/", "/api/v1/devoluciones")):
         return False
     if ruta == "/api/v1/catalogo/vestidor/pausar-realtime":

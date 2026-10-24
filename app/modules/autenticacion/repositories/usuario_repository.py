@@ -70,6 +70,7 @@ def obtener_usuario_por_id(usuario_id: int) -> dict[str, object] | None:
                 u.correo,
                 u.activo,
                 u.empresa_id,
+                u.version_acceso,
                 e.codigo AS empresa_codigo,
                 e.estado AS empresa_estado,
                 COALESCE(

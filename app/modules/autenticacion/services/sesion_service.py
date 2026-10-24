@@ -122,6 +122,7 @@ def iniciar_sesion(
         {
             "sub": str(usuario_id),
             "sid": str(sesion["id"]),
+            "version_acceso": usuario.get("version_acceso",0),
             "username": str(usuario["username"]),
             "correo": str(usuario["correo"]),
             "roles": roles,

@@ -17,6 +17,9 @@ class BitacoraItemResponse(BaseModel):
     direccion_ip: str | None
     user_agent: str | None
     fecha: datetime
+    empresa_id: int | None = None
+    objetivo_usuario_id: int | None = None
+    empresa_afectada_id: int | None = None
 
 
 class BitacoraDetalleResponse(BitacoraItemResponse):
@@ -51,33 +54,35 @@ class BitacoraListResponse(BaseModel):
 def _construir_item(row: dict[str, object]) -> BitacoraItemResponse:
     return BitacoraItemResponse(
         id=int(row["id"]),
-        usuario_id=int(row["usuario_id"]) if row.get("usuario_id") is not None else None,
-        usuario_username=str(row["usuario_username"]) if row.get("usuario_username") else None,
-        usuario_nombre=str(row["usuario_nombre"]) if row.get("usuario_nombre") else None,
-        usuario_apellido=str(row["usuario_apellido"]) if row.get("usuario_apellido") else None,
+        usuario_id=(
+            int(row["usuario_id"]) if row.get("usuario_id") is not None else None
+        ),
+        usuario_username=(
+            str(row["usuario_username"]) if row.get("usuario_username") else None
+        ),
+        usuario_nombre=(
+            str(row["usuario_nombre"]) if row.get("usuario_nombre") else None
+        ),
+        usuario_apellido=(
+            str(row["usuario_apellido"]) if row.get("usuario_apellido") else None
+        ),
         accion=str(row["accion"]),
         modulo=str(row["modulo"]),
         descripcion=str(row["descripcion"]) if row.get("descripcion") else None,
         resultado=str(row["resultado"]),
         direccion_ip=str(row["direccion_ip"]) if row.get("direccion_ip") else None,
         user_agent=str(row["user_agent"]) if row.get("user_agent") else None,
+        empresa_id=row.get("empresa_id"),
+        objetivo_usuario_id=row.get("objetivo_usuario_id"),
+        empresa_afectada_id=row.get("empresa_afectada_id"),
         fecha=row["fecha"],  # type: ignore[arg-type]
     )
 
 
 def construir_detalle(row: dict[str, object]) -> BitacoraDetalleResponse:
     return BitacoraDetalleResponse(
-        id=int(row["id"]),
-        usuario_id=int(row["usuario_id"]) if row.get("usuario_id") is not None else None,
-        usuario_username=str(row["usuario_username"]) if row.get("usuario_username") else None,
-        usuario_nombre=str(row["usuario_nombre"]) if row.get("usuario_nombre") else None,
-        usuario_apellido=str(row["usuario_apellido"]) if row.get("usuario_apellido") else None,
-        usuario_correo=str(row["usuario_correo"]) if row.get("usuario_correo") else None,
-        accion=str(row["accion"]),
-        modulo=str(row["modulo"]),
-        descripcion=str(row["descripcion"]) if row.get("descripcion") else None,
-        resultado=str(row["resultado"]),
-        direccion_ip=str(row["direccion_ip"]) if row.get("direccion_ip") else None,
-        user_agent=str(row["user_agent"]) if row.get("user_agent") else None,
-        fecha=row["fecha"],  # type: ignore[arg-type]
+        **_construir_item(row).model_dump(),
+        usuario_correo=(
+            str(row["usuario_correo"]) if row.get("usuario_correo") else None
+        ),
     )

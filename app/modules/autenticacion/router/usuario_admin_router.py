@@ -1,127 +1,161 @@
-from fastapi import APIRouter, Depends, Request
-
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Literal
 from app.core.contexto_empresa import exigir_empresa_id
-from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.modules.autenticacion.autorizacion import exigir_permiso
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin_saas
 from app.modules.autenticacion.schemas.usuario_admin.usuario_admin_request import (
     ActualizarUsuarioRequest,
     CrearUsuarioAdminRequest,
 )
 from app.modules.autenticacion.schemas.usuario_admin.usuario_admin_response import (
-    MensajeResponse,
     UsuarioAdminResponse,
 )
-from app.modules.autenticacion.services.usuario_admin_service import (
-    activar_rol_usuario,
-    asignar_rol_usuario,
-    desactivar_rol_usuario,
-    editar_usuario,
-    eliminar_usuario,
-    obtener_usuario,
-    obtener_usuarios,
-    registrar_usuario,
-    reactivar_usuario,
+from app.modules.autenticacion.repositories import (
+    administracion_acceso_repository as acceso,
 )
 
-router = APIRouter(
-    prefix="/api/v1",
-    tags=["Usuarios"],
-)
+router = APIRouter(prefix="/api/v1", tags=["Usuarios"])
 
 
-def _ip(req: Request) -> str | None:
-    fwd = req.headers.get("X-Forwarded-For")
-    return fwd.split(",")[0].strip() if fwd else (req.client.host if req.client else None)
+def admin(permiso):
+    def validar(actor=Depends(exigir_permiso(permiso))):
+        exigir_empresa_id(actor)
+        return actor
+
+    return validar
 
 
-def _ua(req: Request) -> str | None:
-    return req.headers.get("User-Agent")
-
-
-@router.get("/usuarios", response_model=list[UsuarioAdminResponse])
-def listar_usuarios_endpoint(
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> list[UsuarioAdminResponse]:
-    return obtener_usuarios(exigir_empresa_id(usuario_actual))
-
-
-@router.post("/usuarios", response_model=UsuarioAdminResponse, status_code=201)
-def crear_usuario_endpoint(
-    request: CrearUsuarioAdminRequest,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> UsuarioAdminResponse:
-    return registrar_usuario(
-        request, usuario_actual, _ip(http_request), _ua(http_request)
+@router.get("/usuarios/paginados")
+def pagina(
+    estado: Literal["ACTIVOS", "INACTIVOS", "TODOS"] = "ACTIVOS",
+    busqueda: str = Query("", max_length=160),
+    pagina: int = Query(1, ge=1),
+    por_pagina: int = Query(25, ge=1, le=200),
+    actor=Depends(admin("usuarios:ver")),
+):
+    return acceso.listar(
+        actor, actor["empresa_id"], estado, busqueda, pagina, por_pagina
     )
 
 
-@router.get("/usuarios/{usuario_id}", response_model=UsuarioAdminResponse)
-def obtener_usuario_endpoint(
-    usuario_id: int,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> UsuarioAdminResponse:
-    return obtener_usuario(usuario_id, exigir_empresa_id(usuario_actual))
+@router.get("/usuarios", response_model=list[UsuarioAdminResponse])
+def lista(actor=Depends(admin("usuarios:ver"))):
+    return acceso.listar(actor, actor["empresa_id"], por_pagina=1000000)["registros"]
 
 
-@router.put("/usuarios/{usuario_id}", response_model=UsuarioAdminResponse)
-def actualizar_usuario_endpoint(
-    usuario_id: int,
-    request: ActualizarUsuarioRequest,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> UsuarioAdminResponse:
-    return editar_usuario(usuario_id, request, usuario_actual, _ip(http_request), _ua(http_request))
+@router.post("/usuarios", response_model=UsuarioAdminResponse, status_code=201)
+def crear(datos: CrearUsuarioAdminRequest, actor=Depends(admin("usuarios:crear"))):
+    return acceso.crear(actor, actor["empresa_id"], datos)
 
 
-@router.patch("/usuarios/{usuario_id}/desactivar", response_model=MensajeResponse)
-def desactivar_usuario_endpoint(
-    usuario_id: int,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> MensajeResponse:
-    return eliminar_usuario(usuario_id, usuario_actual, _ip(http_request), _ua(http_request))
+@router.get("/usuarios/{uid}", response_model=UsuarioAdminResponse)
+def detalle(uid: int, actor=Depends(admin("usuarios:ver"))):
+    return acceso.detalle(actor, actor["empresa_id"], uid)
 
 
-@router.patch("/usuarios/{usuario_id}/activar", response_model=MensajeResponse)
-def activar_usuario_endpoint(
-    usuario_id: int,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> MensajeResponse:
-    return reactivar_usuario(usuario_id, usuario_actual, _ip(http_request), _ua(http_request))
+@router.put("/usuarios/{uid}", response_model=UsuarioAdminResponse)
+def editar(
+    uid: int, datos: ActualizarUsuarioRequest, actor=Depends(admin("usuarios:editar"))
+):
+    return acceso.editar(actor, actor["empresa_id"], uid, datos)
 
 
-@router.post("/usuarios/{usuario_id}/roles/{rol_id}", response_model=MensajeResponse)
-def asignar_rol_endpoint(
-    usuario_id: int,
-    rol_id: int,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> MensajeResponse:
-    return asignar_rol_usuario(usuario_id, rol_id, usuario_actual, _ip(http_request), _ua(http_request))
+@router.patch("/usuarios/{uid}/desactivar")
+def desactivar(uid: int, actor=Depends(admin("usuarios:desactivar"))):
+    return acceso.estado_usuario(actor, actor["empresa_id"], uid, False)
 
 
-@router.patch(
-    "/usuarios/{usuario_id}/roles/{rol_id}/desactivar",
-    response_model=MensajeResponse,
-)
-def desactivar_rol_endpoint(
-    usuario_id: int,
-    rol_id: int,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> MensajeResponse:
-    return desactivar_rol_usuario(usuario_id, rol_id, usuario_actual, _ip(http_request), _ua(http_request))
+@router.patch("/usuarios/{uid}/activar")
+def activar(uid: int, actor=Depends(admin("usuarios:activar"))):
+    return acceso.estado_usuario(actor, actor["empresa_id"], uid, True)
 
 
-@router.patch(
-    "/usuarios/{usuario_id}/roles/{rol_id}/activar",
-    response_model=MensajeResponse,
-)
-def activar_rol_endpoint(
-    usuario_id: int,
-    rol_id: int,
-    http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
-) -> MensajeResponse:
-    return activar_rol_usuario(usuario_id, rol_id, usuario_actual, _ip(http_request), _ua(http_request))
+@router.post("/usuarios/{uid}/roles/{rid}")
+@router.patch("/usuarios/{uid}/roles/{rid}/activar")
+def asignar(uid: int, rid: int, actor=Depends(admin("roles:asignar"))):
+    return acceso.rol_usuario(actor, actor["empresa_id"], uid, rid, True)
+
+
+@router.patch("/usuarios/{uid}/roles/{rid}/desactivar")
+def retirar(uid: int, rid: int, actor=Depends(admin("roles:retirar"))):
+    return acceso.rol_usuario(actor, actor["empresa_id"], uid, rid, False)
+
+
+# AS manages only access accounts, through a separate explicit namespace.
+@router.get("/saas/usuarios")
+def saas_lista(
+    empresa_id: int | None = Query(None, gt=0),
+    estado: Literal["ACTIVOS", "INACTIVOS", "TODOS"] = "ACTIVOS",
+    busqueda: str = Query("", max_length=160),
+    pagina: int = Query(1, ge=1),
+    por_pagina: int = Query(25, ge=1, le=200),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.listar(actor, empresa_id, estado, busqueda, pagina, por_pagina)
+
+
+@router.post("/saas/usuarios", status_code=201, response_model=UsuarioAdminResponse)
+def saas_crear(
+    datos: CrearUsuarioAdminRequest,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.crear(actor, empresa_id, datos)
+
+
+@router.get("/saas/usuarios/{uid}", response_model=UsuarioAdminResponse)
+def saas_detalle(
+    uid: int,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.detalle(actor, empresa_id, uid)
+
+
+@router.put("/saas/usuarios/{uid}", response_model=UsuarioAdminResponse)
+def saas_editar(
+    uid: int,
+    datos: ActualizarUsuarioRequest,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.editar(actor, empresa_id, uid, datos)
+
+
+@router.patch("/saas/usuarios/{uid}/desactivar")
+def saas_desactivar(
+    uid: int,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.estado_usuario(actor, empresa_id, uid, False)
+
+
+@router.patch("/saas/usuarios/{uid}/activar")
+def saas_activar(
+    uid: int,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.estado_usuario(actor, empresa_id, uid, True)
+
+
+@router.post("/saas/usuarios/{uid}/roles/{rid}")
+@router.patch("/saas/usuarios/{uid}/roles/{rid}/activar")
+def saas_asignar(
+    uid: int,
+    rid: int,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.rol_usuario(actor, empresa_id, uid, rid, True)
+
+
+@router.patch("/saas/usuarios/{uid}/roles/{rid}/desactivar")
+def saas_retirar(
+    uid: int,
+    rid: int,
+    empresa_id: int | None = Query(None, gt=0),
+    actor=Depends(requerir_admin_saas),
+):
+    return acceso.rol_usuario(actor, empresa_id, uid, rid, False)

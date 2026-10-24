@@ -1,81 +1,56 @@
 import re
-
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ActualizarUsuarioRequest(BaseModel):
-    nombre: str
-    apellido: str
-    username: str
-    correo: str
+    model_config = ConfigDict(extra="forbid")
+    nombre: str = Field(min_length=1, max_length=100)
+    apellido: str = Field(min_length=1, max_length=100)
+    username: str = Field(min_length=4, max_length=80)
+    correo: str = Field(min_length=3, max_length=320)
 
-    @field_validator("nombre", "apellido")
+    @field_validator("nombre", "apellido", "username", "correo")
     @classmethod
-    def validar_texto_obligatorio(cls, valor: str) -> str:
-        texto = valor.strip()
-
-        if not texto:
+    def texto(cls, v):
+        v = v.strip()
+        if not v:
             raise ValueError("Este campo es obligatorio.")
-
-        return texto
+        return v
 
     @field_validator("username")
     @classmethod
-    def validar_username(cls, valor: str) -> str:
-        username = valor.strip().lower()
-
-        if not username:
-            raise ValueError("El username es obligatorio.")
-
-        if len(username) < 4:
-            raise ValueError("El username debe tener al menos 4 caracteres.")
-
-        if " " in username:
-            raise ValueError("El username no debe contener espacios.")
-
-        if re.fullmatch(r"[a-z0-9_.]+", username) is None:
+    def usuario(cls, v):
+        if not re.fullmatch(r"[a-zA-Z0-9_.-]{4,80}", v):
             raise ValueError(
-                "El username solo puede tener letras, numeros, guion bajo y punto."
+                "Usuario inválido: usa de 4 a 80 letras, números, punto o guion."
             )
-
-        return username
+        return v.lower()
 
     @field_validator("correo")
     @classmethod
-    def validar_correo(cls, valor: str) -> str:
-        correo = valor.strip().lower()
-
-        if "@" not in correo or "." not in correo.split("@")[-1]:
-            raise ValueError("El correo no tiene un formato valido.")
-
-        return correo
+    def email(cls, v):
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", v):
+            raise ValueError("Correo inválido.")
+        return v.lower()
 
 
 class CrearUsuarioAdminRequest(ActualizarUsuarioRequest):
-    password: str
-    rol_id: int
-    telefono: str | None = None
+    password: str = Field(min_length=8, max_length=256)
+    rol_id: int = Field(gt=0)
+    telefono: str | None = Field(default=None, max_length=30)
 
-    @field_validator("password")
+
+class PlantillaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    nombre: str | None = Field(default=None, min_length=1, max_length=80)
+    descripcion: str | None = Field(default=None, max_length=255)
+    activo: bool | None = None
+    permiso_ids: list[int] | None = None
+    confirmar_global: bool = False
+
+    @field_validator("permiso_ids")
     @classmethod
-    def validar_password_obligatorio(cls, valor: str) -> str:
-        password = valor.strip()
-        if not password:
-            raise ValueError("La contrasena es obligatoria.")
-        return password
-
-    @field_validator("rol_id")
-    @classmethod
-    def validar_rol(cls, valor: int) -> int:
-        if valor < 1:
-            raise ValueError("El rol no es valido.")
-        return valor
-
-    @field_validator("telefono")
-    @classmethod
-    def validar_telefono(cls, valor: str | None) -> str | None:
-        if valor is None:
-            return None
-
-        telefono = valor.strip()
-        return telefono or None
+    def ids(cls, v):
+        if v is not None and (len(v) > 500 or any(i <= 0 for i in v)):
+            raise ValueError("Permisos inválidos.")
+        return sorted(set(v)) if v is not None else None

@@ -674,14 +674,16 @@ def registrar_bitacora_con_cursor(
         """
         INSERT INTO bitacora (
             usuario_id,
+            empresa_id,
             accion,
             modulo,
             descripcion,
             resultado
         )
-        VALUES (%s, %s, %s, %s, %s);
+        VALUES (%s, (SELECT empresa_id FROM usuario WHERE id=%s), %s, %s, %s, %s);
         """,
         (
+            usuario_id,
             usuario_id,
             accion,
             "AUTENTICACION",

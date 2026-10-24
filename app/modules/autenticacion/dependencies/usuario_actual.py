@@ -68,6 +68,9 @@ def obtener_usuario_actual(
             detail="Usuario inactivo.",
         )
 
+    if payload.get("version_acceso",0) != usuario.get("version_acceso",0):
+        raise HTTPException(401,"La cuenta cambió. Inicia sesión nuevamente.")
+
     empresa_id = usuario.get("empresa_id")
     if empresa_id_token != empresa_id:
         raise HTTPException(status_code=401, detail="Contexto de empresa invalido.")
@@ -86,4 +89,9 @@ def obtener_usuario_actual(
         if es_operacion_nueva(request.method, request.url.path):
             exigir_operaciones_empresa(int(empresa_id))
 
+    if request is not None:
+        import ipaddress
+        try: usuario["_ip"]=str(ipaddress.ip_address(request.client.host)) if request.client else None
+        except ValueError: usuario["_ip"]=None
+        usuario["_ua"]=request.headers.get("User-Agent","")[:255]
     return usuario

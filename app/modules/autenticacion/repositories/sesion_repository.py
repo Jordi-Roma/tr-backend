@@ -20,6 +20,7 @@ def obtener_usuario_para_login(identificador: str) -> dict[str, object] | None:
                 u.username,
                 u.correo,
                 u.password_hash,
+                u.version_acceso,
                 u.intentos_fallidos,
                 u.bloqueado_hasta,
                 u.activo,
@@ -133,14 +134,14 @@ def crear_sesion(
     try:
         # Serializa la apertura con cambios de contraseña, identidad y bajas.
         # Una contraseña verificada antes de esos cambios no abre otra sesión.
-        cursor.execute('SELECT activo,empresa_id,password_hash,username,correo FROM usuario WHERE id=%s FOR UPDATE', (usuario_id,))
+        cursor.execute('SELECT activo,empresa_id,password_hash,username,correo,version_acceso FROM usuario WHERE id=%s FOR UPDATE', (usuario_id,))
         actual = cursor.fetchone()
         if not actual or not actual['activo'] or actual['empresa_id'] != empresa_id or (
             identidad_verificada is not None and any(
                 actual[campo] != identidad_verificada[campo]
                 for campo in ('password_hash', 'username', 'correo')
             )
-        ):
+        ) or (identidad_verificada is not None and actual and actual['version_acceso'] != identidad_verificada.get('version_acceso',0)):
             raise HTTPException(401, 'La cuenta cambió durante el ingreso. Inicia sesión nuevamente.')
         cursor.execute(
             """

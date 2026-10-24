@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 
 from app.modules.autenticacion.schemas.sesion.sesion_request import LoginRequest
 from app.modules.autenticacion.schemas.sesion.sesion_response import (
@@ -47,3 +48,8 @@ def logout(
         direccion_ip=_extraer_ip(http_request),
         user_agent=_extraer_ua(http_request),
     )
+
+@router.get("/capacidades")
+def consultar_capacidades(usuario=Depends(obtener_usuario_actual)):
+    from app.modules.autenticacion.autorizacion import capacidades
+    return {"permisos": capacidades(usuario)}

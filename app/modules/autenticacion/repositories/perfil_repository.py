@@ -46,6 +46,7 @@ def _auditar(cur, usuario_id, empresa_id, accion):
 
 
 def invalidar_accesos(cur, usuario_id, empresa_id):
+    cur.execute("UPDATE usuario SET version_acceso=version_acceso+1 WHERE id=%s AND empresa_id IS NOT DISTINCT FROM %s",(usuario_id,empresa_id))
     cur.execute("""UPDATE sesion SET activa=FALSE,fecha_cierre=CURRENT_TIMESTAMP
         WHERE usuario_id=%s AND empresa_id IS NOT DISTINCT FROM %s AND activa=TRUE""", (usuario_id,empresa_id))
     cur.execute("""UPDATE password_reset_token SET usado=TRUE,fecha_uso=CURRENT_TIMESTAMP

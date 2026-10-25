@@ -4,6 +4,8 @@ from app.modules.administracion.schemas.proveedor.proveedor_request import (
     ActualizarProveedorRequest,
     CrearProveedorRequest,
     VincularUsuarioProveedorRequest,
+    CrearCuentaProveedorRequest,
+    VincularProductoProveedorRequest,
 )
 from app.modules.administracion.schemas.proveedor.proveedor_response import (
     MensajeResponse,
@@ -27,7 +29,10 @@ from app.modules.administracion.services.proveedor_service import (
     registrar_proveedor,
     vincular_usuario,
 )
-from app.modules.administracion.dependencies.empleado_access import requerir_admin_o_encargado
+from app.modules.administracion.repositories import proveedor_repository as proveedores
+from app.core.contexto_empresa import exigir_empresa_id
+from app.core.security import hashear_password
+from fastapi import HTTPException
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 
@@ -48,7 +53,7 @@ def _ua(req: Request) -> str | None:
 
 @router.get("/proveedores", response_model=list[ProveedorResponse])
 def listar_proveedores_endpoint(
-    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
+    usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> list[ProveedorResponse]:
     return obtener_proveedores(usuario_actual)
 
@@ -62,10 +67,20 @@ def crear_proveedor_endpoint(
     return registrar_proveedor(request, usuario_actual, _ip(http_request), _ua(http_request))
 
 
+@router.get("/proveedores/cuentas-disponibles")
+def cuentas_disponibles(actor=Depends(requerir_admin)):
+    return proveedores.listar_cuentas_vinculables(exigir_empresa_id(actor))
+
+
+@router.get("/proveedores/productos-disponibles")
+def productos_disponibles(actor=Depends(requerir_admin)):
+    return proveedores.listar_productos_vinculables(exigir_empresa_id(actor))
+
+
 @router.get("/proveedores/{proveedor_id}", response_model=ProveedorResponse)
 def obtener_proveedor_endpoint(
     proveedor_id: int,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
+    usuario_actual: dict[str, object] = Depends(requerir_admin),
 ) -> ProveedorResponse:
     return obtener_proveedor(proveedor_id, usuario_actual)
 
@@ -144,3 +159,28 @@ def listar_entregas_proveedor_endpoint(
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> list[ProveedorEntregaResponse]:
     return listar_entregas_panel_proveedor(usuario_actual)
+
+
+@router.post('/proveedores/{proveedor_id}/crear-usuario', response_model=ProveedorResponse)
+def crear_cuenta(proveedor_id: int, datos: CrearCuentaProveedorRequest, actor=Depends(requerir_admin)):
+    try:
+        password_hash = hashear_password(datos.password)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return proveedores.crear_cuenta_proveedor(proveedor_id, datos, password_hash, exigir_empresa_id(actor), int(actor['id']))
+
+
+@router.get('/proveedores/{proveedor_id}/productos', response_model=list[ProveedorProductoResponse])
+def productos_vinculados(proveedor_id: int, actor=Depends(requerir_admin)):
+    obtener_proveedor(proveedor_id, actor)
+    return proveedores.listar_productos_proveedor_panel(proveedor_id, exigir_empresa_id(actor))
+
+
+@router.post('/proveedores/{proveedor_id}/productos', response_model=list[ProveedorProductoResponse])
+def asociar_producto(proveedor_id: int, datos: VincularProductoProveedorRequest, actor=Depends(requerir_admin)):
+    return proveedores.vincular_producto_proveedor(proveedor_id, datos.producto_id, exigir_empresa_id(actor), int(actor['id']))
+
+
+@router.delete('/proveedores/{proveedor_id}/productos/{producto_id}', response_model=list[ProveedorProductoResponse])
+def retirar_producto(proveedor_id: int, producto_id: int, actor=Depends(requerir_admin)):
+    return proveedores.vincular_producto_proveedor(proveedor_id, producto_id, exigir_empresa_id(actor), int(actor['id']), activo=False)

@@ -1,18 +1,8 @@
+from app.modules.administracion.repositories.clasificacion_repository import escribir_clasificacion
 from fastapi import HTTPException
 from app.core.contexto_empresa import exigir_empresa_id
-from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
-from app.modules.administracion.repositories.temporada_repository import (
-    actualizar_temporada,
-    cambiar_estado_temporada,
-    crear_temporada,
-    listar_temporadas,
-    obtener_temporada_por_id,
-    obtener_temporada_por_nombre_anio,
-)
-from app.modules.administracion.schemas.catalogo.temporada_request import (
-    ActualizarTemporadaRequest,
-    CrearTemporadaRequest,
-)
+from app.modules.administracion.repositories.temporada_repository import listar_temporadas, obtener_temporada_por_id
+from app.modules.administracion.schemas.catalogo.temporada_request import ActualizarTemporadaRequest, CrearTemporadaRequest
 from app.modules.administracion.schemas.catalogo.temporada_response import TemporadaResponse
 from app.modules.administracion.schemas.catalogo.catalogo_response import MensajeResponse
 
@@ -41,27 +31,8 @@ def registrar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    if obtener_temporada_por_nombre_anio(request.nombre, request.anio, empresa_id) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe una temporada con ese nombre y año.",
-        )
-    temporada = crear_temporada(
-        nombre=request.nombre.strip(),
-        anio=request.anio,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="TEMPORADAS",
-        resultado="EXITOSO",
-        descripcion=f"Temporada creada: {request.nombre.strip()} {request.anio}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_temporada_response(temporada)
+    fila = escribir_clasificacion('temporada', usuario_actual, registro_id=None, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_temporada_response(fila)
 
 def editar_temporada(
     temporada_id: int,
@@ -70,34 +41,8 @@ def editar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_temporada_por_id(temporada_id, empresa_id)
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Temporada no encontrada.")
-
-    existente = obtener_temporada_por_nombre_anio(request.nombre, request.anio, empresa_id)
-    if existente is not None and int(existente["id"]) != temporada_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe otra temporada con ese nombre y año.",
-        )
-
-    temporada = actualizar_temporada(
-        temporada_id=temporada_id,
-        nombre=request.nombre.strip(),
-        anio=request.anio,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="TEMPORADAS",
-        resultado="EXITOSO",
-        descripcion=f"Temporada actualizada: id={temporada_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_temporada_response(temporada)
+    fila = escribir_clasificacion('temporada', usuario_actual, registro_id=temporada_id, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_temporada_response(fila)
 
 def eliminar_temporada(
     temporada_id: int,
@@ -105,25 +50,8 @@ def eliminar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_temporada_por_id(temporada_id, empresa_id)
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Temporada no encontrada.")
-
-    if not actual["activo"]:
-        raise HTTPException(status_code=400, detail="La temporada ya está inactiva.")
-
-    cambiar_estado_temporada(temporada_id, False, empresa_id)
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="TEMPORADAS",
-        resultado="EXITOSO",
-        descripcion=f"Temporada desactivada: id={temporada_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Temporada desactivada exitosamente.")
+    fila = escribir_clasificacion('temporada', usuario_actual, registro_id=temporada_id, ip=direccion_ip, ua=user_agent, activo=False)
+    return MensajeResponse(mensaje="Clasificación desactivada correctamente.")
 
 def reactivar_temporada(
     temporada_id: int,
@@ -131,22 +59,5 @@ def reactivar_temporada(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TemporadaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_temporada_por_id(temporada_id, empresa_id)
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Temporada no encontrada.")
-
-    if actual["activo"]:
-        raise HTTPException(status_code=400, detail="La temporada ya está activa.")
-
-    temporada = cambiar_estado_temporada(temporada_id, True, empresa_id)
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="TEMPORADAS",
-        resultado="EXITOSO",
-        descripcion=f"Temporada activada: id={temporada_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_temporada_response(temporada)
+    fila = escribir_clasificacion('temporada', usuario_actual, registro_id=temporada_id, ip=direccion_ip, ua=user_agent, activo=True)
+    return construir_temporada_response(fila)

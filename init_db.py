@@ -41,6 +41,9 @@ VERSIONED_SQL_FILES = [
     ("2026_10_23_multitenant_02", "database/migracion_multitenant_02.sql"),
     ("2026_10_23_cu02_cu03_01", "database/migracion_cu02_cu03_01.sql"),
     ("2026_10_23_cu04_cu05_01", "database/migracion_cu04_cu05_01.sql"),
+    ("2026_10_24_cu06_01", "database/migracion_cu06_01.sql"),
+    ("2026_10_24_cu07_cu08_01", "database/migracion_cu07_cu08_01.sql"),
+    ("2026_10_25_cu10_01", "database/migracion_cu10_01.sql"),
 ]
 
 

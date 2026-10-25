@@ -1,14 +1,15 @@
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 
 
 # ── CATEGORÍA ──────────────────────────────────────────────────────────────
 
 class CrearCategoriaRequest(BaseModel):
-    categoria_padre_id: int | None = None
-    nombre: str
-    descripcion: str | None = None
+    categoria_padre_id: int | None = Field(default=None, gt=0)
+    nombre: str = Field(max_length=120)
+    descripcion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod
@@ -31,9 +32,9 @@ class CrearCategoriaRequest(BaseModel):
 
 
 class ActualizarCategoriaRequest(BaseModel):
-    categoria_padre_id: int | None = None
-    nombre: str
-    descripcion: str | None = None
+    categoria_padre_id: int | None = Field(default=None, gt=0)
+    nombre: str = Field(max_length=120)
+    descripcion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod
@@ -58,11 +59,11 @@ class ActualizarCategoriaRequest(BaseModel):
 # ── TALLA ──────────────────────────────────────────────────────────────────
 
 class CrearTallaRequest(BaseModel):
-    nombre: str
-    descripcion: str | None = None
-    tipo_prenda: str = "SUPERIOR"
-    ancho_cm: float | None = None
-    largo_cm: float | None = None
+    nombre: str = Field(max_length=30)
+    descripcion: str | None = Field(default=None, max_length=120)
+    tipo_prenda: Literal["SUPERIOR", "INFERIOR", "VESTIDO"] = "SUPERIOR"
+    ancho_cm: float | None = Field(default=None, ge=0.01, le=9999.99, allow_inf_nan=False)
+    largo_cm: float | None = Field(default=None, ge=0.01, le=9999.99, allow_inf_nan=False)
 
     @field_validator("nombre")
     @classmethod
@@ -85,11 +86,11 @@ class CrearTallaRequest(BaseModel):
 
 
 class ActualizarTallaRequest(BaseModel):
-    nombre: str
-    descripcion: str | None = None
-    tipo_prenda: str = "SUPERIOR"
-    ancho_cm: float | None = None
-    largo_cm: float | None = None
+    nombre: str = Field(max_length=30)
+    descripcion: str | None = Field(default=None, max_length=120)
+    tipo_prenda: Literal["SUPERIOR", "INFERIOR", "VESTIDO"] = "SUPERIOR"
+    ancho_cm: float | None = Field(default=None, ge=0.01, le=9999.99, allow_inf_nan=False)
+    largo_cm: float | None = Field(default=None, ge=0.01, le=9999.99, allow_inf_nan=False)
 
     @field_validator("nombre")
     @classmethod
@@ -114,7 +115,7 @@ class ActualizarTallaRequest(BaseModel):
 # ── COLOR ──────────────────────────────────────────────────────────────────
 
 class CrearColorRequest(BaseModel):
-    nombre: str
+    nombre: str = Field(max_length=80)
     codigo_hex: str | None = None
 
     @field_validator("nombre")
@@ -147,7 +148,7 @@ class CrearColorRequest(BaseModel):
 
 
 class ActualizarColorRequest(BaseModel):
-    nombre: str
+    nombre: str = Field(max_length=80)
     codigo_hex: str | None = None
 
     @field_validator("nombre")
@@ -182,8 +183,8 @@ class ActualizarColorRequest(BaseModel):
 # ── MARCA ──────────────────────────────────────────────────────────────────
 
 class CrearMarcaRequest(BaseModel):
-    nombre: str
-    descripcion: str | None = None
+    nombre: str = Field(max_length=120)
+    descripcion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod
@@ -206,8 +207,8 @@ class CrearMarcaRequest(BaseModel):
 
 
 class ActualizarMarcaRequest(BaseModel):
-    nombre: str
-    descripcion: str | None = None
+    nombre: str = Field(max_length=120)
+    descripcion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod

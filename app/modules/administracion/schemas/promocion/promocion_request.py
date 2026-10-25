@@ -1,18 +1,18 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PromocionRequest(BaseModel):
-    nombre: str
-    descripcion: str | None = None
+    nombre: str = Field(max_length=180)
+    descripcion: str | None = Field(default=None, max_length=10000)
     tipo_descuento: str
-    valor: Decimal
+    valor: Decimal = Field(ge=0, max_digits=12, decimal_places=2, allow_inf_nan=False)
     fecha_inicio: date
     fecha_fin: date
-    producto_ids: list[int]
-    sucursal_ids: list[int] = []
+    producto_ids: list[int] = Field(max_length=1000)
+    sucursal_ids: list[int] = Field(default_factory=list, max_length=1000)
 
     @field_validator("nombre")
     @classmethod

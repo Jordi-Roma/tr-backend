@@ -15,7 +15,7 @@ def listar_productos_para_indice(empresa_id: int) -> list[dict]:
                            WHERE v.producto_id = p.id AND v.activo = TRUE), '') AS colores,
                        COALESCE((SELECT string_agg(DISTINCT col.nombre, ', ')
                            FROM producto_coleccion pc JOIN coleccion col ON col.id = pc.coleccion_id
-                           WHERE pc.producto_id = p.id AND col.activo = TRUE), '') AS colecciones
+                           WHERE pc.producto_id = p.id AND pc.empresa_id=p.empresa_id AND pc.activo AND col.activo = TRUE), '') AS colecciones
                 FROM producto p JOIN categoria c ON c.id = p.categoria_id
                 LEFT JOIN marca m ON m.id = p.marca_id
                 WHERE p.activo = TRUE AND p.empresa_id = %s AND c.activo = TRUE

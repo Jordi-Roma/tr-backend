@@ -173,7 +173,7 @@ def crear_respaldo(actor_id: int, empresa_id: int | None = None):
                     manifiesto['empresa_codigo'] = empresa['codigo']
                     z.writestr('datos.json', _json(datos))
                     # Referencias globales se verifican, nunca se sobrescriben al restaurar una empresa.
-                    globales = {t: _filas(cur, t) for t in ('ciudad', 'rol', 'permiso', 'rol_permiso', 'plan')}
+                    globales = {t: _filas(cur, t) for t in ('rol', 'permiso', 'rol_permiso', 'plan')}
                     z.writestr('referencias.json', _json(globales))
                     archivos = _archivos_en_filas(datos)
                     manifiesto['conteos'] = {t: len(filas) for t, filas in datos.items()}

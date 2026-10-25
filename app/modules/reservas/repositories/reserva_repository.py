@@ -1222,6 +1222,18 @@ def _validar_y_reservar_stock_cursor(
     cantidad: int,
     empresa_id: int,
 ) -> None:
+    # CU10: la desactivación bloquea producto, variante e inventario en ese orden.
+    # Mantener la disponibilidad hasta que termine de reservarse el stock.
+    cursor.execute("""SELECT p.id,p.activo FROM producto p JOIN producto_variante v
+        ON v.producto_id=p.id AND v.empresa_id=p.empresa_id
+        WHERE v.id=%s AND p.empresa_id=%s FOR SHARE OF p""", (producto_variante_id,empresa_id))
+    producto = cursor.fetchone()
+    if not producto or not producto['activo']:
+        raise ValueError('El producto ya no está disponible para reservar.')
+    cursor.execute('SELECT activo FROM producto_variante WHERE id=%s AND empresa_id=%s FOR SHARE', (producto_variante_id,empresa_id))
+    variante = cursor.fetchone()
+    if not variante or not variante['activo']:
+        raise ValueError('La variante ya no está disponible para reservar.')
     cursor.execute(
         """
         SELECT inv.id, inv.stock_disponible, inv.stock_reservado

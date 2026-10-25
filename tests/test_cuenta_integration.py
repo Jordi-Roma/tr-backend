@@ -127,7 +127,7 @@ def test_direcciones_solo_propias_y_principal_atomica(api, empresas):
     _, _, ajeno = cliente(b)
     h = login(api, a, nombre)
     hv, hb = login(api, a, vecino), login(api, b, ajeno)
-    ciudad = consulta('SELECT id FROM ciudad WHERE activo LIMIT 1', una=True)['id']
+    ciudad = consulta('SELECT id FROM ciudad WHERE activo AND empresa_id=%s LIMIT 1', (a['id'],), True)['id']
     body = {'ciudad_id': ciudad, 'direccion': 'Calle propia 123', 'es_principal': True}
     d = api.post('/api/v1/perfil/direcciones', headers=h, json=body).json()
     for headers in (hv, hb):
@@ -157,7 +157,7 @@ def test_desactivacion_conserva_reserva_direcciones_y_otra_cuenta(api, empresas,
     crear_reserva_desde_carrito(uid, a['id'], suc, date.today()+timedelta(days=1), None)
     antes = consulta('SELECT * FROM reserva WHERE cliente_id=%s', (cid,))
     h, otro = login(api, a, nombre), login(api, a, nombre)
-    ciudad = consulta('SELECT id FROM ciudad WHERE activo LIMIT 1', una=True)['id']
+    ciudad = consulta('SELECT id FROM ciudad WHERE activo AND empresa_id=%s LIMIT 1', (a['id'],), True)['id']
     assert api.post('/api/v1/perfil/direcciones', headers=h, json={'ciudad_id': ciudad, 'direccion': 'Dirección conservada', 'es_principal': True}).status_code == 200
     direcciones_antes = consulta('SELECT * FROM direccion_cliente WHERE cliente_id=%s', (cid,))
     hv = login(api, a, vecino)

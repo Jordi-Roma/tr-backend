@@ -17,7 +17,7 @@ def listar_categorias(*, empresa_id: int) -> list[dict[str, object]]:
             SELECT c.id, c.categoria_padre_id, cp.nombre AS categoria_padre_nombre, 
                    c.nombre, c.descripcion, c.activo, c.fecha_creacion
             FROM categoria c
-            LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id
+            LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id AND cp.empresa_id = c.empresa_id
             WHERE c.empresa_id = %s
             ORDER BY c.nombre ASC;
             """,
@@ -39,7 +39,7 @@ def obtener_categoria_por_id(categoria_id: int, *, empresa_id: int) -> dict[str,
             SELECT c.id, c.categoria_padre_id, cp.nombre AS categoria_padre_nombre,
                    c.nombre, c.descripcion, c.activo, c.fecha_creacion
             FROM categoria c
-            LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id
+            LEFT JOIN categoria cp ON cp.id = c.categoria_padre_id AND cp.empresa_id = c.empresa_id
             WHERE c.empresa_id = %s AND c.id = %s
             LIMIT 1;
             """,
@@ -61,7 +61,7 @@ def obtener_descendientes_categoria(categoria_id: int, *, empresa_id: int) -> li
             """
             WITH RECURSIVE descendientes AS (
                 SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
-                UNION ALL
+                UNION
                 SELECT c.id FROM categoria c
                 INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )
@@ -174,7 +174,7 @@ def desactivar_categoria(categoria_id: int, *, empresa_id: int) -> bool:
             """
             WITH RECURSIVE descendientes AS (
                 SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
-                UNION ALL
+                UNION
                 SELECT c.id FROM categoria c
                 INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )
@@ -211,7 +211,7 @@ def activar_categoria(categoria_id: int, *, empresa_id: int) -> dict[str, object
             """
             WITH RECURSIVE descendientes AS (
                 SELECT id FROM categoria WHERE empresa_id = %s AND id = %s
-                UNION ALL
+                UNION
                 SELECT c.id FROM categoria c
                 INNER JOIN descendientes d ON c.categoria_padre_id = d.id AND c.empresa_id = %s
             )

@@ -13,7 +13,8 @@ ADD CONSTRAINT ck_movimiento_tipo CHECK (
         'TRANSFERENCIA_ENTRADA',
         'TRANSFERENCIA_SALIDA',
         'VENTA_PRESENCIAL',
-        'VENTA_DIGITAL'
+        'VENTA_DIGITAL',
+        'DEVOLUCION_VENTA'
     )
 );
 

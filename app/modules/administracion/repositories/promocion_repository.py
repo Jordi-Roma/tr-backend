@@ -202,7 +202,7 @@ def obtener_productos_promocion(promocion_id: int, cursor, empresa_id: int) -> l
         SELECT p.id, p.nombre
         FROM promocion_producto pp
         JOIN producto p ON p.id = pp.producto_id AND p.empresa_id = pp.empresa_id
-        WHERE pp.promocion_id = %s AND pp.empresa_id = %s
+        WHERE pp.promocion_id = %s AND pp.empresa_id = %s AND pp.activo
         ORDER BY p.nombre ASC;
         """,
         (promocion_id, empresa_id),
@@ -217,7 +217,7 @@ def obtener_sucursales_promocion(promocion_id: int, cursor, empresa_id: int) -> 
         FROM promocion_sucursal ps
         JOIN sucursal s ON s.id = ps.sucursal_id AND s.empresa_id = ps.empresa_id
         JOIN ciudad c ON c.id = s.ciudad_id
-        WHERE ps.promocion_id = %s AND ps.empresa_id = %s
+        WHERE ps.promocion_id = %s AND ps.empresa_id = %s AND ps.activo
         ORDER BY c.nombre ASC, s.nombre ASC;
         """,
         (promocion_id, empresa_id),

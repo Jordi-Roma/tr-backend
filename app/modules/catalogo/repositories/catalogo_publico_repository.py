@@ -30,7 +30,7 @@ def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tupl
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
             LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
-            LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id
+            LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id AND pc.empresa_id=p.empresa_id AND pc.activo
             LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql};
             """,
@@ -52,7 +52,7 @@ def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tupl
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
             LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
-            LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id
+            LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id AND pc.empresa_id=p.empresa_id AND pc.activo
             LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql}
             GROUP BY p.id, p.nombre
@@ -356,20 +356,20 @@ def _obtener_promocion(cursor, producto_id: int, empresa_id: int, sucursal_id: o
         """
         SELECT pr.tipo_descuento, pr.valor
         FROM promocion pr
-        JOIN promocion_producto pp ON pp.promocion_id = pr.id
+        JOIN promocion_producto pp ON pp.promocion_id = pr.id AND pp.empresa_id=pr.empresa_id AND pp.activo
         WHERE pp.producto_id = %s AND pr.empresa_id = %s
           AND pr.activo = TRUE
           AND CURRENT_DATE BETWEEN pr.fecha_inicio AND pr.fecha_fin
           AND (
               NOT EXISTS (
                   SELECT 1 FROM promocion_sucursal ps0
-                  WHERE ps0.promocion_id = pr.id
+                  WHERE ps0.promocion_id = pr.id AND ps0.empresa_id=pr.empresa_id AND ps0.activo
               )
               OR (
                   %s IS NOT NULL
                   AND EXISTS (
                       SELECT 1 FROM promocion_sucursal ps
-                      WHERE ps.promocion_id = pr.id AND ps.sucursal_id = %s
+                      WHERE ps.promocion_id = pr.id AND ps.empresa_id=pr.empresa_id AND ps.activo AND ps.sucursal_id = %s
                   )
               )
           )
@@ -388,7 +388,7 @@ def _obtener_colecciones(cursor, producto_id: int, empresa_id: int) -> list[str]
         SELECT col.nombre
         FROM producto_coleccion pc
         JOIN coleccion col ON col.id = pc.coleccion_id
-        WHERE pc.producto_id = %s AND col.empresa_id = %s AND col.activo = TRUE
+        WHERE pc.producto_id = %s AND pc.activo AND pc.empresa_id=col.empresa_id AND col.empresa_id = %s AND col.activo = TRUE
         ORDER BY col.nombre ASC;
         """,
         (producto_id, empresa_id),

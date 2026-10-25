@@ -1,6 +1,9 @@
 from app.core.plan_empresa import exigir_cupo_usuarios
 from psycopg2.extras import RealDictCursor
 from fastapi import HTTPException
+from psycopg2.errors import UniqueViolation
+from .control_comercial import preparar_escritura, validar_cuenta_comercial
+from app.modules.autenticacion.repositories.perfil_repository import invalidar_accesos
 
 from app.database.connection import get_connection
 from app.core.plan_empresa import bloquear_empresa_y_obtener_limite
@@ -18,10 +21,10 @@ def obtener_empleado_activo_por_usuario_id(
     try:
         cursor.execute(
             """
-            SELECT id, usuario_id, sucursal_id, codigo_empleado, cargo, activo
-            FROM empleado
-            WHERE usuario_id = %s AND empresa_id = %s
-                AND activo = TRUE
+            SELECT e.id, e.usuario_id, e.sucursal_id, e.codigo_empleado, e.cargo, e.activo
+            FROM empleado e JOIN sucursal s ON s.id=e.sucursal_id AND s.empresa_id=e.empresa_id
+            WHERE e.usuario_id = %s AND e.empresa_id = %s
+                AND e.activo = TRUE AND s.activo = TRUE
             LIMIT 1;
             """,
             (usuario_id, empresa_id),
@@ -37,17 +40,17 @@ def obtener_empleado_activo_por_usuario_id(
         connection.close()
 
 
-def listar_empleados(empresa_id: int, sucursal_id: int | None = None) -> list[dict[str, object]]:
+def listar_empleados(empresa_id: int, sucursal_id: int | None = None, incluir_inactivos: bool = False) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
-        parametros: tuple[object, ...] = (empresa_id,)
+        parametros: tuple[object, ...] = (empresa_id, incluir_inactivos)
         filtro_sucursal = ""
 
         if sucursal_id is not None:
             filtro_sucursal = "AND e.sucursal_id = %s"
-            parametros = (empresa_id, sucursal_id)
+            parametros = (empresa_id, incluir_inactivos, sucursal_id)
 
         cursor.execute(
             f"""
@@ -64,6 +67,7 @@ def listar_empleados(empresa_id: int, sucursal_id: int | None = None) -> list[di
                 e.cargo,
                 e.fecha_ingreso,
                 e.activo,
+                e.rol_laboral,
                 COALESCE(
                     array_agg(r.nombre) FILTER (WHERE r.nombre IS NOT NULL),
                     ARRAY[]::VARCHAR[]
@@ -77,9 +81,7 @@ def listar_empleados(empresa_id: int, sucursal_id: int | None = None) -> list[di
             LEFT JOIN rol r
                 ON r.id = ur.rol_id
                 AND r.activo = TRUE
-            WHERE e.empresa_id = %s AND e.activo = TRUE
-                AND u.activo = TRUE
-                AND s.activo = TRUE
+            WHERE e.empresa_id = %s AND (%s OR (e.activo AND u.activo AND s.activo))
                 {filtro_sucursal}
             GROUP BY
                 e.id,
@@ -124,6 +126,7 @@ def obtener_empleado_por_id(empleado_id: int, empresa_id: int) -> dict[str, obje
                 e.cargo,
                 e.fecha_ingreso,
                 e.activo,
+                e.rol_laboral,
                 COALESCE(
                     array_agg(r.nombre) FILTER (WHERE r.nombre IS NOT NULL),
                     ARRAY[]::VARCHAR[]
@@ -200,7 +203,7 @@ def obtener_usuario_por_username(username: str) -> dict[str, object] | None:
             """
             SELECT id, username
             FROM usuario
-            WHERE username = %s
+            WHERE lower(username) = lower(%s)
             LIMIT 1;
             """,
             (username,),
@@ -308,23 +311,26 @@ def crear_empleado_usuario_existente(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        preparar_escritura(cursor, usuario_admin_id, empresa_id, "empleados:crear", nueva=True)
+        validar_cuenta_comercial(cursor, usuario_id, empresa_id)
         limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
         cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
         if limite is not None and int(cursor.fetchone()["total"]) >= limite:
             raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
         cursor.execute(
             """
-            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id)
-            SELECT u.id, s.id, %s, %s, %s FROM usuario u JOIN sucursal s ON s.empresa_id = u.empresa_id
+            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id, rol_laboral)
+            SELECT u.id, s.id, %s, %s, %s, (SELECT nombre FROM rol WHERE id=%s) FROM usuario u JOIN sucursal s ON s.empresa_id = u.empresa_id
             WHERE u.id = %s AND s.id = %s AND u.empresa_id = %s AND u.activo = TRUE AND s.activo = TRUE
             RETURNING id;
             """,
-            (codigo_empleado, cargo, empresa_id, usuario_id, sucursal_id, empresa_id),
+            (codigo_empleado, cargo, empresa_id, rol_id, usuario_id, sucursal_id, empresa_id),
         )
         empleado = cursor.fetchone()
         if empleado is None:
-            raise ValueError("Usuario o sucursal fuera de la empresa.")
+            raise HTTPException(400, "Usuario o sucursal fuera de la empresa o inactivo.")
 
+        desactivar_roles_laborales_con_cursor(cursor, usuario_id)
         asignar_rol_con_cursor(cursor, usuario_id, rol_id)
         registrar_bitacora_con_cursor(
             cursor,
@@ -333,8 +339,12 @@ def crear_empleado_usuario_existente(
             "Registro de empleado usando usuario existente.",
         )
 
+        invalidar_accesos(cursor, usuario_id, empresa_id)
         connection.commit()
         return obtener_empleado_por_id(int(empleado["id"]), empresa_id)
+    except UniqueViolation as error:
+        connection.rollback()
+        raise HTTPException(409, "El usuario, correo o código ya está registrado en su empresa. Si el empleado está inactivo, reactívelo.") from error
     except Exception:
         connection.rollback()
         raise
@@ -360,14 +370,15 @@ def crear_usuario_empleado(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        preparar_escritura(cursor, usuario_admin_id, empresa_id, "empleados:crear", nueva=True)
         exigir_cupo_usuarios(cursor, empresa_id)
         limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
         cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
         if limite is not None and int(cursor.fetchone()["total"]) >= limite:
             raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
-        cursor.execute("SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE", (sucursal_id, empresa_id))
+        cursor.execute("SELECT 1 FROM sucursal WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR SHARE", (sucursal_id, empresa_id))
         if cursor.fetchone() is None:
-            raise ValueError("Sucursal fuera de la empresa.")
+            raise HTTPException(400, "Sucursal fuera de la empresa o inactiva.")
         cursor.execute(
             """
             INSERT INTO usuario (
@@ -389,11 +400,11 @@ def crear_usuario_empleado(
 
         cursor.execute(
             """
-            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO empleado (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id, rol_laboral)
+            VALUES (%s, %s, %s, %s, %s, (SELECT nombre FROM rol WHERE id=%s))
             RETURNING id;
             """,
-            (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id),
+            (usuario_id, sucursal_id, codigo_empleado, cargo, empresa_id, rol_id),
         )
         empleado = cursor.fetchone()
 
@@ -407,6 +418,9 @@ def crear_usuario_empleado(
 
         connection.commit()
         return obtener_empleado_por_id(int(empleado["id"]), empresa_id)
+    except UniqueViolation as error:
+        connection.rollback()
+        raise HTTPException(409, "El usuario, correo o código ya está registrado en su empresa. Si el empleado está inactivo, reactívelo.") from error
     except Exception:
         connection.rollback()
         raise
@@ -428,18 +442,24 @@ def actualizar_empleado(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        preparar_escritura(cursor, usuario_admin_id, empresa_id, "empleados:editar", nueva=True)
+        cursor.execute("SELECT usuario_id FROM empleado WHERE id=%s AND empresa_id=%s", (empleado_id, empresa_id))
+        objetivo = cursor.fetchone()
+        if objetivo:
+            validar_cuenta_comercial(cursor, objetivo['usuario_id'], empresa_id)
         cursor.execute(
             """
             UPDATE empleado
             SET sucursal_id = %s,
                 codigo_empleado = %s,
-                cargo = %s
+                cargo = %s,
+                rol_laboral = (SELECT nombre FROM rol WHERE id=%s)
             WHERE id = %s AND empresa_id = %s
                 AND activo = TRUE
                 AND EXISTS (SELECT 1 FROM sucursal s WHERE s.id = %s AND s.empresa_id = %s AND s.activo = TRUE)
             RETURNING usuario_id;
             """,
-            (sucursal_id, codigo_empleado, cargo, empleado_id, empresa_id, sucursal_id, empresa_id),
+            (sucursal_id, codigo_empleado, cargo, rol_id, empleado_id, empresa_id, sucursal_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -457,8 +477,12 @@ def actualizar_empleado(
             "Actualizacion de empleado.",
         )
 
+        invalidar_accesos(cursor, int(empleado["usuario_id"]), empresa_id)
         connection.commit()
         return obtener_empleado_por_id(empleado_id, empresa_id)
+    except UniqueViolation as error:
+        connection.rollback()
+        raise HTTPException(409, "El usuario, correo o código ya está registrado en su empresa. Si el empleado está inactivo, reactívelo.") from error
     except Exception:
         connection.rollback()
         raise
@@ -472,6 +496,11 @@ def desactivar_empleado(empleado_id: int, usuario_admin_id: int, empresa_id: int
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        preparar_escritura(cursor, usuario_admin_id, empresa_id, "empleados:desactivar", nueva=False)
+        cursor.execute("SELECT usuario_id FROM empleado WHERE id=%s AND empresa_id=%s", (empleado_id, empresa_id))
+        objetivo = cursor.fetchone()
+        if objetivo:
+            validar_cuenta_comercial(cursor, objetivo['usuario_id'], empresa_id)
         cursor.execute(
             """
             UPDATE empleado
@@ -496,8 +525,12 @@ def desactivar_empleado(empleado_id: int, usuario_admin_id: int, empresa_id: int
             "Desactivacion de empleado.",
         )
 
+        invalidar_accesos(cursor, int(empleado["usuario_id"]), empresa_id)
         connection.commit()
         return True
+    except UniqueViolation as error:
+        connection.rollback()
+        raise HTTPException(409, "El usuario, correo o código ya está registrado en su empresa. Si el empleado está inactivo, reactívelo.") from error
     except Exception:
         connection.rollback()
         raise
@@ -516,19 +549,24 @@ def activar_empleado(
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        preparar_escritura(cursor, usuario_admin_id, empresa_id, "empleados:editar", nueva=True)
         limite = bloquear_empresa_y_obtener_limite(cursor, empresa_id, "empleados")
         cursor.execute("SELECT count(*) AS total FROM empleado WHERE empresa_id = %s AND activo = TRUE", (empresa_id,))
         if limite is not None and int(cursor.fetchone()["total"]) >= limite:
             raise HTTPException(status_code=403, detail="Se alcanzo el limite de empleados del plan.")
+        cursor.execute("SELECT usuario_id FROM empleado WHERE id=%s AND empresa_id=%s", (empleado_id, empresa_id))
+        objetivo = cursor.fetchone()
+        if objetivo:
+            validar_cuenta_comercial(cursor, objetivo['usuario_id'], empresa_id)
         cursor.execute(
             """
             UPDATE empleado
-            SET activo = TRUE
+            SET activo = TRUE, rol_laboral = (SELECT nombre FROM rol WHERE id=%s)
             WHERE id = %s AND empresa_id = %s AND activo = FALSE
               AND EXISTS (SELECT 1 FROM sucursal s WHERE s.id = empleado.sucursal_id AND s.empresa_id = %s AND s.activo = TRUE)
             RETURNING usuario_id;
             """,
-            (empleado_id, empresa_id, empresa_id),
+            (rol_id, empleado_id, empresa_id, empresa_id),
         )
         empleado = cursor.fetchone()
 
@@ -546,8 +584,12 @@ def activar_empleado(
             "Activacion de empleado.",
         )
 
+        invalidar_accesos(cursor, int(empleado["usuario_id"]), empresa_id)
         connection.commit()
         return obtener_empleado_por_id(empleado_id, empresa_id)
+    except UniqueViolation as error:
+        connection.rollback()
+        raise HTTPException(409, "El usuario, correo o código ya está registrado en su empresa. Si el empleado está inactivo, reactívelo.") from error
     except Exception:
         connection.rollback()
         raise
@@ -561,6 +603,10 @@ def asignar_rol_con_cursor(
     usuario_id: int,
     rol_id: int,
 ) -> None:
+    cursor.execute('SELECT nombre FROM rol WHERE id=%s AND activo', (rol_id,))
+    rol = cursor.fetchone()
+    if not rol or rol['nombre'] not in ROLES_LABORALES:
+        raise HTTPException(400, 'Rol laboral no autorizado o inactivo.')
     cursor.execute(
         """
         UPDATE usuario_rol

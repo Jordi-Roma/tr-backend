@@ -54,7 +54,6 @@ def consulta(query, params=(), una=False):
 @pytest.fixture(scope='module')
 def actor():
     suffix=uuid4().hex[:10]
-    consulta("INSERT INTO ciudad(nombre,departamento) VALUES(%s,'Prueba')",('Ciudad '+suffix,))
     actor=consulta("INSERT INTO usuario(nombre,apellido,username,correo,password_hash,empresa_id) VALUES('AS','Prueba',%s,%s,%s,NULL) RETURNING id",('as'+suffix,suffix+'@example.invalid',hashear_password('Prueba-AS-local-123')),True)['id']
     consulta("INSERT INTO usuario_rol(usuario_id,rol_id) SELECT %s,id FROM rol WHERE nombre='ADMIN_SAAS'",(actor,))
     return actor
@@ -66,7 +65,9 @@ def empresas(actor):
     plan=saas.crear_plan('T_'+suffix,'Prueba',{'usuarios':50,'productos':50,'sucursales':50,'empleados':50},{'reportes':True,'recomendaciones':True,'vestidor':True,'asistente':True},actor)
     def crear(codigo):
         datos={'codigo':codigo,'nombre':codigo,'plan_id':plan['id'],'fecha_inicio':date(2020,1,1),'fecha_vencimiento':None,'admin_nombre':'Admin','admin_apellido':'Prueba','admin_username':codigo,'admin_correo':codigo+'@example.invalid'}
-        return saas.crear_empresa_con_admin(datos,hashear_password('Prueba-aislada-123'),actor)
+        empresa = saas.crear_empresa_con_admin(datos,hashear_password('Prueba-aislada-123'),actor)
+        consulta("INSERT INTO ciudad(nombre,departamento,empresa_id) VALUES('Ciudad de prueba','Prueba',%s)", (empresa['id'],))
+        return empresa
     return crear('a-'+suffix),crear('b-'+suffix),plan,actor
 
 
@@ -82,7 +83,7 @@ def mercaderia(empresa,stock=4):
     eid=empresa['id']; c=catalogo.crear_categoria(None,'Ropa',None,empresa_id=eid)
     talla=catalogo.crear_talla('M',None,empresa_id=eid)
     color=catalogo.crear_color('Azul',None,empresa_id=eid)
-    ciudad=consulta('SELECT id FROM ciudad ORDER BY id LIMIT 1',una=True)['id']
+    ciudad=consulta('SELECT id FROM ciudad WHERE empresa_id=%s ORDER BY id LIMIT 1',(eid,),True)['id']
     sucursal=consulta("INSERT INTO sucursal(empresa_id,ciudad_id,nombre,direccion) VALUES(%s,%s,'Centro','Prueba') RETURNING id",(eid,ciudad),True)['id']
     producto=consulta("INSERT INTO producto(empresa_id,categoria_id,nombre) VALUES(%s,%s,'Prenda') RETURNING id",(eid,c['id']),True)['id']
     variante=variantes.crear_variante(eid,producto,talla['id'],color['id'],'MISMO-SKU')

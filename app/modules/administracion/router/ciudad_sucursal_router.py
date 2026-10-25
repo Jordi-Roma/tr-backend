@@ -25,13 +25,20 @@ from app.modules.administracion.services.ciudad_sucursal_service import (
     registrar_ciudad,
     registrar_sucursal,
 )
-from app.modules.autenticacion.dependencies.admin_required import requerir_admin, requerir_admin_saas
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
+from app.modules.autenticacion.autorizacion import exigir_permiso
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["Ciudades y Sucursales"],
 )
+
+
+def admin_cu06(accion: str):
+    def validar(actor=Depends(exigir_permiso(accion))):
+        return requerir_admin(actor)
+    return validar
 
 
 def _ip(req: Request) -> str | None:
@@ -45,16 +52,21 @@ def _ua(req: Request) -> str | None:
 
 @router.get("/ciudades", response_model=list[CiudadResponse])
 def listar_ciudades_endpoint(
+    incluir_inactivos: bool = False,
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> list[CiudadResponse]:
-    return obtener_ciudades()
+    if incluir_inactivos:
+        requerir_admin(usuario_actual)
+    if "ADMINISTRADOR" in usuario_actual.get("roles", []):
+        exigir_permiso("ciudades:ver")(usuario_actual)
+    return obtener_ciudades(usuario_actual, incluir_inactivos)
 
 
 @router.post("/ciudades", response_model=CiudadResponse)
 def crear_ciudad_endpoint(
     request: CrearCiudadRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("ciudades:crear")),
 ) -> CiudadResponse:
     return registrar_ciudad(request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -64,7 +76,9 @@ def obtener_ciudad_endpoint(
     ciudad_id: int,
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> CiudadResponse:
-    return obtener_ciudad(ciudad_id)
+    if "ADMINISTRADOR" in usuario_actual.get("roles", []):
+        exigir_permiso("ciudades:ver")(usuario_actual)
+    return obtener_ciudad(ciudad_id, usuario_actual)
 
 
 @router.put("/ciudades/{ciudad_id}", response_model=CiudadResponse)
@@ -72,7 +86,7 @@ def actualizar_ciudad_endpoint(
     ciudad_id: int,
     request: ActualizarCiudadRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("ciudades:editar")),
 ) -> CiudadResponse:
     return editar_ciudad(ciudad_id, request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -81,7 +95,7 @@ def actualizar_ciudad_endpoint(
 def desactivar_ciudad_endpoint(
     ciudad_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("ciudades:desactivar")),
 ) -> MensajeResponse:
     return eliminar_ciudad(ciudad_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -90,23 +104,24 @@ def desactivar_ciudad_endpoint(
 def activar_ciudad_endpoint(
     ciudad_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_saas),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("ciudades:editar")),
 ) -> MensajeResponse:
     return reactivar_ciudad(ciudad_id, usuario_actual, _ip(http_request), _ua(http_request))
 
 
 @router.get("/sucursales", response_model=list[SucursalResponse])
 def listar_sucursales_endpoint(
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    incluir_inactivos: bool = False,
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:ver")),
 ) -> list[SucursalResponse]:
-    return obtener_sucursales(usuario_actual)
+    return obtener_sucursales(usuario_actual, incluir_inactivos)
 
 
 @router.post("/sucursales", response_model=SucursalResponse)
 def crear_sucursal_endpoint(
     request: CrearSucursalRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:crear")),
 ) -> SucursalResponse:
     return registrar_sucursal(request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -114,7 +129,7 @@ def crear_sucursal_endpoint(
 @router.get("/sucursales/{sucursal_id}", response_model=SucursalResponse)
 def obtener_sucursal_endpoint(
     sucursal_id: int,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:ver")),
 ) -> SucursalResponse:
     return obtener_sucursal(sucursal_id, usuario_actual)
 
@@ -124,7 +139,7 @@ def actualizar_sucursal_endpoint(
     sucursal_id: int,
     request: ActualizarSucursalRequest,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:editar")),
 ) -> SucursalResponse:
     return editar_sucursal(sucursal_id, request, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -133,7 +148,7 @@ def actualizar_sucursal_endpoint(
 def desactivar_sucursal_endpoint(
     sucursal_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:desactivar")),
 ) -> MensajeResponse:
     return eliminar_sucursal(sucursal_id, usuario_actual, _ip(http_request), _ua(http_request))
 
@@ -142,6 +157,6 @@ def desactivar_sucursal_endpoint(
 def activar_sucursal_endpoint(
     sucursal_id: int,
     http_request: Request,
-    usuario_actual: dict[str, object] = Depends(requerir_admin),
+    usuario_actual: dict[str, object] = Depends(admin_cu06("sucursales:editar")),
 ) -> MensajeResponse:
     return reactivar_sucursal(sucursal_id, usuario_actual, _ip(http_request), _ua(http_request))

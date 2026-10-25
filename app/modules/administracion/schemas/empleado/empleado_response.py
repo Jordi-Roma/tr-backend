@@ -17,6 +17,7 @@ class EmpleadoResponse(BaseModel):
     fecha_ingreso: date
     activo: bool
     roles: list[str]
+    rol_laboral: str | None = None
 
 
 class MensajeResponse(BaseModel):

@@ -30,6 +30,16 @@ from app.modules.ventas_inventario.services.inventario_service import (
 router = APIRouter(tags=["Ventas e inventario"])
 
 
+@router.get('/api/v1/inventario/proveedores-opciones')
+def proveedores_para_entrada(actor=Depends(requerir_admin_o_encargado)):
+    """Selector mínimo de inventario; no concede acceso a la gestión CU08."""
+    from app.core.contexto_empresa import exigir_empresa_id
+    from app.modules.autenticacion.repositories.perfil_repository import _transaccion
+    with _transaccion() as cur:
+        cur.execute('SELECT id,nombre,activo FROM proveedor WHERE empresa_id=%s AND activo ORDER BY nombre,id', (exigir_empresa_id(actor),))
+        return [dict(r) for r in cur.fetchall()]
+
+
 @router.get("/api/v1/inventario", response_model=list[InventarioResponse])
 def listar_inventario_endpoint(
     sucursal_id: int | None = None,

@@ -90,11 +90,11 @@ def obtener_producto_por_id(producto_id: int, empresa_id: int) -> dict[str, obje
         connection.close()
 
 def obtener_colecciones_ids_de_producto(producto_id: int, empresa_id: int, cursor) -> list[int]:
-    cursor.execute("SELECT coleccion_id FROM producto_coleccion WHERE producto_id = %s AND empresa_id = %s", (producto_id, empresa_id))
+    cursor.execute("SELECT coleccion_id FROM producto_coleccion WHERE producto_id = %s AND empresa_id = %s AND activo", (producto_id, empresa_id))
     return [row['coleccion_id'] for row in cursor.fetchall()]
 
 def obtener_proveedores_ids_de_producto(producto_id: int, empresa_id: int, cursor) -> list[int]:
-    cursor.execute("SELECT proveedor_id FROM producto_proveedor WHERE producto_id = %s AND empresa_id = %s", (producto_id, empresa_id))
+    cursor.execute("SELECT proveedor_id FROM producto_proveedor WHERE producto_id = %s AND empresa_id = %s AND activo", (producto_id, empresa_id))
     return [row['proveedor_id'] for row in cursor.fetchall()]
 
 def obtener_imagenes_de_producto(producto_id: int, empresa_id: int, cursor) -> list[dict[str, object]]:
@@ -102,7 +102,7 @@ def obtener_imagenes_de_producto(producto_id: int, empresa_id: int, cursor) -> l
         """
         SELECT id, producto_id, url, es_principal, activo, fecha_creacion 
         FROM imagen_producto 
-        WHERE producto_id = %s AND empresa_id = %s
+        WHERE producto_id = %s AND empresa_id = %s AND activo
         ORDER BY es_principal DESC, id ASC
         """, 
         (producto_id, empresa_id)

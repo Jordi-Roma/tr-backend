@@ -1,7 +1,8 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 
 class CrearTemporadaRequest(BaseModel):
-    nombre: str
+    nombre: str = Field(max_length=120)
     anio: int
 
     @field_validator("nombre")
@@ -20,7 +21,7 @@ class CrearTemporadaRequest(BaseModel):
         return valor
 
 class ActualizarTemporadaRequest(BaseModel):
-    nombre: str
+    nombre: str = Field(max_length=120)
     anio: int
 
     @field_validator("nombre")

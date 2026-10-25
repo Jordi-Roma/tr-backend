@@ -126,7 +126,16 @@ def verificar_migracion_multitenant():
         )
         if cur.fetchone() is None:
             raise RuntimeError("Falta la migración CU04/CU05; ejecute init_db.py antes de iniciar la API.")
-        print("[Startup] Esquema CU04/CU05 verificado.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version = %s", ("2026_10_24_cu06_01",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU06; ejecute init_db.py antes de iniciar la API.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_24_cu07_cu08_01",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU07/CU08; ejecute init_db.py antes de iniciar la API.")
+        print("[Startup] Esquema CU07/CU08 verificado.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_25_cu10_01",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU10; ejecute init_db.py antes de iniciar la API.")
     finally:
         conn.close()
 

@@ -1,14 +1,14 @@
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class CrearProveedorRequest(BaseModel):
-    nombre: str
-    nit: str | None = None
-    telefono: str | None = None
-    correo: str | None = None
-    direccion: str | None = None
+    nombre: str = Field(min_length=1, max_length=150)
+    nit: str | None = Field(default=None, max_length=40)
+    telefono: str | None = Field(default=None, max_length=30)
+    correo: str | None = Field(default=None, max_length=320)
+    direccion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod
@@ -65,10 +65,10 @@ class CrearProveedorRequest(BaseModel):
 
 
 class ActualizarProveedorRequest(BaseModel):
-    nombre: str
-    telefono: str | None = None
-    correo: str | None = None
-    direccion: str | None = None
+    nombre: str = Field(min_length=1, max_length=150)
+    telefono: str | None = Field(default=None, max_length=30)
+    correo: str | None = Field(default=None, max_length=320)
+    direccion: str | None = Field(default=None, max_length=255)
 
     @field_validator("nombre")
     @classmethod
@@ -124,3 +124,12 @@ class VincularUsuarioProveedorRequest(BaseModel):
         if valor < 1:
             raise ValueError("El usuario no es valido.")
         return valor
+
+
+from app.modules.autenticacion.schemas.usuario_admin.usuario_admin_request import ActualizarUsuarioRequest
+
+class CrearCuentaProveedorRequest(ActualizarUsuarioRequest):
+    password: str = Field(min_length=8, max_length=256)
+
+class VincularProductoProveedorRequest(BaseModel):
+    producto_id: int = Field(gt=0)

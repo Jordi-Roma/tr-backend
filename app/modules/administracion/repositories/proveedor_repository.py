@@ -1,4 +1,10 @@
 from psycopg2.extras import RealDictCursor
+from psycopg2.errors import UniqueViolation
+from fastapi import HTTPException
+from contextlib import contextmanager
+from .control_comercial import preparar_escritura, validar_cuenta_comercial, asignar_rol, retirar_rol_proveedor_sin_vinculo
+from app.modules.autenticacion.repositories.perfil_repository import _transaccion, invalidar_accesos
+from app.core.plan_empresa import exigir_cupo_usuarios
 
 from app.database.connection import get_connection
 
@@ -108,213 +114,133 @@ def obtener_proveedor_por_nit(nit: str, empresa_id: int) -> dict[str, object] | 
         connection.close()
 
 
-def crear_proveedor(
-    nombre: str,
-    nit: str | None,
-    telefono: str | None,
-    correo: str | None,
-    direccion: str | None,
-    empresa_id: int,
-) -> dict[str, object]:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
-
+@contextmanager
+def _escritura(usuario_admin_id, empresa_id, accion, nueva=True):
     try:
-        cursor.execute(
-            """
-            INSERT INTO proveedor (nombre, nit, telefono, correo, direccion, empresa_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion, ARRAY[]::BIGINT[] AS usuarios_ids;
-            """,
-            (nombre, nit, telefono, correo, direccion, empresa_id),
-        )
-        proveedor = cursor.fetchone()
-        connection.commit()
-        return dict(proveedor)
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+        with _transaccion() as cur:
+            preparar_escritura(cur, usuario_admin_id, empresa_id, accion, nueva)
+            yield cur
+    except UniqueViolation as error:
+        raise HTTPException(409, 'El NIT, usuario, correo o vínculo ya está registrado en su empresa.') from error
 
 
-def actualizar_proveedor(
-    proveedor_id: int,
-    nombre: str,
-    telefono: str | None,
-    correo: str | None,
-    direccion: str | None,
-    empresa_id: int,
-) -> dict[str, object] | None:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
+def _auditar(cur, usuario_id, accion, proveedor_id):
+    cur.execute("""INSERT INTO bitacora(usuario_id,accion,modulo,descripcion,resultado)
+        VALUES(%s,%s,'PROVEEDORES',%s,'EXITOSO')""",
+        (usuario_id, accion, f'Proveedor id={proveedor_id}'))
 
-    try:
-        cursor.execute(
-            """
-            UPDATE proveedor
-            SET nombre = %s,
-                telefono = %s,
-                correo = %s,
-                direccion = %s
-            WHERE id = %s AND empresa_id = %s
-            RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion,
-                ARRAY(
-                    SELECT usuario_id
-                    FROM proveedor_usuario
-                    WHERE proveedor_id = proveedor.id AND empresa_id = proveedor.empresa_id AND activo = TRUE
-                    ORDER BY usuario_id
-                ) AS usuarios_ids;
-            """,
-            (nombre, telefono, correo, direccion, proveedor_id, empresa_id),
-        )
-        proveedor = cursor.fetchone()
 
-        if proveedor is None:
-            connection.rollback()
+def _proveedor_activo(cur, proveedor_id, empresa_id):
+    cur.execute('SELECT id FROM proveedor WHERE id=%s AND empresa_id=%s AND activo FOR UPDATE', (proveedor_id, empresa_id))
+    if not cur.fetchone():
+        raise HTTPException(404, 'Proveedor activo no encontrado en su empresa.')
+
+
+def crear_proveedor(nombre, nit, telefono, correo, direccion, empresa_id, usuario_admin_id):
+    with _escritura(usuario_admin_id, empresa_id, 'proveedores:crear') as cur:
+        cur.execute("""INSERT INTO proveedor(nombre,nit,telefono,correo,direccion,empresa_id)
+            VALUES(%s,%s,%s,%s,%s,%s) RETURNING id""", (nombre,nit,telefono,correo,direccion,empresa_id))
+        pid=cur.fetchone()['id']
+        _auditar(cur,usuario_admin_id,'CREAR_PROVEEDOR',pid)
+    return obtener_proveedor_por_id(pid,empresa_id)
+
+
+def actualizar_proveedor(proveedor_id,nombre,telefono,correo,direccion,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar') as cur:
+        _proveedor_activo(cur,proveedor_id,empresa_id)
+        cur.execute('UPDATE proveedor SET nombre=%s,telefono=%s,correo=%s,direccion=%s WHERE id=%s AND empresa_id=%s',
+                    (nombre,telefono,correo,direccion,proveedor_id,empresa_id))
+        _auditar(cur,usuario_admin_id,'EDITAR_PROVEEDOR',proveedor_id)
+    return obtener_proveedor_por_id(proveedor_id,empresa_id)
+
+
+def desactivar_proveedor(proveedor_id,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:desactivar',nueva=False) as cur:
+        _proveedor_activo(cur,proveedor_id,empresa_id)
+        cur.execute('UPDATE proveedor SET activo=FALSE WHERE id=%s AND empresa_id=%s',(proveedor_id,empresa_id))
+        cur.execute('SELECT usuario_id FROM proveedor_usuario WHERE proveedor_id=%s AND empresa_id=%s AND activo',(proveedor_id,empresa_id))
+        for row in cur.fetchall():
+            retirar_rol_proveedor_sin_vinculo(cur,row['usuario_id'],empresa_id)
+        _auditar(cur,usuario_admin_id,'DESACTIVAR_PROVEEDOR',proveedor_id)
+    return True
+
+
+def activar_proveedor(proveedor_id,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar') as cur:
+        cur.execute('UPDATE proveedor SET activo=TRUE WHERE id=%s AND empresa_id=%s RETURNING id',(proveedor_id,empresa_id))
+        if not cur.fetchone():
             return None
-
-        connection.commit()
-        return dict(proveedor)
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+        cur.execute('''SELECT pu.usuario_id FROM proveedor_usuario pu JOIN usuario u ON u.id=pu.usuario_id AND u.empresa_id=pu.empresa_id
+            WHERE pu.proveedor_id=%s AND pu.empresa_id=%s AND pu.activo AND u.activo''',(proveedor_id,empresa_id))
+        for row in cur.fetchall():
+            asignar_rol(cur,row['usuario_id'],'PROVEEDOR')
+            invalidar_accesos(cur,row['usuario_id'],empresa_id)
+        _auditar(cur,usuario_admin_id,'ACTIVAR_PROVEEDOR',proveedor_id)
+    return obtener_proveedor_por_id(proveedor_id,empresa_id)
 
 
-def desactivar_proveedor(proveedor_id: int, empresa_id: int) -> bool:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
+def vincular_usuario_proveedor(proveedor_id,usuario_id,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar') as cur:
+        _proveedor_activo(cur,proveedor_id,empresa_id)
+        validar_cuenta_comercial(cur,usuario_id,empresa_id)
+        cur.execute('SELECT proveedor_id FROM proveedor_usuario WHERE usuario_id=%s AND activo AND proveedor_id<>%s',(usuario_id,proveedor_id))
+        if cur.fetchone():
+            raise HTTPException(409,'La cuenta ya está vinculada a otro proveedor. Retire primero ese vínculo.')
+        cur.execute('''INSERT INTO proveedor_usuario(proveedor_id,usuario_id,empresa_id,activo) VALUES(%s,%s,%s,TRUE)
+            ON CONFLICT(proveedor_id,usuario_id) DO UPDATE SET activo=TRUE''',(proveedor_id,usuario_id,empresa_id))
+        asignar_rol(cur,usuario_id,'PROVEEDOR')
+        invalidar_accesos(cur,usuario_id,empresa_id)
+        _auditar(cur,usuario_admin_id,'VINCULAR_USUARIO_PROVEEDOR',proveedor_id)
+    return True
 
-    try:
-        cursor.execute(
-            """
-            UPDATE proveedor
-            SET activo = FALSE
-            WHERE id = %s AND empresa_id = %s
-                AND activo = TRUE
-            RETURNING id;
-            """,
-            (proveedor_id, empresa_id),
-        )
-        proveedor = cursor.fetchone()
 
-        if proveedor is None:
-            connection.rollback()
+def desvincular_usuario_proveedor(proveedor_id,usuario_id,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar',nueva=False) as cur:
+        cur.execute('UPDATE proveedor_usuario SET activo=FALSE WHERE proveedor_id=%s AND usuario_id=%s AND empresa_id=%s AND activo RETURNING usuario_id',(proveedor_id,usuario_id,empresa_id))
+        if not cur.fetchone():
             return False
-
-        connection.commit()
-        return True
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+        retirar_rol_proveedor_sin_vinculo(cur,usuario_id,empresa_id)
+        _auditar(cur,usuario_admin_id,'DESVINCULAR_USUARIO_PROVEEDOR',proveedor_id)
+    return True
 
 
-def activar_proveedor(proveedor_id: int, empresa_id: int) -> dict[str, object] | None:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
-
-    try:
-        cursor.execute(
-            """
-            UPDATE proveedor
-            SET activo = TRUE
-            WHERE id = %s AND empresa_id = %s
-            RETURNING id, nombre, nit, telefono, correo, direccion, activo, fecha_creacion,
-                ARRAY(
-                    SELECT usuario_id
-                    FROM proveedor_usuario
-                    WHERE proveedor_id = proveedor.id AND empresa_id = proveedor.empresa_id AND activo = TRUE
-                    ORDER BY usuario_id
-                ) AS usuarios_ids;
-            """,
-            (proveedor_id, empresa_id),
-        )
-        proveedor = cursor.fetchone()
-
-        if proveedor is None:
-            connection.rollback()
-            return None
-
-        connection.commit()
-        return dict(proveedor)
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+def crear_cuenta_proveedor(proveedor_id,datos,password_hash,empresa_id,usuario_admin_id):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar') as cur:
+        _proveedor_activo(cur,proveedor_id,empresa_id)
+        exigir_cupo_usuarios(cur,empresa_id)
+        cur.execute('''INSERT INTO usuario(nombre,apellido,username,correo,password_hash,empresa_id)
+            VALUES(%s,%s,%s,%s,%s,%s) RETURNING id''',(datos.nombre,datos.apellido,datos.username,datos.correo,password_hash,empresa_id))
+        uid=cur.fetchone()['id']
+        cur.execute('INSERT INTO proveedor_usuario(proveedor_id,usuario_id,empresa_id) VALUES(%s,%s,%s)',(proveedor_id,uid,empresa_id))
+        asignar_rol(cur,uid,'PROVEEDOR')
+        _auditar(cur,usuario_admin_id,'CREAR_CUENTA_PROVEEDOR',proveedor_id)
+    return obtener_proveedor_por_id(proveedor_id,empresa_id)
 
 
-def vincular_usuario_proveedor(proveedor_id: int, usuario_id: int, empresa_id: int) -> bool:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
-
-    try:
-        cursor.execute("SELECT id FROM proveedor WHERE id = %s AND empresa_id = %s AND activo = TRUE;", (proveedor_id, empresa_id))
-        if cursor.fetchone() is None:
-            connection.rollback()
-            return False
-
-        cursor.execute("SELECT id FROM usuario WHERE id = %s AND empresa_id = %s AND activo = TRUE;", (usuario_id, empresa_id))
-        if cursor.fetchone() is None:
-            connection.rollback()
-            return False
-
-        cursor.execute(
-            """
-            INSERT INTO proveedor_usuario (proveedor_id, usuario_id, activo, empresa_id)
-            VALUES (%s, %s, TRUE, %s)
-            ON CONFLICT (proveedor_id, usuario_id) DO UPDATE
-            SET activo = TRUE WHERE proveedor_usuario.empresa_id = EXCLUDED.empresa_id;
-            """,
-            (proveedor_id, usuario_id, empresa_id),
-        )
-        connection.commit()
-        return True
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+def listar_productos_vinculables(empresa_id):
+    with _transaccion() as cur:
+        cur.execute('SELECT id,nombre FROM producto WHERE empresa_id=%s AND activo ORDER BY nombre,id',(empresa_id,))
+        return [dict(r) for r in cur.fetchall()]
 
 
-def desvincular_usuario_proveedor(proveedor_id: int, usuario_id: int, empresa_id: int) -> bool:
-    connection = get_connection()
-    cursor = connection.cursor(cursor_factory=RealDictCursor)
+def listar_cuentas_vinculables(empresa_id):
+    with _transaccion() as cur:
+        cur.execute('''SELECT u.id,u.nombre,u.apellido,u.username,u.activo, (SELECT pu.proveedor_id FROM proveedor_usuario pu WHERE pu.usuario_id=u.id AND pu.activo) AS proveedor_id FROM usuario u WHERE u.empresa_id=%s
+            AND NOT EXISTS(SELECT 1 FROM usuario_rol ur JOIN rol r ON r.id=ur.rol_id WHERE ur.usuario_id=u.id AND ur.activo AND r.activo AND r.nombre IN ('ADMINISTRADOR','ADMIN_SAAS'))
+            ORDER BY u.nombre,u.id''',(empresa_id,))
+        return [dict(r) for r in cur.fetchall()]
 
-    try:
-        cursor.execute(
-            """
-            UPDATE proveedor_usuario
-            SET activo = FALSE
-            WHERE proveedor_id = %s
-              AND usuario_id = %s
-              AND empresa_id = %s
-              AND activo = TRUE
-            RETURNING proveedor_id;
-            """,
-            (proveedor_id, usuario_id, empresa_id),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            connection.rollback()
-            return False
-        connection.commit()
-        return True
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        cursor.close()
-        connection.close()
+
+def vincular_producto_proveedor(proveedor_id,producto_id,empresa_id,usuario_admin_id,activo=True):
+    with _escritura(usuario_admin_id,empresa_id,'proveedores:editar',nueva=activo) as cur:
+        _proveedor_activo(cur,proveedor_id,empresa_id)
+        cur.execute('SELECT id FROM producto WHERE id=%s AND empresa_id=%s AND activo',(producto_id,empresa_id))
+        if not cur.fetchone():
+            raise HTTPException(404,'Producto activo no encontrado en su empresa.')
+        cur.execute('''INSERT INTO producto_proveedor(producto_id,proveedor_id,empresa_id,activo) VALUES(%s,%s,%s,%s)
+            ON CONFLICT(producto_id,proveedor_id) DO UPDATE SET activo=EXCLUDED.activo''',(producto_id,proveedor_id,empresa_id,activo))
+        _auditar(cur,usuario_admin_id,'VINCULAR_PRODUCTO' if activo else 'DESVINCULAR_PRODUCTO',proveedor_id)
+    return listar_productos_proveedor_panel(proveedor_id,empresa_id)
 
 
 def obtener_proveedor_por_usuario(usuario_id: int, empresa_id: int) -> dict[str, object] | None:

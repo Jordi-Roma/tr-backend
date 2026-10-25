@@ -1,14 +1,14 @@
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class AsignarUsuarioEmpleadoRequest(BaseModel):
-    usuario_id: int
-    sucursal_id: int
-    codigo_empleado: str
-    cargo: str
-    rol: str
+    usuario_id: int = Field(gt=0)
+    sucursal_id: int = Field(gt=0)
+    codigo_empleado: str = Field(min_length=1, max_length=40)
+    cargo: str = Field(min_length=1, max_length=80)
+    rol: str = Field(min_length=1, max_length=80)
 
     @field_validator("codigo_empleado", "cargo", "rol")
     @classmethod
@@ -22,17 +22,17 @@ class AsignarUsuarioEmpleadoRequest(BaseModel):
 
 
 class CrearUsuarioEmpleadoRequest(BaseModel):
-    nombre: str
-    apellido: str
-    username: str
-    correo: str
-    password: str
-    sucursal_id: int
-    codigo_empleado: str
-    cargo: str
-    rol: str
+    nombre: str = Field(min_length=1, max_length=100)
+    apellido: str = Field(min_length=1, max_length=100)
+    username: str = Field(min_length=1, max_length=80)
+    correo: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=8, max_length=256)
+    sucursal_id: int = Field(gt=0)
+    codigo_empleado: str = Field(min_length=1, max_length=40)
+    cargo: str = Field(min_length=1, max_length=80)
+    rol: str = Field(min_length=1, max_length=80)
 
-    @field_validator("nombre", "apellido", "password", "codigo_empleado", "cargo", "rol")
+    @field_validator("nombre", "apellido", "codigo_empleado", "cargo", "rol")
     @classmethod
     def validar_texto_obligatorio(cls, valor: str) -> str:
         texto = valor.strip()
@@ -75,10 +75,10 @@ class CrearUsuarioEmpleadoRequest(BaseModel):
 
 
 class ActualizarEmpleadoRequest(BaseModel):
-    sucursal_id: int
-    codigo_empleado: str
-    cargo: str
-    rol: str
+    sucursal_id: int = Field(gt=0)
+    codigo_empleado: str = Field(min_length=1, max_length=40)
+    cargo: str = Field(min_length=1, max_length=80)
+    rol: str = Field(min_length=1, max_length=80)
 
     @field_validator("codigo_empleado", "cargo", "rol")
     @classmethod
@@ -92,7 +92,7 @@ class ActualizarEmpleadoRequest(BaseModel):
 
 
 class ActivarEmpleadoRequest(BaseModel):
-    rol: str
+    rol: str = Field(min_length=1, max_length=80)
 
     @field_validator("rol")
     @classmethod

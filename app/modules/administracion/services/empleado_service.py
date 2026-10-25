@@ -1,4 +1,6 @@
 from fastapi import HTTPException
+from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.modules.administracion.repositories.empleado_repository import ROLES_LABORALES
 from app.core.contexto_empresa import exigir_empresa_id
 
 from app.core.security import hashear_password
@@ -30,9 +32,9 @@ from app.modules.administracion.schemas.empleado.empleado_response import (
 )
 
 
-def obtener_empleados(usuario_actual: dict[str, object]) -> list[EmpleadoResponse]:
+def obtener_empleados(usuario_actual: dict[str, object], incluir_inactivos: bool = False) -> list[EmpleadoResponse]:
     sucursal_id = obtener_sucursal_permitida(usuario_actual)
-    empleados = listar_empleados(exigir_empresa_id(usuario_actual), sucursal_id)
+    empleados = listar_empleados(exigir_empresa_id(usuario_actual), sucursal_id, incluir_inactivos)
 
     return [construir_empleado_response(empleado) for empleado in empleados]
 
@@ -43,7 +45,7 @@ def obtener_empleado(
 ) -> EmpleadoResponse:
     empleado = obtener_empleado_por_id(empleado_id, exigir_empresa_id(usuario_actual))
 
-    if empleado is None or empleado["activo"] is not True:
+    if empleado is None:
         raise HTTPException(status_code=404, detail="Empleado no encontrado.")
 
     validar_acceso_sucursal(usuario_actual, int(empleado["sucursal_id"]))
@@ -54,6 +56,7 @@ def asignar_usuario_empleado(
     request: AsignarUsuarioEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
+    requerir_admin(usuario_actual)
     validar_acceso_sucursal(usuario_actual, request.sucursal_id)
     empresa_id = exigir_empresa_id(usuario_actual)
     usuario = obtener_usuario_por_id(request.usuario_id, empresa_id)
@@ -86,6 +89,7 @@ def registrar_usuario_empleado(
     request: CrearUsuarioEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
+    requerir_admin(usuario_actual)
     roles = [str(rol) for rol in usuario_actual.get("roles", [])]
 
     if "ADMINISTRADOR" not in roles:
@@ -133,6 +137,7 @@ def editar_empleado(
     request: ActualizarEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
+    requerir_admin(usuario_actual)
     empresa_id = exigir_empresa_id(usuario_actual)
     empleado_actual = obtener_empleado_por_id(empleado_id, empresa_id)
 
@@ -164,6 +169,7 @@ def eliminar_empleado(
     empleado_id: int,
     usuario_actual: dict[str, object],
 ) -> MensajeResponse:
+    requerir_admin(usuario_actual)
     empresa_id = exigir_empresa_id(usuario_actual)
     empleado = obtener_empleado_por_id(empleado_id, empresa_id)
 
@@ -184,6 +190,7 @@ def reactivar_empleado(
     request: ActivarEmpleadoRequest,
     usuario_actual: dict[str, object],
 ) -> EmpleadoResponse:
+    requerir_admin(usuario_actual)
     empresa_id = exigir_empresa_id(usuario_actual)
     empleado_actual = obtener_empleado_por_id(empleado_id, empresa_id)
 
@@ -216,10 +223,10 @@ def reactivar_empleado(
 def validar_rol_laboral(nombre_rol: str) -> dict[str, object]:
     rol_nombre = nombre_rol.strip().upper()
 
-    if rol_nombre == "ADMINISTRADOR":
+    if rol_nombre not in ROLES_LABORALES:
         raise HTTPException(
             status_code=400,
-            detail="No se puede asignar rol ADMINISTRADOR desde empleados.",
+            detail="Solo se permiten CAJERO, ENCARGADO_SUCURSAL y PERSONAL_VENTAS desde empleados.",
         )
 
     rol = obtener_rol_por_nombre(rol_nombre)
@@ -282,4 +289,5 @@ def construir_empleado_response(empleado: dict[str, object]) -> EmpleadoResponse
         fecha_ingreso=empleado["fecha_ingreso"],
         activo=bool(empleado["activo"]),
         roles=[str(rol) for rol in empleado["roles"]],
+        rol_laboral=empleado.get("rol_laboral"),
     )

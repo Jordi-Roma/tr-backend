@@ -1,18 +1,18 @@
 from decimal import Decimal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class CrearCiudadRequest(BaseModel):
-    nombre: str
-    departamento: str | None = None
+    nombre: str = Field(min_length=2, max_length=120)
+    departamento: str | None = Field(default=None, max_length=120)
 
     @field_validator("nombre")
     @classmethod
     def validar_nombre(cls, valor: str) -> str:
         nombre = valor.strip()
 
-        if not nombre:
+        if len(nombre) < 2:
             raise ValueError("El nombre de la ciudad es obligatorio.")
 
         return nombre
@@ -28,15 +28,15 @@ class CrearCiudadRequest(BaseModel):
 
 
 class ActualizarCiudadRequest(BaseModel):
-    nombre: str
-    departamento: str | None = None
+    nombre: str = Field(min_length=2, max_length=120)
+    departamento: str | None = Field(default=None, max_length=120)
 
     @field_validator("nombre")
     @classmethod
     def validar_nombre(cls, valor: str) -> str:
         nombre = valor.strip()
 
-        if not nombre:
+        if len(nombre) < 2:
             raise ValueError("El nombre de la ciudad es obligatorio.")
 
         return nombre
@@ -52,10 +52,10 @@ class ActualizarCiudadRequest(BaseModel):
 
 
 class CrearSucursalRequest(BaseModel):
-    ciudad_id: int
-    nombre: str
-    direccion: str
-    telefono: str | None = None
+    ciudad_id: int = Field(gt=0)
+    nombre: str = Field(min_length=2, max_length=150)
+    direccion: str = Field(min_length=1, max_length=255)
+    telefono: str | None = Field(default=None, max_length=30)
     latitud: Decimal | None = None
     longitud: Decimal | None = None
 
@@ -64,7 +64,7 @@ class CrearSucursalRequest(BaseModel):
     def validar_nombre(cls, valor: str) -> str:
         nombre = valor.strip()
 
-        if not nombre:
+        if len(nombre) < 2:
             raise ValueError("El nombre de la sucursal es obligatorio.")
 
         return nombre
@@ -108,10 +108,10 @@ class CrearSucursalRequest(BaseModel):
 
 
 class ActualizarSucursalRequest(BaseModel):
-    ciudad_id: int
-    nombre: str
-    direccion: str
-    telefono: str | None = None
+    ciudad_id: int = Field(gt=0)
+    nombre: str = Field(min_length=2, max_length=150)
+    direccion: str = Field(min_length=1, max_length=255)
+    telefono: str | None = Field(default=None, max_length=30)
     latitud: Decimal | None = None
     longitud: Decimal | None = None
 
@@ -120,7 +120,7 @@ class ActualizarSucursalRequest(BaseModel):
     def validar_nombre(cls, valor: str) -> str:
         nombre = valor.strip()
 
-        if not nombre:
+        if len(nombre) < 2:
             raise ValueError("El nombre de la sucursal es obligatorio.")
 
         return nombre

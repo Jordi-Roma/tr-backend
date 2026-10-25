@@ -1,42 +1,15 @@
-from app.core.contexto_empresa import exigir_empresa_id
+from app.modules.administracion.repositories.clasificacion_repository import escribir_clasificacion
 from fastapi import HTTPException
-from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 
 from app.modules.administracion.repositories.catalogo_repository import (
-    activar_categoria,
-    activar_color,
-    activar_talla,
-    actualizar_categoria,
-    actualizar_color,
-    actualizar_talla,
-    contar_productos_activos_por_categoria,
-    contar_variantes_activas_por_color,
-    contar_variantes_activas_por_talla,
-    crear_categoria,
-    crear_color,
-    crear_talla,
-    desactivar_categoria,
-    desactivar_color,
-    desactivar_talla,
     listar_categorias,
     listar_colores,
     listar_tallas,
     obtener_categoria_por_id,
-    obtener_categoria_por_nombre,
     obtener_color_por_id,
-    obtener_color_por_nombre,
     obtener_talla_por_id,
-    obtener_talla_por_nombre,
-    obtener_talla_por_nombre_y_tipo,
-    obtener_descendientes_categoria,
-    activar_marca,
-    actualizar_marca,
-    contar_productos_activos_por_marca,
-    crear_marca,
-    desactivar_marca,
     listar_marcas,
     obtener_marca_por_id,
-    obtener_marca_por_nombre,
 )
 from app.modules.administracion.schemas.catalogo.catalogo_request import (
     ActualizarCategoriaRequest,
@@ -81,36 +54,8 @@ def registrar_categoria(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> CategoriaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    if obtener_categoria_por_nombre(request.nombre, empresa_id=empresa_id) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe una categoría con ese nombre.",
-        )
-
-    if request.categoria_padre_id is not None:
-        padre = obtener_categoria_por_id(request.categoria_padre_id, empresa_id=empresa_id)
-        if padre is None:
-            raise HTTPException(status_code=400, detail="La categoría padre no existe.")
-        if not padre["activo"]:
-            raise HTTPException(status_code=400, detail="La categoría padre está inactiva.")
-
-    categoria = crear_categoria(
-        categoria_padre_id=request.categoria_padre_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Categoría creada: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_categoria_response(categoria)
+    fila = escribir_clasificacion('categoria', usuario_actual, registro_id=None, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_categoria_response(fila)
 
 
 def editar_categoria(
@@ -120,54 +65,8 @@ def editar_categoria(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> CategoriaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_categoria_por_id(categoria_id, empresa_id=empresa_id)
-
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    existente = obtener_categoria_por_nombre(request.nombre, empresa_id=empresa_id)
-    if existente is not None and int(existente["id"]) != categoria_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe otra categoría con ese nombre.",
-        )
-
-    if request.categoria_padre_id is not None:
-        if request.categoria_padre_id == categoria_id:
-            raise HTTPException(status_code=400, detail="Una categoría no puede ser padre de sí misma.")
-        
-        padre = obtener_categoria_por_id(request.categoria_padre_id, empresa_id=empresa_id)
-        if padre is None:
-            raise HTTPException(status_code=400, detail="La categoría padre no existe.")
-        if not padre["activo"]:
-            raise HTTPException(status_code=400, detail="La categoría padre está inactiva.")
-            
-        descendientes = obtener_descendientes_categoria(categoria_id, empresa_id=empresa_id)
-        if request.categoria_padre_id in descendientes:
-            raise HTTPException(status_code=400, detail="Una categoría no puede tener como padre a una de sus propias subcategorías.")
-
-    categoria = actualizar_categoria(
-        categoria_id=categoria_id,
-        categoria_padre_id=request.categoria_padre_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        empresa_id=empresa_id,
-    )
-
-    if categoria is None:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Categoría actualizada: ID {categoria_id} ({request.nombre.strip()})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_categoria_response(categoria)
+    fila = escribir_clasificacion('categoria', usuario_actual, registro_id=categoria_id, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_categoria_response(fila)
 
 
 def eliminar_categoria(
@@ -176,38 +75,8 @@ def eliminar_categoria(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    categoria = obtener_categoria_por_id(categoria_id, empresa_id=empresa_id)
-
-    if categoria is None or categoria["activo"] is not True:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    total_productos = contar_productos_activos_por_categoria(categoria_id, empresa_id=empresa_id)
-
-    if total_productos > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"No se puede desactivar la categoría porque tiene "
-                f"{total_productos} producto(s) activo(s) asociado(s)."
-            ),
-        )
-
-    desactivado = desactivar_categoria(categoria_id, empresa_id=empresa_id)
-
-    if not desactivado:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Categoría desactivada: ID {categoria_id} ({categoria['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Categoría desactivada correctamente.")
+    fila = escribir_clasificacion('categoria', usuario_actual, registro_id=categoria_id, ip=direccion_ip, ua=user_agent, activo=False)
+    return MensajeResponse(mensaje="Clasificación desactivada correctamente.")
 
 
 def reactivar_categoria(
@@ -216,27 +85,8 @@ def reactivar_categoria(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> CategoriaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    categoria_actual = obtener_categoria_por_id(categoria_id, empresa_id=empresa_id)
-
-    if categoria_actual is None:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    categoria = activar_categoria(categoria_id, empresa_id=empresa_id)
-
-    if categoria is None:
-        raise HTTPException(status_code=404, detail="Categoría no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Categoría reactivada: ID {categoria_id} ({categoria['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_categoria_response(categoria)
+    fila = escribir_clasificacion('categoria', usuario_actual, registro_id=categoria_id, ip=direccion_ip, ua=user_agent, activo=True)
+    return construir_categoria_response(fila)
 
 
 def construir_categoria_response(categoria: dict[str, object]) -> CategoriaResponse:
@@ -275,31 +125,8 @@ def registrar_talla(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TallaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    if obtener_talla_por_nombre_y_tipo(request.nombre, request.tipo_prenda, empresa_id=empresa_id) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Ya existe una talla '{request.nombre.strip()}' para prendas tipo {request.tipo_prenda}.",
-        )
-
-    talla = crear_talla(
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        tipo_prenda=request.tipo_prenda,
-        ancho_cm=request.ancho_cm,
-        largo_cm=request.largo_cm,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Talla creada: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_talla_response(talla)
+    fila = escribir_clasificacion('talla', usuario_actual, registro_id=None, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_talla_response(fila)
 
 
 def editar_talla(
@@ -309,42 +136,8 @@ def editar_talla(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TallaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_talla_por_id(talla_id, empresa_id=empresa_id)
-
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    existente = obtener_talla_por_nombre_y_tipo(request.nombre, request.tipo_prenda, empresa_id=empresa_id)
-    if existente is not None and int(existente["id"]) != talla_id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Ya existe otra talla '{request.nombre.strip()}' para prendas tipo {request.tipo_prenda}.",
-        )
-
-    talla = actualizar_talla(
-        talla_id=talla_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        tipo_prenda=request.tipo_prenda,
-        ancho_cm=request.ancho_cm,
-        largo_cm=request.largo_cm,
-        empresa_id=empresa_id,
-    )
-
-    if talla is None:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Talla actualizada: ID {talla_id} ({request.nombre.strip()})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_talla_response(talla)
+    fila = escribir_clasificacion('talla', usuario_actual, registro_id=talla_id, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_talla_response(fila)
 
 
 def eliminar_talla(
@@ -353,38 +146,8 @@ def eliminar_talla(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    talla = obtener_talla_por_id(talla_id, empresa_id=empresa_id)
-
-    if talla is None or talla["activo"] is not True:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    total_variantes = contar_variantes_activas_por_talla(talla_id, empresa_id=empresa_id)
-
-    if total_variantes > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"No se puede desactivar la talla porque tiene "
-                f"{total_variantes} variante(s) activa(s) asociada(s)."
-            ),
-        )
-
-    desactivado = desactivar_talla(talla_id, empresa_id=empresa_id)
-
-    if not desactivado:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Talla desactivada: ID {talla_id} ({talla['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Talla desactivada correctamente.")
+    fila = escribir_clasificacion('talla', usuario_actual, registro_id=talla_id, ip=direccion_ip, ua=user_agent, activo=False)
+    return MensajeResponse(mensaje="Clasificación desactivada correctamente.")
 
 
 def reactivar_talla(
@@ -393,27 +156,8 @@ def reactivar_talla(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> TallaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    talla_actual = obtener_talla_por_id(talla_id, empresa_id=empresa_id)
-
-    if talla_actual is None:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    talla = activar_talla(talla_id, empresa_id=empresa_id)
-
-    if talla is None:
-        raise HTTPException(status_code=404, detail="Talla no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Talla reactivada: ID {talla_id} ({talla['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_talla_response(talla)
+    fila = escribir_clasificacion('talla', usuario_actual, registro_id=talla_id, ip=direccion_ip, ua=user_agent, activo=True)
+    return construir_talla_response(fila)
 
 
 def construir_talla_response(talla: dict[str, object]) -> TallaResponse:
@@ -453,28 +197,8 @@ def registrar_color(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColorResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    if obtener_color_por_nombre(request.nombre, empresa_id=empresa_id) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe un color con ese nombre.",
-        )
-
-    color = crear_color(
-        nombre=request.nombre.strip(),
-        codigo_hex=request.codigo_hex,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Color creado: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_color_response(color)
+    fila = escribir_clasificacion('color', usuario_actual, registro_id=None, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_color_response(fila)
 
 
 def editar_color(
@@ -484,39 +208,8 @@ def editar_color(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColorResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_color_por_id(color_id, empresa_id=empresa_id)
-
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    existente = obtener_color_por_nombre(request.nombre, empresa_id=empresa_id)
-    if existente is not None and int(existente["id"]) != color_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe otro color con ese nombre.",
-        )
-
-    color = actualizar_color(
-        color_id=color_id,
-        nombre=request.nombre.strip(),
-        codigo_hex=request.codigo_hex,
-        empresa_id=empresa_id,
-    )
-
-    if color is None:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Color actualizado: ID {color_id} ({request.nombre.strip()})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_color_response(color)
+    fila = escribir_clasificacion('color', usuario_actual, registro_id=color_id, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_color_response(fila)
 
 
 def eliminar_color(
@@ -525,38 +218,8 @@ def eliminar_color(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    color = obtener_color_por_id(color_id, empresa_id=empresa_id)
-
-    if color is None or color["activo"] is not True:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    total_variantes = contar_variantes_activas_por_color(color_id, empresa_id=empresa_id)
-
-    if total_variantes > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"No se puede desactivar el color porque tiene "
-                f"{total_variantes} variante(s) activa(s) asociada(s)."
-            ),
-        )
-
-    desactivado = desactivar_color(color_id, empresa_id=empresa_id)
-
-    if not desactivado:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Color desactivado: ID {color_id} ({color['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Color desactivado correctamente.")
+    fila = escribir_clasificacion('color', usuario_actual, registro_id=color_id, ip=direccion_ip, ua=user_agent, activo=False)
+    return MensajeResponse(mensaje="Clasificación desactivada correctamente.")
 
 
 def reactivar_color(
@@ -565,27 +228,8 @@ def reactivar_color(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ColorResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    color_actual = obtener_color_por_id(color_id, empresa_id=empresa_id)
-
-    if color_actual is None:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    color = activar_color(color_id, empresa_id=empresa_id)
-
-    if color is None:
-        raise HTTPException(status_code=404, detail="Color no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Color reactivado: ID {color_id} ({color['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_color_response(color)
+    fila = escribir_clasificacion('color', usuario_actual, registro_id=color_id, ip=direccion_ip, ua=user_agent, activo=True)
+    return construir_color_response(fila)
 
 
 def construir_color_response(color: dict[str, object]) -> ColorResponse:
@@ -622,28 +266,8 @@ def registrar_marca(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MarcaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    if obtener_marca_por_nombre(request.nombre, empresa_id=empresa_id) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe una marca con ese nombre.",
-        )
-
-    marca = crear_marca(
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        empresa_id=empresa_id,
-    )
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Marca creada: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_marca_response(marca)
+    fila = escribir_clasificacion('marca', usuario_actual, registro_id=None, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_marca_response(fila)
 
 
 def editar_marca(
@@ -653,39 +277,8 @@ def editar_marca(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MarcaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_marca_por_id(marca_id, empresa_id=empresa_id)
-
-    if actual is None:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    existente = obtener_marca_por_nombre(request.nombre, empresa_id=empresa_id)
-    if existente is not None and int(existente["id"]) != marca_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Ya existe otra marca con ese nombre.",
-        )
-
-    marca = actualizar_marca(
-        marca_id=marca_id,
-        nombre=request.nombre.strip(),
-        descripcion=request.descripcion,
-        empresa_id=empresa_id,
-    )
-
-    if marca is None:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Marca actualizada: ID {marca_id} ({request.nombre.strip()})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_marca_response(marca)
+    fila = escribir_clasificacion('marca', usuario_actual, registro_id=marca_id, ip=direccion_ip, ua=user_agent, datos=request.model_dump())
+    return construir_marca_response(fila)
 
 
 def eliminar_marca(
@@ -694,38 +287,8 @@ def eliminar_marca(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    marca = obtener_marca_por_id(marca_id, empresa_id=empresa_id)
-
-    if marca is None or marca["activo"] is not True:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    total_productos = contar_productos_activos_por_marca(marca_id, empresa_id=empresa_id)
-
-    if total_productos > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"No se puede desactivar la marca porque tiene "
-                f"{total_productos} producto(s) activo(s) asociado(s)."
-            ),
-        )
-
-    desactivado = desactivar_marca(marca_id, empresa_id=empresa_id)
-
-    if not desactivado:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Marca desactivada: ID {marca_id} ({marca['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Marca desactivada correctamente.")
+    fila = escribir_clasificacion('marca', usuario_actual, registro_id=marca_id, ip=direccion_ip, ua=user_agent, activo=False)
+    return MensajeResponse(mensaje="Clasificación desactivada correctamente.")
 
 
 def reactivar_marca(
@@ -734,27 +297,8 @@ def reactivar_marca(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MarcaResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    marca_actual = obtener_marca_por_id(marca_id, empresa_id=empresa_id)
-
-    if marca_actual is None:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    marca = activar_marca(marca_id, empresa_id=empresa_id)
-
-    if marca is None:
-        raise HTTPException(status_code=404, detail="Marca no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="CATALOGO",
-        resultado="EXITOSO",
-        descripcion=f"Marca reactivada: ID {marca_id} ({marca['nombre']})",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return construir_marca_response(marca)
+    fila = escribir_clasificacion('marca', usuario_actual, registro_id=marca_id, ip=direccion_ip, ua=user_agent, activo=True)
+    return construir_marca_response(fila)
 
 
 def construir_marca_response(marca: dict[str, object]) -> MarcaResponse:

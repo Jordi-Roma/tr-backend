@@ -141,7 +141,7 @@ def guardar_direccion_cliente(usuario_id,empresa_id,direccion_id,ciudad_id,direc
             cur.execute('SELECT id FROM direccion_cliente WHERE id=%s AND cliente_id=%s AND activo=TRUE FOR UPDATE',(direccion_id,cliente_id))
             if not cur.fetchone():
                 raise HTTPException(404,'Dirección no encontrada.')
-        cur.execute('SELECT id FROM ciudad WHERE id=%s AND activo=TRUE',(ciudad_id,))
+        cur.execute('SELECT id FROM ciudad WHERE id=%s AND empresa_id=%s AND activo=TRUE FOR SHARE',(ciudad_id,empresa_id))
         if not cur.fetchone():
             raise HTTPException(400,'Selecciona una ciudad disponible.')
         if es_principal:

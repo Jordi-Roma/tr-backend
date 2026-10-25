@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+from psycopg2.errors import UniqueViolation
 from app.core.contexto_empresa import exigir_empresa_id
 
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
@@ -68,22 +69,15 @@ def registrar_proveedor(
             correo=request.correo,
             direccion=request.direccion,
             empresa_id=exigir_empresa_id(usuario_actual),
+            usuario_admin_id=int(usuario_actual["id"]),
         )
-    except Exception as error:
+    except UniqueViolation as error:
         raise HTTPException(
             status_code=400,
             detail="No se pudo registrar el proveedor.",
         ) from error
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Proveedor creado: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     return construir_proveedor_response(proveedor)
 
 
@@ -108,8 +102,9 @@ def editar_proveedor(
             correo=request.correo,
             direccion=request.direccion,
             empresa_id=empresa_id,
+            usuario_admin_id=int(usuario_actual["id"]),
         )
-    except Exception as error:
+    except UniqueViolation as error:
         raise HTTPException(
             status_code=400,
             detail="No se pudo actualizar el proveedor.",
@@ -118,15 +113,7 @@ def editar_proveedor(
     if proveedor is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Proveedor actualizado: id={proveedor_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     return construir_proveedor_response(proveedor)
 
 
@@ -142,20 +129,12 @@ def eliminar_proveedor(
     if proveedor is None or proveedor["activo"] is not True:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    desactivado = desactivar_proveedor(proveedor_id, empresa_id)
+    desactivado = desactivar_proveedor(proveedor_id, empresa_id, int(usuario_actual["id"]))
 
     if not desactivado:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Proveedor desactivado: id={proveedor_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     return MensajeResponse(mensaje="Proveedor desactivado correctamente.")
 
 
@@ -171,20 +150,12 @@ def reactivar_proveedor(
     if proveedor_actual is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    proveedor = activar_proveedor(proveedor_id, empresa_id)
+    proveedor = activar_proveedor(proveedor_id, empresa_id, int(usuario_actual["id"]))
 
     if proveedor is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Proveedor activado: id={proveedor_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     return construir_proveedor_response(proveedor)
 
 
@@ -199,19 +170,11 @@ def vincular_usuario(
     if obtener_proveedor_por_id(proveedor_id, empresa_id) is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    vinculado = vincular_usuario_proveedor(proveedor_id, request.usuario_id, empresa_id)
+    vinculado = vincular_usuario_proveedor(proveedor_id, request.usuario_id, empresa_id, int(usuario_actual["id"]))
     if not vinculado:
         raise HTTPException(status_code=404, detail="Usuario o proveedor no encontrado.")
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="VINCULAR_USUARIO",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Usuario id={request.usuario_id} vinculado a proveedor id={proveedor_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     proveedor = obtener_proveedor_por_id(proveedor_id, empresa_id)
     if proveedor is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
@@ -229,19 +192,11 @@ def desvincular_usuario(
     if obtener_proveedor_por_id(proveedor_id, empresa_id) is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")
 
-    desvinculado = desvincular_usuario_proveedor(proveedor_id, usuario_id, empresa_id)
+    desvinculado = desvincular_usuario_proveedor(proveedor_id, usuario_id, empresa_id, int(usuario_actual["id"]))
     if not desvinculado:
         raise HTTPException(status_code=404, detail="Vinculo proveedor-usuario no encontrado.")
 
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESVINCULAR_USUARIO",
-        modulo="PROVEEDORES",
-        resultado="EXITOSO",
-        descripcion=f"Usuario id={usuario_id} desvinculado de proveedor id={proveedor_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+
     proveedor = obtener_proveedor_por_id(proveedor_id, empresa_id)
     if proveedor is None:
         raise HTTPException(status_code=404, detail="Proveedor no encontrado.")

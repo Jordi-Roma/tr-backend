@@ -1,12 +1,11 @@
-from fastapi import HTTPException
-from app.core.contexto_empresa import exigir_empresa_id
-from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
+from app.modules.administracion.repositories import catalogo_comercial_repository as comercial
+from fastapi import (
+    HTTPException,
+)
+from app.core.contexto_empresa import (
+    exigir_empresa_id,
+)
 from app.modules.administracion.repositories.variante_repository import (
-    actualizar_variante,
-    asignar_precio,
-    crear_variante,
-    desactivar_variante,
-    activar_variante,
     listar_variantes,
     obtener_variante_por_id,
 )
@@ -19,8 +18,9 @@ from app.modules.administracion.schemas.variante.variante_response import (
     PrecioResponse,
     VarianteResponse,
 )
-from app.modules.administracion.schemas.catalogo.catalogo_response import MensajeResponse
-from app.modules.administracion.repositories.producto_repository import obtener_producto_por_id
+from app.modules.administracion.schemas.catalogo.catalogo_response import (
+    MensajeResponse,
+)
 
 def obtener_variantes(usuario_actual: dict[str, object], producto_id: int | None = None) -> list[VarianteResponse]:
     variantes = listar_variantes(exigir_empresa_id(usuario_actual), producto_id)
@@ -39,34 +39,8 @@ def registrar_variante(
     user_agent: str | None = None,
 ) -> VarianteResponse:
     
-    empresa_id = exigir_empresa_id(usuario_actual)
-    producto = obtener_producto_por_id(request.producto_id, empresa_id)
-    if not producto:
-        raise HTTPException(status_code=404, detail="El producto asociado no existe.")
-        
-    try:
-        variante_id = crear_variante(
-            empresa_id=empresa_id,
-            producto_id=request.producto_id,
-            talla_id=request.talla_id,
-            color_id=request.color_id,
-            sku=request.sku.strip(),
-            ancho_cm=request.ancho_cm,
-            largo_cm=request.largo_cm
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="VARIANTES",
-        resultado="EXITOSO",
-        descripcion=f"Variante creada: SKU={request.sku.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return obtener_variante(variante_id, usuario_actual)
+    rid = comercial.guardar_variante(usuario_actual, request.model_dump(), ip=direccion_ip, ua=user_agent)
+    return obtener_variante(rid, usuario_actual)
 
 def editar_variante(
     variante_id: int,
@@ -75,37 +49,8 @@ def editar_variante(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> VarianteResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_variante_por_id(variante_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Variante no encontrada.")
-
-    try:
-        actualizado = actualizar_variante(
-            variante_id=variante_id,
-            empresa_id=empresa_id,
-            talla_id=request.talla_id,
-            color_id=request.color_id,
-            sku=request.sku.strip(),
-            ancho_cm=request.ancho_cm,
-            largo_cm=request.largo_cm
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    if not actualizado:
-        raise HTTPException(status_code=404, detail="Variante no encontrada.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="VARIANTES",
-        resultado="EXITOSO",
-        descripcion=f"Variante actualizada: id={variante_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return obtener_variante(variante_id, usuario_actual)
+    rid = comercial.guardar_variante(usuario_actual, request.model_dump(), variante_id, ip=direccion_ip, ua=user_agent)
+    return obtener_variante(rid, usuario_actual)
 
 def eliminar_variante(
     variante_id: int,
@@ -113,24 +58,8 @@ def eliminar_variante(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_variante_por_id(variante_id, empresa_id)
-    if not actual or not actual["activo"]:
-        raise HTTPException(status_code=404, detail="Variante no encontrada o ya desactivada.")
-
-    if not desactivar_variante(variante_id, empresa_id):
-        raise HTTPException(status_code=404, detail="No se pudo desactivar la variante.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="VARIANTES",
-        resultado="EXITOSO",
-        descripcion=f"Variante desactivada: id={variante_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Variante desactivada correctamente.")
+    comercial.estado_variante(usuario_actual, variante_id, False, ip=direccion_ip, ua=user_agent)
+    return MensajeResponse(mensaje="Registro desactivado; su historial se conserva.")
 
 def reactivar_variante(
     variante_id: int,
@@ -138,23 +67,7 @@ def reactivar_variante(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> VarianteResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_variante_por_id(variante_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Variante no encontrada.")
-
-    if not activar_variante(variante_id, empresa_id):
-        raise HTTPException(status_code=404, detail="No se pudo reactivar la variante.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="VARIANTES",
-        resultado="EXITOSO",
-        descripcion=f"Variante activada: id={variante_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+    comercial.estado_variante(usuario_actual, variante_id, True, ip=direccion_ip, ua=user_agent)
     return obtener_variante(variante_id, usuario_actual)
 
 def registrar_precio(
@@ -164,31 +77,7 @@ def registrar_precio(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> VarianteResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_variante_por_id(variante_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Variante no encontrada.")
-
-    try:
-        asignar_precio(
-            variante_id=variante_id,
-            empresa_id=empresa_id,
-            monto=request.monto,
-            fecha_inicio=request.fecha_inicio,
-            fecha_fin=request.fecha_fin
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ASIGNAR_PRECIO",
-        modulo="VARIANTES",
-        resultado="EXITOSO",
-        descripcion=f"Precio asignado a variante id={variante_id}: monto={request.monto}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+    comercial.guardar_precio(usuario_actual, variante_id, request.model_dump(), direccion_ip, user_agent)
     return obtener_variante(variante_id, usuario_actual)
 
 def construir_variante_response(variante: dict[str, object]) -> VarianteResponse:

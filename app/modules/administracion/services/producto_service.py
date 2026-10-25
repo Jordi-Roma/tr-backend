@@ -1,11 +1,11 @@
-from fastapi import HTTPException
-from app.core.contexto_empresa import exigir_empresa_id
-from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
+from app.modules.administracion.repositories import catalogo_comercial_repository as comercial
+from fastapi import (
+    HTTPException,
+)
+from app.core.contexto_empresa import (
+    exigir_empresa_id,
+)
 from app.modules.administracion.repositories.producto_repository import (
-    actualizar_producto,
-    crear_producto,
-    desactivar_producto,
-    activar_producto,
     listar_productos,
     obtener_producto_por_id,
 )
@@ -17,7 +17,9 @@ from app.modules.administracion.schemas.producto.producto_response import (
     ImagenProductoResponse,
     ProductoResponse,
 )
-from app.modules.administracion.schemas.catalogo.catalogo_response import MensajeResponse
+from app.modules.administracion.schemas.catalogo.catalogo_response import (
+    MensajeResponse,
+)
 
 def obtener_productos(usuario_actual: dict[str, object]) -> list[ProductoResponse]:
     productos = listar_productos(exigir_empresa_id(usuario_actual))
@@ -40,42 +42,8 @@ def registrar_producto(
     # pero el Foreign Key constraint tirará error 400/500 de psycopg si no existen.
     # En un sistema maduro, validaríamos acá.
     
-    imagenes = [
-        {"url": i.url.strip(), "es_principal": i.es_principal}
-        for i in request.imagenes
-    ]
-    
-    try:
-        producto_id = crear_producto(
-            empresa_id=exigir_empresa_id(usuario_actual),
-            categoria_id=request.categoria_id,
-            marca_id=request.marca_id,
-            nombre=request.nombre.strip(),
-            descripcion=request.descripcion.strip() if request.descripcion else None,
-            material=request.material.strip() if request.material else None,
-            genero=request.genero.strip().upper() if request.genero else None,
-            colecciones_ids=request.colecciones_ids,
-            proveedores_ids=request.proveedores_ids,
-            imagenes=imagenes,
-            tipo_prenda=request.tipo_prenda,
-            tipo_corte=request.tipo_corte,
-            ancho_base_cm=request.ancho_base_cm,
-            largo_base_cm=request.largo_base_cm,
-            modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="CREAR",
-        modulo="PRODUCTOS",
-        resultado="EXITOSO",
-        descripcion=f"Producto creado: {request.nombre.strip()}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return obtener_producto(producto_id, usuario_actual)
+    rid = comercial.guardar_producto(usuario_actual, request.model_dump(), ip=direccion_ip, ua=user_agent)
+    return obtener_producto(rid, usuario_actual)
 
 def editar_producto(
     producto_id: int,
@@ -84,51 +52,8 @@ def editar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ProductoResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_producto_por_id(producto_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Producto no encontrado.")
-        
-    imagenes = [
-        {"url": i.url.strip(), "es_principal": i.es_principal}
-        for i in request.imagenes
-    ]
-
-    try:
-        actualizado = actualizar_producto(
-            producto_id=producto_id,
-            empresa_id=empresa_id,
-            categoria_id=request.categoria_id,
-            marca_id=request.marca_id,
-            nombre=request.nombre.strip(),
-            descripcion=request.descripcion.strip() if request.descripcion else None,
-            material=request.material.strip() if request.material else None,
-            genero=request.genero.strip().upper() if request.genero else None,
-            colecciones_ids=request.colecciones_ids,
-            proveedores_ids=request.proveedores_ids,
-            imagenes=imagenes,
-            tipo_prenda=request.tipo_prenda,
-            tipo_corte=request.tipo_corte,
-            ancho_base_cm=request.ancho_base_cm,
-            largo_base_cm=request.largo_base_cm,
-            modelo_3d_url=request.modelo_3d_url.strip() if request.modelo_3d_url else None,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
-    if not actualizado:
-        raise HTTPException(status_code=404, detail="Producto no encontrado.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTUALIZAR",
-        modulo="PRODUCTOS",
-        resultado="EXITOSO",
-        descripcion=f"Producto actualizado: id={producto_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return obtener_producto(producto_id, usuario_actual)
+    rid = comercial.guardar_producto(usuario_actual, request.model_dump(), producto_id, ip=direccion_ip, ua=user_agent)
+    return obtener_producto(rid, usuario_actual)
 
 def eliminar_producto(
     producto_id: int,
@@ -136,24 +61,8 @@ def eliminar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_producto_por_id(producto_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Producto no encontrado.")
-
-    if not desactivar_producto(producto_id, empresa_id):
-        raise HTTPException(status_code=404, detail="No se pudo desactivar el producto.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="DESACTIVAR",
-        modulo="PRODUCTOS",
-        resultado="EXITOSO",
-        descripcion=f"Producto desactivado: id={producto_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
-    return MensajeResponse(mensaje="Producto y sus variantes desactivados correctamente.")
+    comercial.estado_producto(usuario_actual, producto_id, False, ip=direccion_ip, ua=user_agent)
+    return MensajeResponse(mensaje="Registro desactivado; su historial se conserva.")
 
 def reactivar_producto(
     producto_id: int,
@@ -161,23 +70,7 @@ def reactivar_producto(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> ProductoResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    actual = obtener_producto_por_id(producto_id, empresa_id)
-    if not actual:
-        raise HTTPException(status_code=404, detail="Producto no encontrado.")
-
-    if not activar_producto(producto_id, empresa_id):
-        raise HTTPException(status_code=404, detail="No se pudo reactivar el producto.")
-
-    registrar_bitacora(
-        usuario_id=int(usuario_actual["id"]),
-        accion="ACTIVAR",
-        modulo="PRODUCTOS",
-        resultado="EXITOSO",
-        descripcion=f"Producto activado: id={producto_id}",
-        direccion_ip=direccion_ip,
-        user_agent=user_agent,
-    )
+    comercial.estado_producto(usuario_actual, producto_id, True, ip=direccion_ip, ua=user_agent)
     return obtener_producto(producto_id, usuario_actual)
 
 def construir_producto_response(producto: dict[str, object]) -> ProductoResponse:

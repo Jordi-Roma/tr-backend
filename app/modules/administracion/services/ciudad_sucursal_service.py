@@ -31,15 +31,15 @@ from app.modules.administracion.schemas.ciudad_sucursal.ciudad_sucursal_response
 )
 
 
-def obtener_ciudades() -> list[CiudadResponse]:
-    ciudades = listar_ciudades()
+def obtener_ciudades(usuario_actual: dict[str, object], incluir_inactivos: bool = False) -> list[CiudadResponse]:
+    ciudades = listar_ciudades(exigir_empresa_id(usuario_actual), incluir_inactivos)
     return [construir_ciudad_response(ciudad) for ciudad in ciudades]
 
 
-def obtener_ciudad(ciudad_id: int) -> CiudadResponse:
-    ciudad = obtener_ciudad_por_id(ciudad_id)
+def obtener_ciudad(ciudad_id: int, usuario_actual: dict[str, object]) -> CiudadResponse:
+    ciudad = obtener_ciudad_por_id(ciudad_id, exigir_empresa_id(usuario_actual))
 
-    if ciudad is None or ciudad["activo"] is not True:
+    if ciudad is None:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
 
     return construir_ciudad_response(ciudad)
@@ -55,6 +55,7 @@ def registrar_ciudad(
         request.nombre.strip(),
         request.departamento,
         int(usuario_actual["id"]),
+        exigir_empresa_id(usuario_actual),
     )
     registrar_bitacora(
         usuario_id=int(usuario_actual["id"]),
@@ -75,7 +76,7 @@ def editar_ciudad(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> CiudadResponse:
-    ciudad_actual = obtener_ciudad_por_id(ciudad_id)
+    ciudad_actual = obtener_ciudad_por_id(ciudad_id, exigir_empresa_id(usuario_actual))
 
     if ciudad_actual is None or ciudad_actual["activo"] is not True:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
@@ -85,7 +86,7 @@ def editar_ciudad(
         request.nombre.strip(),
         request.departamento,
         int(usuario_actual["id"]),
-    )
+        exigir_empresa_id(usuario_actual))
 
     if ciudad is None:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
@@ -108,18 +109,18 @@ def eliminar_ciudad(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    ciudad = obtener_ciudad_por_id(ciudad_id)
+    ciudad = obtener_ciudad_por_id(ciudad_id, exigir_empresa_id(usuario_actual))
 
     if ciudad is None or ciudad["activo"] is not True:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
 
-    if ciudad_tiene_sucursales_activas(ciudad_id):
+    if ciudad_tiene_sucursales_activas(ciudad_id, exigir_empresa_id(usuario_actual)):
         raise HTTPException(
             status_code=400,
             detail="No se puede desactivar una ciudad con sucursales activas.",
         )
 
-    desactivada = desactivar_ciudad(ciudad_id, int(usuario_actual["id"]))
+    desactivada = desactivar_ciudad(ciudad_id, int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))
 
     if not desactivada:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
@@ -142,12 +143,12 @@ def reactivar_ciudad(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> MensajeResponse:
-    ciudad = obtener_ciudad_por_id(ciudad_id)
+    ciudad = obtener_ciudad_por_id(ciudad_id, exigir_empresa_id(usuario_actual))
 
     if ciudad is None:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
 
-    activada = activar_ciudad(ciudad_id, int(usuario_actual["id"]))
+    activada = activar_ciudad(ciudad_id, int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))
 
     if not activada:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada.")
@@ -164,15 +165,15 @@ def reactivar_ciudad(
     return MensajeResponse(mensaje="Ciudad activada correctamente.")
 
 
-def obtener_sucursales(usuario_actual: dict[str, object]) -> list[SucursalResponse]:
-    sucursales = listar_sucursales(exigir_empresa_id(usuario_actual))
+def obtener_sucursales(usuario_actual: dict[str, object], incluir_inactivos: bool = False) -> list[SucursalResponse]:
+    sucursales = listar_sucursales(exigir_empresa_id(usuario_actual), incluir_inactivos)
     return [construir_sucursal_response(sucursal) for sucursal in sucursales]
 
 
 def obtener_sucursal(sucursal_id: int, usuario_actual: dict[str, object]) -> SucursalResponse:
     sucursal = obtener_sucursal_por_id(sucursal_id, exigir_empresa_id(usuario_actual))
 
-    if sucursal is None or sucursal["activo"] is not True:
+    if sucursal is None:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
 
     return construir_sucursal_response(sucursal)
@@ -184,7 +185,7 @@ def registrar_sucursal(
     direccion_ip: str | None = None,
     user_agent: str | None = None,
 ) -> SucursalResponse:
-    validar_ciudad_activa(request.ciudad_id)
+    validar_ciudad_activa(request.ciudad_id, usuario_actual)
     sucursal = crear_sucursal(
         request.ciudad_id,
         request.nombre.strip(),
@@ -220,7 +221,7 @@ def editar_sucursal(
     if sucursal_actual is None or sucursal_actual["activo"] is not True:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
 
-    validar_ciudad_activa(request.ciudad_id)
+    validar_ciudad_activa(request.ciudad_id, usuario_actual)
     sucursal = actualizar_sucursal(
         sucursal_id,
         request.ciudad_id,
@@ -289,6 +290,9 @@ def reactivar_sucursal(
     if sucursal is None:
         raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
 
+    if sucursal["activo"] is True:
+        return MensajeResponse(mensaje="La sucursal ya está activa.")
+
     if sucursal["ciudad_activa"] is not True:
         raise HTTPException(
             status_code=400,
@@ -312,13 +316,13 @@ def reactivar_sucursal(
     return MensajeResponse(mensaje="Sucursal activada correctamente.")
 
 
-def validar_ciudad_activa(ciudad_id: int) -> None:
-    ciudad = obtener_ciudad_por_id(ciudad_id)
+def validar_ciudad_activa(ciudad_id: int, usuario_actual: dict[str, object]) -> None:
+    ciudad = obtener_ciudad_por_id(ciudad_id, exigir_empresa_id(usuario_actual))
 
     if ciudad is None or ciudad["activo"] is not True:
         raise HTTPException(
             status_code=400,
-            detail="La ciudad no existe o esta inactiva.",
+            detail="La ciudad no existe en su empresa o está inactiva.",
         )
 
 

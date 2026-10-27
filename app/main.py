@@ -136,6 +136,9 @@ def verificar_migracion_multitenant():
         cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_25_cu10_01",))
         if cur.fetchone() is None:
             raise RuntimeError("Falta la migración CU10; ejecute init_db.py antes de iniciar la API.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_27_cu09_unicode_01",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración Unicode de CU09; ejecute init_db.py antes de iniciar la API.")
     finally:
         conn.close()
 

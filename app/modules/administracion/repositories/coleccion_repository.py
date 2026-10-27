@@ -47,7 +47,7 @@ def obtener_coleccion_por_temporada_nombre(temporada_id: int, nombre: str, empre
             """
             SELECT id
             FROM coleccion
-            WHERE temporada_id = %s AND lower(nombre) = lower(%s) AND empresa_id = %s
+            WHERE temporada_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C" AND empresa_id = %s
             LIMIT 1;
             """,
             (temporada_id, nombre, empresa_id),

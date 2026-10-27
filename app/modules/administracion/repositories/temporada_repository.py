@@ -45,7 +45,7 @@ def obtener_temporada_por_nombre_anio(nombre: str, anio: int, empresa_id: int) -
             """
             SELECT id
             FROM temporada
-            WHERE lower(nombre) = lower(%s) AND anio = %s AND empresa_id = %s
+            WHERE public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C" AND anio = %s AND empresa_id = %s
             LIMIT 1;
             """,
             (nombre, anio, empresa_id),

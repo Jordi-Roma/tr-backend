@@ -84,7 +84,11 @@ def escribir_clasificacion(tabla, actor, datos=None, registro_id=None, activo=No
 
             if datos is not None:
                 # La identidad incluye tipo de prenda/año/temporada según corresponda.
-                condiciones = [sql.SQL('lower(btrim(nombre))=lower(btrim(%s))'), sql.SQL('empresa_id=%s')]
+                # La misma clave que los índices únicos, incluso con locale C.
+                condiciones = [sql.SQL(
+                    'public.normalizar_nombre_catalogo(nombre) COLLATE "C" = '
+                    'public.normalizar_nombre_catalogo(%s) COLLATE "C"'
+                ), sql.SQL('empresa_id=%s')]
                 params = [datos['nombre'], empresa]
                 for campo in {'talla': ('tipo_prenda',), 'temporada': ('anio',), 'coleccion': ('temporada_id',)}.get(tabla, ()):
                     condiciones.append(sql.SQL('{}=%s').format(sql.Identifier(campo)))

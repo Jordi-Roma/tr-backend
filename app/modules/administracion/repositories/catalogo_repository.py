@@ -84,7 +84,7 @@ def obtener_categoria_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, o
             """
             SELECT id, nombre
             FROM categoria
-            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C"
             LIMIT 1;
             """,
             (empresa_id, nombre),
@@ -319,7 +319,7 @@ def obtener_talla_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, objec
             """
             SELECT id, nombre, tipo_prenda
             FROM talla
-            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C"
             LIMIT 1;
             """,
             (empresa_id, nombre),
@@ -340,7 +340,7 @@ def obtener_talla_por_nombre_y_tipo(nombre: str, tipo_prenda: str, *, empresa_id
             """
             SELECT id, nombre, tipo_prenda
             FROM talla
-            WHERE empresa_id = %s AND lower(nombre) = lower(%s) AND tipo_prenda = %s
+            WHERE empresa_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C" AND tipo_prenda = %s
             LIMIT 1;
             """,
             (empresa_id, nombre, tipo_prenda.strip().upper()),
@@ -563,7 +563,7 @@ def obtener_color_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, objec
             """
             SELECT id, nombre
             FROM color
-            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C"
             LIMIT 1;
             """,
             (empresa_id, nombre),
@@ -777,7 +777,7 @@ def obtener_marca_por_nombre(nombre: str, *, empresa_id: int) -> dict[str, objec
             """
             SELECT id, nombre
             FROM marca
-            WHERE empresa_id = %s AND lower(nombre) = lower(%s)
+            WHERE empresa_id = %s AND public.normalizar_nombre_catalogo(nombre) COLLATE "C" = public.normalizar_nombre_catalogo(%s) COLLATE "C"
             LIMIT 1;
             """,
             (empresa_id, nombre),

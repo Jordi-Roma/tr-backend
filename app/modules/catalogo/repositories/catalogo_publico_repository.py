@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from psycopg2.extras import RealDictCursor
 
@@ -11,7 +11,7 @@ def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tupl
 
     try:
         where_sql, params = _construir_filtros(filtros, empresa_id)
-        orden_sql = _construir_orden(str(filtros.get("orden") or "relevancia"))
+        orden_sql = _construir_orden(str(filtros.get("orden") or "relevancia"),filtros.get('sucursal_id'))
         pagina = int(filtros.get("pagina") or 1)
         por_pagina = int(filtros.get("por_pagina") or 12)
         offset = (pagina - 1) * por_pagina
@@ -29,7 +29,7 @@ def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tupl
                 ON pp.producto_variante_id = v.id AND pp.empresa_id = p.empresa_id
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
-            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
+            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE AND EXISTS(SELECT 1 FROM sucursal habilitada WHERE habilitada.id=inv.sucursal_id AND habilitada.empresa_id=p.empresa_id AND habilitada.activo)
             LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id AND pc.empresa_id=p.empresa_id AND pc.activo
             LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql};
@@ -51,7 +51,7 @@ def listar_prendas_catalogo(filtros: dict[str, object], empresa_id: int) -> tupl
                 ON pp.producto_variante_id = v.id AND pp.empresa_id = p.empresa_id
                 AND pp.activo = TRUE
                 AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
-            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE
+            LEFT JOIN inventario_sucursal inv ON inv.producto_variante_id = v.id AND inv.empresa_id = p.empresa_id AND inv.activo = TRUE AND EXISTS(SELECT 1 FROM sucursal habilitada WHERE habilitada.id=inv.sucursal_id AND habilitada.empresa_id=p.empresa_id AND habilitada.activo)
             LEFT JOIN producto_coleccion pc ON pc.producto_id = p.id AND pc.empresa_id=p.empresa_id AND pc.activo
             LEFT JOIN coleccion col ON col.id = pc.coleccion_id AND col.empresa_id = p.empresa_id
             WHERE {where_sql}
@@ -223,7 +223,7 @@ def _armar_prenda(
         FROM producto p
         JOIN categoria c ON c.id = p.categoria_id AND c.empresa_id = p.empresa_id
         LEFT JOIN marca m ON m.id = p.marca_id AND m.empresa_id = p.empresa_id
-        WHERE p.id = %s AND p.empresa_id = %s AND p.activo = TRUE
+        WHERE p.id = %s AND p.empresa_id = %s AND p.activo = TRUE AND c.activo = TRUE
         LIMIT 1;
         """,
         (producto_id, empresa_id),
@@ -267,7 +267,7 @@ def _obtener_variantes(cursor, producto_id: int, empresa_id: int, sucursal_id: o
 
     if sucursal_id is not None:
         sucursal_filter = "AND inv.sucursal_id = %s"
-        params.append(sucursal_id)
+        params.insert(0,sucursal_id)
 
     cursor.execute(
         f"""
@@ -286,12 +286,13 @@ def _obtener_variantes(cursor, producto_id: int, empresa_id: int, sucursal_id: o
         LEFT JOIN inventario_sucursal inv
             ON inv.producto_variante_id = v.id AND inv.empresa_id = v.empresa_id
             AND inv.activo = TRUE
+            AND EXISTS(SELECT 1 FROM sucursal habilitada WHERE habilitada.id=inv.sucursal_id AND habilitada.empresa_id=v.empresa_id AND habilitada.activo)
             {sucursal_filter}
         WHERE v.producto_id = %s AND v.empresa_id = %s AND v.activo = TRUE
         GROUP BY v.id, v.sku, v.talla_id, t.nombre, v.color_id, co.nombre, co.codigo_hex, pp.precio, v.activo
         ORDER BY t.nombre ASC, co.nombre ASC, v.id ASC;
         """,
-        [sucursal_id, *params] if sucursal_id is not None else params,
+        params,
     )
     rows = [dict(row) for row in cursor.fetchall()]
 
@@ -315,7 +316,7 @@ def _obtener_disponibilidad(
     color_id: int | None = None,
     sucursal_id: object | None = None,
 ) -> list[dict[str, object]]:
-    filtros = ["v.producto_id = %s", "v.empresa_id = %s", "inv.empresa_id = v.empresa_id", "s.empresa_id = %s", "v.activo = TRUE", "inv.activo = TRUE"]
+    filtros = ["v.producto_id = %s", "v.empresa_id = %s", "inv.empresa_id = v.empresa_id", "s.empresa_id = %s", "s.activo = TRUE", "ci.activo = TRUE", "v.activo = TRUE", "inv.activo = TRUE"]
     params: list[object] = [producto_id, empresa_id, empresa_id]
 
     if talla_id is not None:
@@ -406,9 +407,9 @@ def _calcular_precio_final(precio: Decimal | None, promocion: dict[str, object] 
     valor = Decimal(promocion["valor"])
 
     if promocion["tipo_descuento"] == "PORCENTAJE":
-        return max(Decimal("0.00"), precio - (precio * valor / Decimal("100"))).quantize(Decimal("0.01"))
+        return max(Decimal("0.00"), precio - (precio * valor / Decimal("100"))).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
 
-    return max(Decimal("0.00"), precio - valor).quantize(Decimal("0.01"))
+    return max(Decimal("0.00"), precio - valor).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
 
 
 def _extraer_tallas(variantes: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -432,7 +433,7 @@ def _extraer_colores(variantes: list[dict[str, object]]) -> list[dict[str, objec
 
 
 def _construir_filtros(filtros: dict[str, object], empresa_id: int) -> tuple[str, list[object]]:
-    condiciones = ["p.activo = TRUE", "p.empresa_id = %s"]
+    condiciones = ["p.activo = TRUE", "c.activo = TRUE", "p.empresa_id = %s"]
     params: list[object] = [empresa_id]
 
     q = filtros.get("q")
@@ -465,11 +466,11 @@ def _construir_filtros(filtros: dict[str, object], empresa_id: int) -> tuple[str
             params.append(valor)
 
     if filtros.get("precio_min") is not None:
-        condiciones.append("pp.precio >= %s")
+        condiciones.append(_precio_sql(filtros.get('sucursal_id'))+' >= %s')
         params.append(filtros["precio_min"])
 
     if filtros.get("precio_max") is not None:
-        condiciones.append("pp.precio <= %s")
+        condiciones.append(_precio_sql(filtros.get('sucursal_id'))+' <= %s')
         params.append(filtros["precio_max"])
 
     if filtros.get("solo_disponibles"):
@@ -478,11 +479,16 @@ def _construir_filtros(filtros: dict[str, object], empresa_id: int) -> tuple[str
     return " AND ".join(condiciones), params
 
 
-def _construir_orden(orden: str) -> str:
+def _precio_sql(sucursal_id=None):
+    sucursal = str(int(sucursal_id)) if sucursal_id is not None else 'NULL::bigint'
+    return f'public.precio_catalogo(v.id,p.empresa_id,{sucursal})'
+
+
+def _construir_orden(orden: str, sucursal_id=None) -> str:
     if orden == "nombre":
         return "ORDER BY p.nombre ASC"
     if orden == "precio-asc":
-        return "ORDER BY MIN(pp.precio) ASC NULLS LAST, p.nombre ASC"
+        return f'ORDER BY MIN({_precio_sql(sucursal_id)}) ASC NULLS LAST, p.nombre ASC,p.id ASC'
     if orden == "precio-desc":
-        return "ORDER BY MIN(pp.precio) DESC NULLS LAST, p.nombre ASC"
+        return f'ORDER BY MIN({_precio_sql(sucursal_id)}) DESC NULLS LAST, p.nombre ASC,p.id ASC'
     return "ORDER BY p.id DESC"

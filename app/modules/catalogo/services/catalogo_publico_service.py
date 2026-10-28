@@ -20,6 +20,8 @@ from app.modules.catalogo.schemas.catalogo_publico.catalogo_publico_response imp
 
 
 def listar_prendas(filtros: CatalogoFiltros, empresa_id: int) -> CatalogoPrendasResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(empresa_id)
     items, total = listar_prendas_catalogo(filtros.model_dump(), empresa_id)
     return CatalogoPrendasResponse(
         items=items,
@@ -30,6 +32,8 @@ def listar_prendas(filtros: CatalogoFiltros, empresa_id: int) -> CatalogoPrendas
 
 
 def obtener_prenda(producto_id: int, sucursal_id: int | None, empresa_id: int) -> CatalogoPrendaDetalleResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(empresa_id)
     prenda = obtener_prenda_catalogo(producto_id, sucursal_id, empresa_id)
 
     if prenda is None:
@@ -48,8 +52,10 @@ def obtener_disponibilidad(
     sucursal_id: int | None = None,
     empresa_id: int | None = None,
 ) -> CatalogoDisponibilidadProductoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
     if empresa_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Falta la empresa del catalogo.")
+    vencer_reservas(empresa_id)
     prenda = obtener_prenda_catalogo(producto_id, None, empresa_id)
 
     if prenda is None:

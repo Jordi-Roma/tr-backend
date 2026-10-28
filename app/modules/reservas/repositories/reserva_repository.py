@@ -1,11 +1,16 @@
 from app.core.plan_empresa import exigir_operaciones_empresa
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from uuid import uuid4
+from psycopg2.extras import Json
 
 from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
+from app.modules.ventas_inventario.repositories.operacion_repository import (
+    iniciar_operacion, finalizar_operacion, bloquear_existencias,
+)
 from app.modules.reservas.repositories.carrito_repository import (
     _armar_carrito_cursor,
     _obtener_cliente_id_por_usuario_cursor,
@@ -15,7 +20,6 @@ from app.modules.reservas.repositories.carrito_repository import (
 
 ESTADOS_FINALES = {"COMPLETADA", "CANCELADA", "VENCIDA"}
 ESTADOS_ADMIN_ACTIVOS = {"PENDIENTE", "PREPARADA", "EN_ATENCION"}
-MONTO_RESERVA_POR_DIA = Decimal("10.00")
 
 
 def crear_reserva_desde_carrito(
@@ -24,11 +28,16 @@ def crear_reserva_desde_carrito(
     sucursal_id: int,
     fecha_cita: date,
     observacion: str | None,
+    clave_operacion=None,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
     try:
+        datos_operacion = {'sucursal_id': sucursal_id, 'fecha_cita': fecha_cita, 'observacion': observacion}
+        previa = iniciar_operacion(cursor, empresa_id, usuario_id, 'RESERVA', clave_operacion, datos_operacion)
+        if previa:
+            return _obtener_reserva_por_id_cursor(cursor, previa, empresa_id)
         exigir_operaciones_empresa(empresa_id, cursor=cursor)
         cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
@@ -52,7 +61,8 @@ def crear_reserva_desde_carrito(
         _validar_fecha_cita(fecha_cita)
         _validar_items_reserva(items, sucursal_id)
 
-        for item in items:
+        bloquear_existencias(cursor, empresa_id, [(sucursal_id, int(i['producto_variante_id'])) for i in items])
+        for item in sorted(items, key=lambda i: int(i['producto_variante_id'])):
             variante_id = int(item["producto_variante_id"])
             cantidad = int(item["cantidad"])
             precio = _obtener_precio_final_variante_cursor(cursor, variante_id, sucursal_id)
@@ -63,11 +73,11 @@ def crear_reserva_desde_carrito(
             _validar_y_reservar_stock_cursor(cursor, variante_id, sucursal_id, cantidad, empresa_id)
 
         total = sum((item["subtotal"] or Decimal("0.00") for item in items), Decimal("0.00"))
-        monto_reserva = _calcular_monto_reserva(fecha_cita)
+        monto_reserva = Decimal('0.00')
         codigo = _generar_codigo_reserva()
 
         estado_inicial = "PENDIENTE" if monto_reserva <= 0 else "PENDIENTE_ANTICIPO"
-        anticipo_pagado = monto_reserva <= 0
+        anticipo_pagado = False
 
         cursor.execute(
             """
@@ -82,6 +92,7 @@ def crear_reserva_desde_carrito(
                 anticipo_pagado,
                 fecha_cita,
                 fecha_expiracion,
+                es_gratuita,
                 observacion
             )
             VALUES (
@@ -94,7 +105,8 @@ def crear_reserva_desde_carrito(
                 %s,
                 %s,
                 %s,
-                (%s::date + INTERVAL '1 day'),
+                CURRENT_TIMESTAMP + INTERVAL '7 days',
+                TRUE,
                 %s
             )
             RETURNING id;
@@ -108,7 +120,6 @@ def crear_reserva_desde_carrito(
                 total,
                 monto_reserva,
                 anticipo_pagado,
-                fecha_cita,
                 fecha_cita,
                 observacion,
             ),
@@ -156,6 +167,7 @@ def crear_reserva_desde_carrito(
             f"Creacion de reserva {codigo}.",
         )
 
+        finalizar_operacion(cursor, empresa_id, usuario_id, 'RESERVA', clave_operacion, datos_operacion, reserva_id)
         connection.commit()
         reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
         if reserva is None:
@@ -401,6 +413,17 @@ def cambiar_estado_reserva(
 
         estado_actual = str(reserva["estado"])
 
+        transiciones = {
+            'PENDIENTE_ANTICIPO': {'CANCELADA'},
+            'PENDIENTE': {'PREPARADA', 'CANCELADA'},
+            'PREPARADA': {'EN_ATENCION', 'CANCELADA'},
+            'EN_ATENCION': {'CANCELADA'},
+        }
+        if nuevo_estado == estado_actual:
+            return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
+        if nuevo_estado not in transiciones.get(estado_actual, set()):
+            raise ValueError('Transición de reserva no permitida. Completar requiere registrar la venta; vencer es automático.')
+
         if estado_actual in ESTADOS_FINALES:
             raise ValueError("La reserva ya esta en un estado final.")
 
@@ -448,7 +471,7 @@ def finalizar_reserva_como_venta(
         _vencer_reservas_expiradas_cursor(cursor, empresa_id)
         cursor.execute(
             """
-            SELECT id, cliente_id, sucursal_id, estado, total, monto_reserva, anticipo_pagado, fecha_expiracion
+            SELECT id, cliente_id, sucursal_id, estado, total, monto_reserva, anticipo_pagado, fecha_expiracion, finalizacion_datos
             FROM reserva
             WHERE id = %s AND empresa_id = %s AND activo = TRUE
             FOR UPDATE;
@@ -465,6 +488,11 @@ def finalizar_reserva_como_venta(
             connection.rollback()
             return None
 
+        datos_finalizacion = {'cantidades':{str(k):v for k,v in cantidades.items()},'metodo_pago':metodo_pago,'observacion':observacion}
+        if str(reserva["estado"]) == 'COMPLETADA':
+            if reserva.get('finalizacion_datos') != datos_finalizacion:
+                raise ValueError('Esta reserva ya se finalizó con otros datos.')
+            return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
         if str(reserva["estado"]) in ESTADOS_FINALES:
             raise ValueError("La reserva ya esta en un estado final.")
         if Decimal(reserva["monto_reserva"] or "0.00") > 0 and not bool(reserva.get("anticipo_pagado")):
@@ -485,6 +513,10 @@ def finalizar_reserva_como_venta(
 
         if not items_venta:
             raise ValueError("Selecciona al menos una prenda para vender.")
+
+        if metodo_pago not in {'EFECTIVO','QR','TARJETA','TRANSFERENCIA'}:
+            raise ValueError('Método de pago presencial inválido.')
+        bloquear_existencias(cursor, empresa_id, [(int(reserva['sucursal_id']),int(d['producto_variante_id'])) for d in detalles])
 
         codigo = f"VEN-{uuid4().hex[:10].upper()}"
         subtotal_total = sum(
@@ -589,6 +621,10 @@ def finalizar_reserva_como_venta(
             f"Reserva {reserva_id} convertida en venta presencial {codigo}.",
         )
 
+        from app.modules.ventas_inventario.repositories.nota_venta_repository import emitir_nota_cursor
+        cursor.execute('UPDATE reserva SET finalizacion_datos=%s WHERE id=%s AND empresa_id=%s',
+                       (Json(datos_finalizacion),reserva_id,empresa_id))
+        emitir_nota_cursor(cursor, venta_id, empresa_id)
         connection.commit()
         return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     except Exception:
@@ -1270,13 +1306,9 @@ def _validar_y_reservar_stock_cursor(
 
 
 def _validar_fecha_cita(fecha_cita: date) -> None:
-    if fecha_cita < date.today():
-        raise ValueError("La fecha de cita no puede estar en el pasado.")
-
-
-def _calcular_monto_reserva(fecha_cita: date) -> Decimal:
-    dias = max((fecha_cita - date.today()).days, 0)
-    return MONTO_RESERVA_POR_DIA * Decimal(dias)
+    hoy = datetime.now(ZoneInfo('America/La_Paz')).date()
+    if not hoy <= fecha_cita <= hoy + timedelta(days=7):
+        raise ValueError('La cita debe estar dentro de los próximos 7 días de la reserva gratuita.')
 
 
 def _validar_items_reserva(items: list[dict[str, object]], sucursal_id: int) -> None:
@@ -1304,6 +1336,7 @@ def _vencer_reservas_expiradas_cursor(cursor, empresa_id: int) -> None:
           AND estado NOT IN ('COMPLETADA', 'CANCELADA', 'VENCIDA')
           AND fecha_expiracion IS NOT NULL
           AND fecha_expiracion < CURRENT_TIMESTAMP
+        ORDER BY id
         FOR UPDATE;
         """,
         (empresa_id,),
@@ -1314,6 +1347,8 @@ def _vencer_reservas_expiradas_cursor(cursor, empresa_id: int) -> None:
         reserva_id = int(reserva["id"])
         _liberar_stock_reserva_cursor(cursor, reserva_id)
         _actualizar_estado_reserva_cursor(cursor, reserva_id, "VENCIDA")
+        cursor.execute("""INSERT INTO bitacora(empresa_id,accion,modulo,descripcion)
+            VALUES(%s,'VENCIMIENTO_RESERVA','RESERVAS',%s)""",(empresa_id,f'Reserva {reserva_id} vencida; unidades liberadas.'))
 
 
 def _liberar_stock_reserva_cursor(cursor, reserva_id: int) -> None:
@@ -1467,6 +1502,7 @@ def _obtener_reserva_por_id_cursor(cursor, reserva_id: int, empresa_id: int) -> 
             s.nombre AS sucursal,
             ci.nombre AS ciudad,
             r.estado,
+            r.es_gratuita,
             r.total,
             COALESCE(r.monto_reserva, 0) AS monto_reserva,
             COALESCE(r.monto_aplicado, 0) AS monto_aplicado,

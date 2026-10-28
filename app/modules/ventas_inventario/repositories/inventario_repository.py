@@ -6,6 +6,9 @@ from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
 from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
+from app.modules.ventas_inventario.repositories.operacion_repository import (
+    iniciar_operacion, finalizar_operacion, bloquear_existencias, auditar_operacion,
+)
 
 TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION_VENTA"}
 TIPOS_RESTA = {"SALIDA", "AJUSTE_NEGATIVO", "TRANSFERENCIA_SALIDA", "VENTA_PRESENCIAL", "VENTA_DIGITAL"}
@@ -173,10 +176,17 @@ def registrar_movimiento_manual(
     cantidad: int,
     motivo: str | None,
     proveedor_id: int | None = None,
+    clave_operacion=None,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
+        datos = dict(sucursal_id=sucursal_id,producto_variante_id=producto_variante_id,tipo=tipo,cantidad=cantidad,motivo=motivo,proveedor_id=proveedor_id)
+        previa = iniciar_operacion(cursor,empresa_id,usuario_id,'MOVIMIENTO',clave_operacion,datos)
+        if previa:
+            return _obtener_movimiento_cursor(cursor,previa,empresa_id)
+        exigir_operaciones_empresa(empresa_id, cursor=cursor)
+        bloquear_existencias(cursor,empresa_id,[(sucursal_id,producto_variante_id)])
         movimiento_id = _aplicar_movimiento(
             cursor,
             usuario_id,
@@ -190,6 +200,8 @@ def registrar_movimiento_manual(
             proveedor_id if tipo == "ENTRADA" else None,
             empresa_id,
         )
+        finalizar_operacion(cursor,empresa_id,usuario_id,'MOVIMIENTO',clave_operacion,datos,movimiento_id)
+        auditar_operacion(cursor,usuario_id,empresa_id,'MOVIMIENTO_INVENTARIO',f'Movimiento {movimiento_id}: {tipo}, {cantidad} unidades.')
         connection.commit()
         movimiento = _obtener_movimiento_cursor(cursor, movimiento_id, empresa_id)
         if movimiento is None:
@@ -267,6 +279,7 @@ def crear_transferencia(
     sucursal_destino_id: int,
     observacion: str | None,
     items: list[dict[str, int]],
+    clave_operacion=None,
 ) -> dict[str, object]:
     if sucursal_origen_id == sucursal_destino_id:
         raise ValueError("La sucursal origen y destino deben ser distintas.")
@@ -276,6 +289,12 @@ def crear_transferencia(
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
+        datos = dict(origen=sucursal_origen_id,destino=sucursal_destino_id,observacion=observacion,items=items)
+        previa = iniciar_operacion(cursor,empresa_id,usuario_id,'TRANSFERENCIA',clave_operacion,datos)
+        if previa:
+            return _obtener_transferencia_cursor(cursor,previa,empresa_id)
+        exigir_operaciones_empresa(empresa_id, cursor=cursor)
+        bloquear_existencias(cursor,empresa_id,[(s,int(i['producto_variante_id'])) for i in items for s in (sucursal_origen_id,sucursal_destino_id)])
         _validar_sucursal_cursor(cursor, sucursal_origen_id, empresa_id)
         _validar_sucursal_cursor(cursor, sucursal_destino_id, empresa_id)
         cursor.execute(
@@ -331,6 +350,8 @@ def crear_transferencia(
                 None,
                 empresa_id,
             )
+        finalizar_operacion(cursor,empresa_id,usuario_id,'TRANSFERENCIA',clave_operacion,datos,transferencia_id)
+        auditar_operacion(cursor,usuario_id,empresa_id,'TRANSFERENCIA_STOCK',f'Transferencia {transferencia_id}: sucursal {sucursal_origen_id} a {sucursal_destino_id}.')
         connection.commit()
         transferencia = _obtener_transferencia_cursor(cursor, transferencia_id, empresa_id)
         if transferencia is None:
@@ -390,13 +411,21 @@ def crear_venta_presencial(
     metodo_pago: str | None,
     observacion: str | None,
     items: list[dict[str, object]],
+    clave_operacion=None,
 ) -> dict[str, object]:
     if not items:
         raise ValueError("La venta debe tener al menos un item.")
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
+        datos = dict(sucursal_id=sucursal_id,cliente_id=cliente_id,metodo_pago=metodo_pago,observacion=observacion,items=items)
+        previa = iniciar_operacion(cursor,empresa_id,usuario_id,'VENTA',clave_operacion,datos)
+        if previa:
+            return _obtener_venta_cursor(cursor,previa,empresa_id)
         exigir_operaciones_empresa(empresa_id, cursor=cursor)
+        if metodo_pago not in {'EFECTIVO','QR','TARJETA','TRANSFERENCIA'}:
+            raise ValueError('Método de pago presencial inválido.')
+        bloquear_existencias(cursor,empresa_id,[(sucursal_id,int(i['producto_variante_id'])) for i in items])
         _validar_sucursal_cursor(cursor, sucursal_id, empresa_id)
         if cliente_id is not None:
             cursor.execute("SELECT 1 FROM cliente WHERE id = %s AND empresa_id = %s AND activo = TRUE", (cliente_id, empresa_id))
@@ -436,7 +465,9 @@ def crear_venta_presencial(
             if precio is None:
                 raise ValueError("Una variante no tiene precio vigente.")
             bruto = precio * cantidad
-            subtotal = max(Decimal("0.00"), bruto - descuento)
+            if descuento < 0 or descuento > bruto:
+                raise ValueError('El descuento debe estar entre cero y el importe de la línea.')
+            subtotal = bruto - descuento
             subtotal_total += bruto
             descuento_total += descuento
             _aplicar_movimiento(
@@ -477,6 +508,10 @@ def crear_venta_presencial(
             """,
             (subtotal_total, descuento_total, total, venta_id, empresa_id),
         )
+        from app.modules.ventas_inventario.repositories.nota_venta_repository import emitir_nota_cursor
+        emitir_nota_cursor(cursor,venta_id,empresa_id)
+        finalizar_operacion(cursor,empresa_id,usuario_id,'VENTA',clave_operacion,datos,venta_id)
+        auditar_operacion(cursor,usuario_id,empresa_id,'VENTA_PRESENCIAL',f'Venta {codigo}, sucursal {sucursal_id}, total {total}.')
         connection.commit()
         venta = _obtener_venta_cursor(cursor, venta_id, empresa_id)
         if venta is None:
@@ -534,8 +569,11 @@ def _validar_sucursal_cursor(cursor, sucursal_id: int, empresa_id: int) -> None:
         raise ValueError("Sucursal no encontrada en esta empresa.")
 
 
-def _validar_variante_cursor(cursor, producto_variante_id: int, empresa_id: int) -> None:
-    cursor.execute("SELECT 1 FROM producto_variante WHERE id = %s AND empresa_id = %s AND activo = TRUE", (producto_variante_id, empresa_id))
+def _validar_variante_cursor(cursor, producto_variante_id: int, empresa_id: int, exigir_producto_activo: bool = True) -> None:
+    cursor.execute('''SELECT 1 FROM producto_variante v JOIN producto p
+        ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
+        WHERE v.id=%s AND v.empresa_id=%s AND v.activo AND (p.activo OR NOT %s)
+        FOR SHARE OF p,v''', (producto_variante_id, empresa_id, exigir_producto_activo))
     if cursor.fetchone() is None:
         raise ValueError("Variante no encontrada en esta empresa.")
 
@@ -582,6 +620,8 @@ def _aplicar_movimiento(
 ) -> int:
     if tipo not in TIPOS_SUMA and tipo not in TIPOS_RESTA:
         raise ValueError("Tipo de movimiento invalido.")
+    if cantidad <= 0:
+        raise ValueError('La cantidad debe ser mayor a cero.')
     if empresa_id is None:
         cursor.execute("SELECT empresa_id FROM sucursal WHERE id = %s AND activo = TRUE", (sucursal_id,))
         sucursal = cursor.fetchone()
@@ -589,7 +629,7 @@ def _aplicar_movimiento(
             raise ValueError("Sucursal no encontrada.")
         empresa_id = int(sucursal["empresa_id"])
     _validar_sucursal_cursor(cursor, sucursal_id, empresa_id)
-    _validar_variante_cursor(cursor, producto_variante_id, empresa_id)
+    _validar_variante_cursor(cursor, producto_variante_id, empresa_id, exigir_producto_activo=tipo != "DEVOLUCION_VENTA")
     if proveedor_id is not None:
         cursor.execute("SELECT 1 FROM proveedor WHERE id = %s AND empresa_id = %s AND activo = TRUE", (proveedor_id, empresa_id))
         if cursor.fetchone() is None:

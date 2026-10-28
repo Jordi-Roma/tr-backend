@@ -35,6 +35,8 @@ def obtener_inventario_service(
     usuario_actual: dict[str, object],
     filtros: dict[str, object],
 ) -> list[InventarioResponse]:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     filtros = _forzar_sucursal_si_no_admin(usuario_actual, filtros)
     return [InventarioResponse(**row) for row in listar_inventario(filtros, exigir_empresa_id(usuario_actual))]
 
@@ -67,6 +69,8 @@ def registrar_movimiento_service(
     usuario_actual: dict[str, object],
     request: MovimientoInventarioRequest,
 ) -> MovimientoInventarioResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     sucursal_id = _validar_sucursal_operacion(usuario_actual, request.sucursal_id)
     tipo = request.tipo.upper()
     if tipo not in {"ENTRADA", "SALIDA", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO"}:
@@ -83,6 +87,7 @@ def registrar_movimiento_service(
             request.cantidad,
             request.motivo,
             request.proveedor_id,
+            request.clave_operacion,
         )
         return MovimientoInventarioResponse(**row)
     except ValueError as error:
@@ -93,6 +98,8 @@ def crear_transferencia_service(
     usuario_actual: dict[str, object],
     request: CrearTransferenciaRequest,
 ) -> TransferenciaResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     origen = _validar_sucursal_operacion(usuario_actual, request.sucursal_origen_id)
     try:
         transferencia = crear_transferencia(
@@ -102,6 +109,7 @@ def crear_transferencia_service(
             request.sucursal_destino_id,
             request.observacion,
             [item.model_dump() for item in request.items],
+            request.clave_operacion,
         )
         return TransferenciaResponse(**transferencia)
     except ValueError as error:
@@ -136,7 +144,11 @@ def crear_venta_service(
     usuario_actual: dict[str, object],
     request: CrearVentaPresencialRequest,
 ) -> VentaPresencialResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     sucursal_id = _validar_sucursal_operacion(usuario_actual, request.sucursal_id)
+    if any(item.descuento > 0 for item in request.items) and not _roles(usuario_actual).intersection({'ADMINISTRADOR','ENCARGADO_SUCURSAL'}):
+        raise HTTPException(403, 'Los descuentos manuales requieren administrador o encargado.')
     try:
         venta = crear_venta_presencial(
             int(usuario_actual["id"]),
@@ -146,6 +158,7 @@ def crear_venta_service(
             request.metodo_pago,
             request.observacion,
             [item.model_dump() for item in request.items],
+            request.clave_operacion,
         )
         return VentaPresencialResponse(**venta)
     except ValueError as error:

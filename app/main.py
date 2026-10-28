@@ -40,6 +40,7 @@ from app.modules.reservas.router.reserva_router import router as reserva_router
 from app.modules.ventas_inventario.router.inventario_router import (
     router as ventas_inventario_router,
 )
+from app.modules.ventas_inventario.router.nota_venta_router import router as nota_venta_router
 from app.modules.ventas_inventario.router.delivery_router import router as delivery_router
 from app.modules.ventas_inventario.router.pago_router import router as pago_router
 from app.modules.ventas_inventario.router.devolucion_router import router as devolucion_router
@@ -96,6 +97,7 @@ app.include_router(promocion_router)
 app.include_router(variante_router)
 app.include_router(carrito_router)
 app.include_router(reserva_router)
+app.include_router(nota_venta_router)
 app.include_router(ventas_inventario_router)
 app.include_router(pago_router)
 app.include_router(devolucion_router)
@@ -139,6 +141,9 @@ def verificar_migracion_multitenant():
         cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_27_cu09_unicode_01",))
         if cur.fetchone() is None:
             raise RuntimeError("Falta la migración Unicode de CU09; ejecute init_db.py antes de iniciar la API.")
+        cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',('2026_10_27_cu11_cu15_01',))
+        if cur.fetchone() is None:
+            raise RuntimeError('Falta la migración CU11–CU15; ejecute init_db.py antes de iniciar la API.')
     finally:
         conn.close()
 
@@ -149,6 +154,24 @@ def health_check() -> dict[str, str]:
         "status": "ok",
         "service": "backend-tr",
     }
+
+
+@app.on_event('startup')
+async def iniciar_vencimientos():
+    import asyncio
+    from app.modules.reservas.services.vencimiento_service import ejecutar_vencimientos
+    app.state.vencimientos=asyncio.create_task(ejecutar_vencimientos())
+
+
+@app.on_event('shutdown')
+async def detener_vencimientos():
+    import asyncio
+    from contextlib import suppress
+    tarea=getattr(app.state,'vencimientos',None)
+    if tarea:
+        tarea.cancel()
+        with suppress(asyncio.CancelledError):
+            await tarea
 
 
 @app.get("/api/v1/db-check")

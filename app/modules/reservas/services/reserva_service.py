@@ -32,6 +32,8 @@ def crear_desde_carrito(
     usuario_actual: dict[str, object],
     request: CrearReservaDesdeCarritoRequest,
 ) -> ReservaResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     try:
         reserva = crear_reserva_desde_carrito(
             int(usuario_actual["id"]),
@@ -39,6 +41,7 @@ def crear_desde_carrito(
             request.sucursal_id,
             request.fecha_cita,
             request.observacion,
+            request.clave_operacion,
         )
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
@@ -77,6 +80,7 @@ def obtener_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> Re
 
 def obtener_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:
     sucursal_id = _obtener_sucursal_permitida(usuario_actual, None)
+
     reserva = obtener_reserva_admin(reserva_id, exigir_empresa_id(usuario_actual), sucursal_id)
 
     if reserva is None:
@@ -89,6 +93,8 @@ def obtener_reserva(usuario_actual: dict[str, object], reserva_id: int) -> Reser
 
 
 def cancelar_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     try:
         reserva = cancelar_reserva_cliente(int(usuario_actual["id"]), reserva_id, exigir_empresa_id(usuario_actual))
     except ValueError as error:
@@ -108,8 +114,12 @@ def cambiar_estado(
     reserva_id: int,
     request: CambiarEstadoReservaRequest,
 ) -> ReservaResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     estado = request.estado.upper()
     _validar_estado(estado)
+    if estado == 'CANCELADA' and 'CAJERO' in usuario_actual.get('roles', []) and not set(usuario_actual.get('roles', [])).intersection({'ADMINISTRADOR','ENCARGADO_SUCURSAL'}):
+        raise HTTPException(403, 'La cancelación de reservas corresponde al encargado o administrador.')
     sucursal_id = _obtener_sucursal_permitida(usuario_actual, None)
 
     try:
@@ -131,6 +141,8 @@ def finalizar_como_venta(
     reserva_id: int,
     request: FinalizarReservaRequest,
 ) -> ReservaResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     sucursal_id = _obtener_sucursal_permitida(usuario_actual, None)
 
     try:
@@ -261,7 +273,7 @@ def _obtener_sucursal_permitida(
     if "ADMINISTRADOR" in roles:
         return sucursal_id_solicitada
 
-    if "ENCARGADO_SUCURSAL" in roles:
+    if "ENCARGADO_SUCURSAL" in roles or "CAJERO" in roles:
         sucursal_id = obtener_sucursal_empleado_usuario(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))
 
         if sucursal_id is None:

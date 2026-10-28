@@ -158,6 +158,10 @@ def actualizar_item_carrito(cliente_id: int, item_id: int, cantidad: int) -> dic
             connection.rollback()
             return None
 
+        cursor.execute('''SELECT 1 FROM producto_variante v JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
+            WHERE v.id=%s AND v.activo AND p.activo''',(item['producto_variante_id'],))
+        if cursor.fetchone() is None:
+            raise ValueError('La prenda ya no está disponible; puedes retirarla del carrito.')
         if item["sucursal_id"] is not None:
             stock = _obtener_stock_disponible_cursor(
                 cursor,
@@ -265,6 +269,10 @@ def _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id: int, empresa_id: 
 
 
 def _obtener_o_crear_carrito_cursor(cursor, cliente_id: int) -> int:
+    # Un solo escritor por cliente, incluso antes de existir el primer carrito.
+    cursor.execute('SELECT id FROM cliente WHERE id=%s AND activo FOR UPDATE', (cliente_id,))
+    if cursor.fetchone() is None:
+        raise ValueError('Cliente no encontrado.')
     cursor.execute(
         """
         SELECT id
@@ -311,6 +319,7 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
             cd.nombre AS ciudad,
             ci.cantidad,
             pp.precio AS precio_base,
+            (p.activo AND pv.activo AND (s.id IS NULL OR s.activo)) AS disponible_para_compra,
             COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0)::INT AS stock_disponible
         FROM carrito_item ci
         JOIN carrito cart ON cart.id = ci.carrito_id
@@ -340,7 +349,7 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
         empresa_id = int(item.pop("empresa_id"))
         precio_base = item.pop("precio_base", None)
         promocion = _obtener_promocion(cursor, int(item["producto_id"]), empresa_id, item["sucursal_id"])
-        precio_final = _calcular_precio_final(precio_base, promocion) or Decimal("0.00")
+        precio_final = (_calcular_precio_final(precio_base, promocion) if item["disponible_para_compra"] else None) or Decimal("0.00")
         item["precio_unitario"] = precio_final
         item["subtotal"] = precio_final * int(item["cantidad"])
         items.append(item)
@@ -444,7 +453,8 @@ def _obtener_stock_disponible_cursor(cursor, producto_variante_id: int, sucursal
         """
         SELECT GREATEST(stock_disponible - stock_reservado, 0)::INT AS stock
         FROM inventario_sucursal inv
-        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id AND v.activo
+        JOIN sucursal s ON s.id=inv.sucursal_id AND s.empresa_id=inv.empresa_id AND s.activo
         WHERE inv.producto_variante_id = %s
           AND sucursal_id = %s
           AND inv.activo = TRUE
@@ -461,7 +471,8 @@ def _obtener_stock_disponible_total_cursor(cursor, producto_variante_id: int) ->
         """
         SELECT COALESCE(SUM(GREATEST(stock_disponible - stock_reservado, 0)), 0)::INT AS stock
         FROM inventario_sucursal inv
-        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id
+        JOIN producto_variante v ON v.id = inv.producto_variante_id AND v.empresa_id = inv.empresa_id AND v.activo
+        JOIN sucursal s ON s.id=inv.sucursal_id AND s.empresa_id=inv.empresa_id AND s.activo
         WHERE inv.producto_variante_id = %s
           AND inv.activo = TRUE;
         """,

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
-from app.modules.administracion.dependencies.empleado_access import requerir_admin_o_encargado
+from app.modules.administracion.dependencies.empleado_access import requerir_admin_o_encargado_o_cajero
 from app.modules.reservas.schemas.reservas.reserva_request import (
     CambiarEstadoReservaRequest,
     CrearReservaDesdeCarritoRequest,
@@ -47,7 +47,7 @@ def listar_mis_reservas_endpoint(
 def listar_reservas_endpoint(
     estado: str | None = None,
     sucursal_id: int | None = None,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado_o_cajero),
 ) -> list[ReservaResponse]:
     return listar_todas(usuario_actual, estado, sucursal_id)
 
@@ -59,7 +59,7 @@ def obtener_reserva_endpoint(
 ) -> ReservaResponse:
     roles = [str(rol) for rol in usuario_actual.get("roles", [])]
 
-    if "ADMINISTRADOR" in roles or "ENCARGADO_SUCURSAL" in roles:
+    if set(roles).intersection({'ADMINISTRADOR', 'ENCARGADO_SUCURSAL', 'CAJERO'}):
         return obtener_reserva(usuario_actual, reserva_id)
 
     return obtener_mi_reserva(usuario_actual, reserva_id)
@@ -94,7 +94,7 @@ def finalizar_mi_reserva_endpoint(
 def cambiar_estado_reserva_endpoint(
     reserva_id: int,
     request: CambiarEstadoReservaRequest,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado_o_cajero),
 ) -> ReservaResponse:
     return cambiar_estado(usuario_actual, reserva_id, request)
 
@@ -103,6 +103,6 @@ def cambiar_estado_reserva_endpoint(
 def finalizar_reserva_como_venta_endpoint(
     reserva_id: int,
     request: FinalizarReservaRequest,
-    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado),
+    usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado_o_cajero),
 ) -> ReservaResponse:
     return finalizar_como_venta(usuario_actual, reserva_id, request)

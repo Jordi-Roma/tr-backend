@@ -18,6 +18,8 @@ from app.modules.reservas.schemas.carrito.carrito_response import CarritoRespons
 
 
 def obtener_carrito_cliente(usuario_actual: dict[str, object]) -> CarritoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     cliente_id = _obtener_cliente_id(usuario_actual)
     return CarritoResponse(**obtener_carrito(cliente_id))
 
@@ -26,6 +28,8 @@ def agregar_item(
     usuario_actual: dict[str, object],
     request: AgregarCarritoItemRequest,
 ) -> CarritoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     cliente_id = _obtener_cliente_id(usuario_actual)
 
     try:
@@ -46,6 +50,8 @@ def actualizar_item(
     item_id: int,
     request: ActualizarCarritoItemRequest,
 ) -> CarritoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     cliente_id = _obtener_cliente_id(usuario_actual)
 
     try:
@@ -63,6 +69,8 @@ def actualizar_item(
 
 
 def eliminar_item(usuario_actual: dict[str, object], item_id: int) -> CarritoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     cliente_id = _obtener_cliente_id(usuario_actual)
     carrito = eliminar_item_carrito(cliente_id, item_id)
 
@@ -76,6 +84,8 @@ def eliminar_item(usuario_actual: dict[str, object], item_id: int) -> CarritoRes
 
 
 def vaciar(usuario_actual: dict[str, object]) -> CarritoResponse:
+    from app.modules.reservas.services.vencimiento_service import vencer_reservas
+    vencer_reservas(exigir_empresa_id(usuario_actual))
     cliente_id = _obtener_cliente_id(usuario_actual)
     return CarritoResponse(**vaciar_carrito(cliente_id))
 

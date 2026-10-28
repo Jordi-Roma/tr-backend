@@ -18,6 +18,7 @@ class CarritoItemResponse(BaseModel):
     precio_unitario: Decimal
     subtotal: Decimal
     stock_disponible: int
+    disponible_para_compra: bool = True
 
 
 class CarritoSucursalDisponibleResponse(BaseModel):

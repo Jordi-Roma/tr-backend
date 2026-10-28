@@ -15,6 +15,8 @@ def es_operacion_nueva(metodo: str, ruta: str) -> bool:
         return False
     if re.fullmatch(r"/api/v1/pagos/(qr/confirmar|stripe/confirmar-prueba)/\d+", ruta):
         return False
+    if re.fullmatch(r'/api/v1/ventas-presenciales/\d+/nota/correo',ruta):
+        return False
     if re.fullmatch(r"/api/v1/reservas/\d+/(cancelar|estado|anticipo/stripe|finalizar|finalizar-venta)", ruta):
         return False
     if ruta in {"/api/v1/reportes/interpretar", "/api/v1/reportes/generar", "/api/v1/reportes/exportar/pdf", "/api/v1/reportes/exportar/excel"}:

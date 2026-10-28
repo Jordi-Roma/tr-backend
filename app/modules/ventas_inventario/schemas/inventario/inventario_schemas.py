@@ -1,7 +1,12 @@
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class OperacionRequest(BaseModel):
+    clave_operacion: UUID | None = None
 
 
 class InventarioResponse(BaseModel):
@@ -26,7 +31,7 @@ class ActualizarStockMinimoRequest(BaseModel):
     stock_minimo: int = Field(ge=0)
 
 
-class MovimientoInventarioRequest(BaseModel):
+class MovimientoInventarioRequest(OperacionRequest):
     sucursal_id: int
     producto_variante_id: int
     tipo: str
@@ -62,11 +67,19 @@ class TransferenciaItemRequest(BaseModel):
     cantidad: int = Field(ge=1)
 
 
-class CrearTransferenciaRequest(BaseModel):
+class CrearTransferenciaRequest(OperacionRequest):
     sucursal_origen_id: int
     sucursal_destino_id: int
     observacion: str | None = None
-    items: list[TransferenciaItemRequest]
+    items: list[TransferenciaItemRequest] = Field(min_length=1, max_length=100)
+
+    @field_validator('items')
+    @classmethod
+    def sin_variantes_repetidas(cls, items):
+        ids = [i.producto_variante_id for i in items]
+        if len(ids) != len(set(ids)):
+            raise ValueError('No repitas una variante en la transferencia.')
+        return items
 
 
 class TransferenciaDetalleResponse(BaseModel):
@@ -94,15 +107,23 @@ class TransferenciaResponse(BaseModel):
 class VentaItemRequest(BaseModel):
     producto_variante_id: int
     cantidad: int = Field(ge=1)
-    descuento: Decimal = Field(default=Decimal("0.00"), ge=0)
+    descuento: Decimal = Field(default=Decimal("0.00"), ge=0, max_digits=12, decimal_places=2)
 
 
-class CrearVentaPresencialRequest(BaseModel):
+class CrearVentaPresencialRequest(OperacionRequest):
     sucursal_id: int
     cliente_id: int | None = None
-    metodo_pago: str | None = None
+    metodo_pago: str = Field(pattern='^(EFECTIVO|QR|TARJETA|TRANSFERENCIA)$')
     observacion: str | None = None
-    items: list[VentaItemRequest]
+    items: list[VentaItemRequest] = Field(min_length=1, max_length=100)
+
+    @field_validator('items')
+    @classmethod
+    def sin_variantes_repetidas(cls, items):
+        ids = [i.producto_variante_id for i in items]
+        if len(ids) != len(set(ids)):
+            raise ValueError('No repitas una variante en la venta; agrupa su cantidad.')
+        return items
 
 
 class VentaDetalleResponse(BaseModel):

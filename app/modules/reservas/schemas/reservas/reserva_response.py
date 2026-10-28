@@ -26,6 +26,7 @@ class ReservaResponse(BaseModel):
     sucursal: str
     ciudad: str
     estado: str
+    es_gratuita: bool = False
     total: Decimal
     monto_reserva: Decimal = Decimal("0.00")
     monto_aplicado: Decimal = Decimal("0.00")

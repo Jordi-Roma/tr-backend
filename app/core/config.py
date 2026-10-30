@@ -58,6 +58,11 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
+MAIL_PROVIDER = os.getenv("MAIL_PROVIDER", "smtp").strip().lower()
+# Un solo destinatario para todos los envíos, sin modificar las cuentas.
+MAIL_TO_OVERRIDE = os.getenv("MAIL_TO_OVERRIDE", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM = os.getenv("RESEND_FROM", "StyleAR <onboarding@resend.dev>").strip()
 PASSWORD_RESET_EMAIL = os.getenv("PASSWORD_RESET_EMAIL", SMTP_USER)
 PASSWORD_RESET_TOKEN_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_MINUTES", "15"))
 

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from app.core.contexto_empresa import resolver_empresa_por_codigo
 from app.core.config import PASSWORD_RESET_TOKEN_MINUTES, SECRET_KEY
-from app.core.email import enviar_correo
+from app.core.email import enviar_correo, usa_destino_fijo
 from app.core.security import hashear_password
 from app.modules.autenticacion.repositories.bitacora_repository import registrar_bitacora
 from app.modules.autenticacion.repositories.password_reset_repository import (
@@ -25,6 +25,12 @@ from app.modules.autenticacion.schemas.password_reset.password_reset_response im
 MENSAJE_SOLICITUD = (
     "Si la cuenta está disponible, enviaremos un código de recuperación a su correo registrado."
 )
+
+
+def _mensaje_solicitud() -> str:
+    if usa_destino_fijo():
+        return "Si la cuenta está disponible, enviaremos un código de recuperación al correo de recepción configurado."
+    return MENSAJE_SOLICITUD
 
 
 def solicitar_reset_password(
@@ -47,7 +53,7 @@ def solicitar_reset_password(
             direccion_ip=direccion_ip,
             user_agent=user_agent,
         )
-        return PasswordResetMensajeResponse(mensaje=MENSAJE_SOLICITUD)
+        return PasswordResetMensajeResponse(mensaje=_mensaje_solicitud())
 
     codigo = f"{secrets.randbelow(1_000_000):06d}"
     creado = guardar_token_reset(
@@ -58,29 +64,45 @@ def solicitar_reset_password(
         identidad_verificada=usuario,
     )
     if not creado:
-        return PasswordResetMensajeResponse(mensaje=MENSAJE_SOLICITUD)
+        return PasswordResetMensajeResponse(mensaje=_mensaje_solicitud())
     nombre_empresa = empresa["nombre"] if empresa else "Plataforma StyleAR"
-    enviar_correo(
-        str(usuario["correo"]),
-        f"Codigo de recuperacion - {nombre_empresa}",
-        (
-            f"Se solicito recuperar una contrasena en {nombre_empresa}.\n\n"
-            f"Cuenta: {usuario['username']} ({usuario['correo']})\n"
-            f"Codigo: {codigo}\n\n"
-            f"Este codigo vence en {PASSWORD_RESET_TOKEN_MINUTES} minutos."
-        ),
-    )
+    try:
+        enviar_correo(
+            str(usuario["correo"]),
+            f"Codigo de recuperacion - {nombre_empresa}",
+            (
+                f"Se solicito recuperar una contrasena en {nombre_empresa}.\n\n"
+                f"Cuenta: {usuario['username']} ({usuario['correo']})\n"
+                f"Codigo: {codigo}\n\n"
+                f"Este codigo vence en {PASSWORD_RESET_TOKEN_MINUTES} minutos."
+            ),
+        )
+    except (ValueError, OSError):
+        registrar_bitacora(
+            usuario_id=int(usuario["id"]),
+            accion="SOLICITUD_RESET_PASSWORD",
+            modulo="AUTENTICACION",
+            resultado="FALLIDO",
+            descripcion="No se pudo enviar el correo de recuperación.",
+            direccion_ip=direccion_ip,
+            user_agent=user_agent,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo enviar el correo de recuperación. Intente nuevamente en un minuto.",
+        ) from None
     registrar_bitacora(
         usuario_id=int(usuario["id"]),
         accion="SOLICITUD_RESET_PASSWORD",
         modulo="AUTENTICACION",
         resultado="EXITOSO",
-        descripcion="Código de recuperación enviado al correo registrado.",
+        descripcion=("Código de recuperación enviado al correo de recepción configurado."
+                     if usa_destino_fijo() else "Código de recuperación enviado al correo registrado."),
         direccion_ip=direccion_ip,
         user_agent=user_agent,
     )
 
-    return PasswordResetMensajeResponse(mensaje=MENSAJE_SOLICITUD)
+    return PasswordResetMensajeResponse(mensaje=_mensaje_solicitud())
 
 
 def confirmar_reset_password(

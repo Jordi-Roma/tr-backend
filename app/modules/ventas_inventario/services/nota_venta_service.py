@@ -69,15 +69,16 @@ def generar_pdf(nota):
 
 
 def enviar_nota(usuario, venta_id):
-    from app.core.email import enviar_correo_con_adjunto
+    from app.core.email import enviar_correo_con_adjunto, usa_destino_fijo
     nota=preparar_nota(usuario,venta_id)
     datos=nota['datos']
-    if not datos.get('correo'):
+    if not datos.get('correo') and not usa_destino_fijo():
         raise HTTPException(409,'La venta no tiene un cliente con correo registrado.')
     try:
-        enviar_correo_con_adjunto(datos['correo'],f'Nota de venta {nota["numero"]} — {datos["empresa"]}',
+        enviar_correo_con_adjunto(datos.get('correo'),f'Nota de venta {nota["numero"]} — {datos["empresa"]}',
             f'Adjuntamos su nota de venta de {datos["empresa"]}, sucursal {datos["sucursal"]}.',
             generar_pdf(nota),f'nota-venta-{nota["numero"]:08d}.pdf',datos['empresa'])
     except (ValueError,OSError) as error:
         raise HTTPException(503,'No se pudo enviar el correo. La venta sigue registrada y el PDF está disponible.') from error
-    return {'mensaje':'Nota de venta enviada al correo registrado del cliente.'}
+    return {'mensaje':('Nota de venta enviada al correo de recepción configurado.'
+                      if usa_destino_fijo() else 'Nota de venta enviada al correo registrado del cliente.')}

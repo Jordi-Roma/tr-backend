@@ -25,6 +25,13 @@ class PlanAlta(BaseModel):
     nombre: str = Field(min_length=2, max_length=120)
     limites: dict[str, int] = Field(default_factory=dict)
     funciones: dict[str, bool] = Field(default_factory=dict)
+    publico: bool = False
+
+    @model_validator(mode='after')
+    def validar_publicacion(self):
+        if self.publico and (self.codigo == 'STYLEAR_LEGADO' or self.limites.get('usuarios', 1) < 1):
+            raise ValueError('Un plan público debe permitir la cuenta administradora y no puede ser el plan de transición.')
+        return self
 
     @field_validator("codigo")
     @classmethod
@@ -122,7 +129,7 @@ def listar_planes_endpoint(_: dict[str, object] = Depends(requerir_admin_saas)):
 @router.post("/saas/planes", response_model=PlanRespuesta, status_code=201)
 def crear_plan_endpoint(request: PlanAlta, actor: dict[str, object] = Depends(requerir_admin_saas)):
     try:
-        return crear_plan(request.codigo, request.nombre.strip(), request.limites, request.funciones, int(actor["id"]))
+        return crear_plan(request.codigo, request.nombre.strip(), request.limites, request.funciones, int(actor["id"]), request.publico)
     except IntegrityError as error:
         raise HTTPException(status_code=409, detail="El codigo de plan ya existe.") from error
 
@@ -159,7 +166,10 @@ def cambiar_estado_empresa_endpoint(
     empresa_id: int, request: EmpresaEstado,
     actor: dict[str, object] = Depends(requerir_admin_saas),
 ):
-    empresa = cambiar_estado_empresa(empresa_id, request.estado, int(actor["id"]))
+    try:
+        empresa = cambiar_estado_empresa(empresa_id, request.estado, int(actor["id"]))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     if empresa is None:
         raise HTTPException(status_code=404, detail="Empresa no encontrada.")
     return empresa

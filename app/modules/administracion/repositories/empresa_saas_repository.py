@@ -11,21 +11,21 @@ def listar_planes() -> list[dict[str, object]]:
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, codigo, nombre, limites, funciones, activo FROM plan ORDER BY id")
+            cur.execute("SELECT id, codigo, nombre, limites, funciones, activo, publico FROM plan ORDER BY id")
             return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
 
-def crear_plan(codigo: str, nombre: str, limites: dict, funciones: dict, actor_id: int) -> dict[str, object]:
+def crear_plan(codigo: str, nombre: str, limites: dict, funciones: dict, actor_id: int, publico: bool = False) -> dict[str, object]:
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """INSERT INTO plan (codigo, nombre, limites, funciones)
-                   VALUES (%s, %s, %s, %s)
-                   RETURNING id, codigo, nombre, limites, funciones, activo""",
-                (codigo, nombre, Json(limites), Json(funciones)),
+                """INSERT INTO plan (codigo, nombre, limites, funciones, publico)
+                   VALUES (%s, %s, %s, %s, %s)
+                   RETURNING id, codigo, nombre, limites, funciones, activo, publico""",
+                (codigo, nombre, Json(limites), Json(funciones), publico),
             )
             row = dict(cur.fetchone())
             auditar(cur, actor_id, "CREAR_PLAN", recurso_id=str(row["id"]))
@@ -46,13 +46,15 @@ def listar_empresas() -> list[dict[str, object]]:
                 """SELECT e.id, e.codigo, e.nombre, e.estado,
                           s.id AS suscripcion_id, s.estado AS suscripcion_estado,
                           s.fecha_inicio, s.fecha_vencimiento,
-                          p.id AS plan_id, p.codigo AS plan_codigo, p.nombre AS plan_nombre
+                          p.id AS plan_id, p.codigo AS plan_codigo, p.nombre AS plan_nombre,
+                          reg.correo_contacto, reg.responsable
                    FROM empresa e
                    LEFT JOIN LATERAL (
                        SELECT * FROM suscripcion WHERE empresa_id=e.id
                        ORDER BY fecha_creacion DESC,id DESC LIMIT 1
                    ) s ON TRUE
                    LEFT JOIN plan p ON p.id=s.plan_id
+                   LEFT JOIN solicitud_registro_empresa reg ON reg.empresa_id=e.id
                    ORDER BY e.id"""
             )
             return [dict(row) for row in cur.fetchall()]
@@ -113,6 +115,12 @@ def cambiar_estado_empresa(empresa_id: int, estado: str, actor_id: int) -> dict[
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT estado FROM empresa WHERE id=%s FOR UPDATE', (empresa_id,))
+            actual = cur.fetchone()
+            if actual and actual['estado'] == 'PENDIENTE' and estado != 'CANCELADA':
+                raise ValueError('Activa esta empresa asignando su plan y vigencia desde la suscripción.')
+            if actual and actual['estado'] == 'PENDIENTE' and estado == 'CANCELADA':
+                cur.execute("UPDATE suscripcion SET estado='CANCELADA' WHERE empresa_id=%s AND estado='PENDIENTE'", (empresa_id,))
             cur.execute(
                 """UPDATE empresa SET estado=%s,fecha_actualizacion=CURRENT_TIMESTAMP
                    WHERE id=%s RETURNING id,codigo,nombre,estado""",
@@ -136,14 +144,18 @@ def asignar_plan_empresa(
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id FROM empresa WHERE id=%s FOR UPDATE", (empresa_id,))
-            if cur.fetchone() is None:
+            cur.execute("SELECT id,estado FROM empresa WHERE id=%s FOR UPDATE", (empresa_id,))
+            empresa = cur.fetchone()
+            if empresa is None:
                 return None
-            cur.execute("SELECT id FROM plan WHERE id=%s AND activo=TRUE", (plan_id,))
-            if cur.fetchone() is None:
+            cur.execute("SELECT id,limites FROM plan WHERE id=%s AND activo=TRUE FOR SHARE", (plan_id,))
+            plan = cur.fetchone()
+            if plan is None:
                 raise ValueError("Plan no encontrado o inactivo.")
+            if empresa['estado'] == 'PENDIENTE' and plan['limites'].get('usuarios', 1) < 1:
+                raise ValueError('El plan debe permitir la cuenta administradora inicial.')
             cur.execute(
-                "UPDATE suscripcion SET estado='CANCELADA' WHERE empresa_id=%s AND estado='ACTIVA'",
+                "UPDATE suscripcion SET estado='CANCELADA' WHERE empresa_id=%s AND estado IN ('ACTIVA','PENDIENTE')",
                 (empresa_id,),
             )
             cur.execute(
@@ -154,6 +166,9 @@ def asignar_plan_empresa(
             )
             row = dict(cur.fetchone())
             auditar(cur, actor_id, "ASIGNAR_SUSCRIPCION", empresa_id, str(row["id"]))
+            if empresa['estado'] == 'PENDIENTE':
+                cur.execute("UPDATE empresa SET estado='ACTIVA',fecha_actualizacion=CURRENT_TIMESTAMP WHERE id=%s", (empresa_id,))
+                auditar(cur, actor_id, 'APROBAR_REGISTRO_EMPRESA', empresa_id, str(row['id']))
         conn.commit()
         return row
     except Exception:
@@ -223,8 +238,8 @@ def editar_plan(plan_id: int, datos: dict, actor_id: int):
                 raise ValueError("El código del plan de transición es estable.")
             cur.execute(
                 """UPDATE plan SET codigo=%s,nombre=%s,limites=%s,funciones=%s,activo=%s
-                   WHERE id=%s RETURNING id,codigo,nombre,limites,funciones,activo""",
-                (datos["codigo"], datos["nombre"], Json(datos["limites"]), Json(datos["funciones"]), datos["activo"], plan_id),
+                   ,publico=%s WHERE id=%s RETURNING id,codigo,nombre,limites,funciones,activo,publico""",
+                (datos["codigo"], datos["nombre"], Json(datos["limites"]), Json(datos["funciones"]), datos["activo"], datos.get('publico', False), plan_id),
             )
             row = dict(cur.fetchone())
             auditar(cur, actor_id, "EDITAR_PLAN", recurso_id=str(plan_id))

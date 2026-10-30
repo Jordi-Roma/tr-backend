@@ -9,6 +9,7 @@ from app.modules.administracion.router.empresa_publica_router import (
     router as empresa_publica_router,
 )
 from app.modules.administracion.router.empresa_saas_router import router as empresa_saas_router
+from app.modules.administracion.router.registro_empresa_router import router as registro_empresa_router
 from app.modules.administracion.router.respaldo_router import router as respaldo_router
 from app.modules.administracion.router.catalogo_router import (
     router as catalogo_router,
@@ -82,6 +83,7 @@ app.include_router(perfil_router)
 app.include_router(rol_permiso_router)
 app.include_router(usuario_admin_router)
 app.include_router(empresa_publica_router)
+app.include_router(registro_empresa_router)
 app.include_router(empresa_saas_router)
 app.include_router(respaldo_router)
 app.include_router(ciudad_sucursal_router)
@@ -144,6 +146,9 @@ def verificar_migracion_multitenant():
         cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',('2026_10_27_cu11_cu15_01',))
         if cur.fetchone() is None:
             raise RuntimeError('Falta la migración CU11–CU15; ejecute init_db.py antes de iniciar la API.')
+        cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',('2026_10_28_registro_empresa_01',))
+        if cur.fetchone() is None:
+            raise RuntimeError('Falta la migración de registro de empresas; ejecute init_db.py antes de iniciar la API.')
     finally:
         conn.close()
 

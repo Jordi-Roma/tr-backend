@@ -28,7 +28,7 @@ from app.database.connection import get_connection
 from app.modules.administracion.repositories.empresa_saas_repository import auditar
 
 STATIC = Path(__file__).resolve().parents[4] / "static"
-PLATAFORMA = {"empresa", "plan", "evento_plataforma", "respaldo", "schema_migrations"}
+PLATAFORMA = {"empresa", "plan", "evento_plataforma", "respaldo", "schema_migrations", "solicitud_registro_empresa"}
 
 
 def configuracion():

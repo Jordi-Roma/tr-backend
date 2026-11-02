@@ -23,102 +23,21 @@ from app.modules.ventas_inventario.services.delivery_service import preparar_del
 
 
 def crear_checkout_stripe_service(usuario_actual: dict[str, object], request: CrearCheckoutStripeRequest) -> CheckoutStripeResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    cliente_id = _cliente_id_obligatorio(usuario_actual)
-    try:
-        tipo_entrega = request.tipo_entrega.strip().upper()
-        if tipo_entrega not in {"RECOJO_SUCURSAL", "DELIVERY"}:
-            raise ValueError("Tipo de entrega no valido.")
-        delivery = preparar_delivery_para_checkout(request.delivery, empresa_id) if tipo_entrega == "DELIVERY" else None
-        sucursal_id = int(delivery["sucursal_id"]) if delivery else request.sucursal_id
-        orden = repo.crear_orden_desde_carrito(cliente_id, int(usuario_actual["id"]), sucursal_id, delivery, empresa_id=empresa_id)
-        session = _crear_session_stripe(orden)
-        orden = repo.actualizar_checkout_stripe(
-            int(orden["id"]),
-            str(session["id"]),
-            str(session["url"]),
-            session.get("payment_intent"),
-            empresa_id,
-        )
-        return _checkout_response(orden)
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    from .pagos_empresa_service import crear_checkout
+    return CheckoutStripeResponse(**crear_checkout(usuario_actual,request,'STRIPE'))
 
 
 def crear_checkout_qr_service(
     usuario_actual: dict[str, object],
     request: CrearCheckoutQrRequest,
 ) -> CheckoutQrResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    cliente_id = _cliente_id_obligatorio(usuario_actual)
-    try:
-        tipo_entrega = request.tipo_entrega.strip().upper()
-        if tipo_entrega not in {"RECOJO_SUCURSAL", "DELIVERY"}:
-            raise ValueError("Tipo de entrega no valido.")
-        delivery = preparar_delivery_para_checkout(request.delivery, empresa_id) if tipo_entrega == "DELIVERY" else None
-        sucursal_id = int(delivery["sucursal_id"]) if delivery else request.sucursal_id
-
-        qr_tx_id = f"QR-BO-{uuid4().hex[:10].upper()}"
-
-        orden = repo.crear_orden_desde_carrito(
-            cliente_id=cliente_id,
-            usuario_id=int(usuario_actual["id"]),
-            sucursal_id=sucursal_id,
-            delivery=delivery,
-            metodo="QR",
-            proveedor="QR_SIMPLE",
-            empresa_id=empresa_id,
-        )
-
-        monto_str = f"{Decimal(str(orden['monto_total'])):.2f}"
-        glosa = f"VENTA-{orden['venta_id']}-ORDEN-{orden['id']}"
-        vencimiento = (datetime.now() + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
-
-        # Payload QR Simple interoperable (formato estándar de interoperabilidad bancaria boliviana / BCP / BNB)
-        qr_payload = (
-            f"000201010212"
-            f"43320016bo.bancobcp.qr0110StyleAR-SRL"
-            f"52044100530306854{len(monto_str):02d}{monto_str}"
-            f"5802BO5915StyleAR BOLIVIA6010SANTA CRUZ"
-            f"62{len(glosa)+4:02d}05{len(glosa):02d}{glosa}"
-            f"6304{uuid4().hex[:4].upper()}"
-        )
-
-        orden = repo.actualizar_orden_qr(
-            int(orden["id"]),
-            qr_payload=qr_payload,
-            session_id=qr_tx_id,
-            empresa_id=empresa_id,
-        )
-
-        return CheckoutQrResponse(
-            orden_id=int(orden["id"]),
-            venta_id=int(orden["venta_id"]),
-            monto_total=orden["monto_total"],
-            moneda="BOB",
-            estado=str(orden["estado"]),
-            qr_payload=qr_payload,
-            alias="StyleAR Bolivia S.R.L.",
-            banco="Banco de Crédito BCP",
-            cuenta="10000000452319",
-            titular="StyleAR S.R.L.",
-            glosa=glosa,
-            vencimiento=vencimiento,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    from .pagos_empresa_service import crear_checkout
+    return CheckoutQrResponse(**crear_checkout(usuario_actual,request,'QR_BCP'))
 
 
 def confirmar_pago_qr_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    orden = repo.obtener_orden_pago(orden_id, empresa_id)
-    if orden is None:
-        raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
-    _validar_acceso_orden(usuario_actual, orden)
-    try:
-        return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"]), empresa_id))
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+    from .pagos_empresa_service import confirmar_simulacion
+    return _orden_response(confirmar_simulacion(usuario_actual,orden_id,True,'QR_BCP'))
 
 
 def obtener_orden_service(usuario_actual: dict[str, object], orden_id: int) -> OrdenPagoResponse:
@@ -227,80 +146,54 @@ def obtener_pago_service(
 
 
 async def webhook_stripe_service(request: Request) -> dict[str, str]:
-    payload = await request.body()
-    signature = request.headers.get("stripe-signature", "")
-    endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    # Compatibilidad de reservas previas en Stripe test. Las compras CU16 requieren
+    # el webhook específico del comercio; una firma global nunca las confirma.
+    import stripe
+    secret = os.getenv('STRIPE_WEBHOOK_SECRET','')
+    if not secret:
+        raise HTTPException(503,'Configure el webhook Stripe de la empresa para las compras nuevas.')
     try:
-        import stripe
-    except ModuleNotFoundError as error:
-        raise HTTPException(status_code=503, detail="La dependencia stripe no esta instalada.") from error
-
-    if not endpoint_secret:
-        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET no esta configurado.")
-    try:
-        event = stripe.Webhook.construct_event(payload, signature, endpoint_secret)
-    except Exception as error:
-        raise HTTPException(status_code=400, detail="Webhook de Stripe invalido.") from error
-
-    tipo = event.get("type")
-    data = event.get("data", {}).get("object", {})
-    if tipo == "checkout.session.completed":
-        session_id = data.get("id")
-        if session_id:
-            orden = repo.obtener_orden_por_session(session_id)
-            if orden and data.get("payment_status") == "paid":
-                repo.marcar_orden_pagada(int(orden["id"]), empresa_id=int(orden["empresa_id"]))
-    elif tipo == "checkout.session.expired":
-        session_id = data.get("id")
-        if session_id and (orden := repo.obtener_orden_por_session(session_id)):
-            repo.marcar_orden_no_pagada(int(orden["id"]), "EXPIRADO", "CANCELADA", int(orden["empresa_id"]))
-    elif tipo == "payment_intent.payment_failed":
-        payment_intent = data.get("id")
-        if payment_intent:
-            # Stripe normalmente relaciona el fallo con la sesion; se deja como evento aceptado.
-            pass
-    elif tipo in {"refund.created", "refund.updated", "refund.failed"}:
-        refund_id = data.get("id")
-        refund_estado = data.get("status") or ("failed" if tipo == "refund.failed" else "pending")
-        metadata = data.get("metadata") or {}
-        devolucion_id = metadata.get("devolucion_id")
-        empresa_id = metadata.get("empresa_id")
-        fallo = data.get("failure_reason")
-        if refund_id and devolucion_id and empresa_id:
-            from app.modules.ventas_inventario.services.devolucion_service import (
-                procesar_evento_refund_stripe,
-            )
+        event = stripe.Webhook.construct_event(await request.body(),request.headers.get('stripe-signature',''),secret)
+    except Exception:
+        raise HTTPException(400,'Firma Stripe inválida.')
+    if event.get('livemode') is not False:
+        raise HTTPException(403,'Sólo se admite Stripe de prueba.')
+    if event.get('type') in ('refund.created','refund.updated','refund.failed'):
+        obj=event.get('data',{}).get('object',{})
+        meta=obj.get('metadata') or {}
+        if 'devolucion_id' in meta and 'empresa_id' in meta:
+            from app.modules.autenticacion.repositories.perfil_repository import _transaccion
+            with _transaccion() as cur:
+                cur.execute('SELECT politica_snapshot FROM devolucion WHERE id=%s AND empresa_id=%s',(meta['devolucion_id'],meta['empresa_id']))
+                nueva=cur.fetchone()
+                if nueva and nueva['politica_snapshot'] is not None:raise HTTPException(409,'Use el webhook Stripe específico de la empresa.')
+            from .devolucion_service import procesar_evento_refund_stripe
             try:
-                procesar_evento_refund_stripe(
-                    str(refund_id), str(refund_estado), str(fallo) if fallo else None,
-                    int(devolucion_id), int(empresa_id),
-                )
-            except (TypeError, ValueError) as error:
-                raise HTTPException(status_code=400, detail="Metadatos de reembolso invalidos.") from error
-        elif refund_id:
-            from app.modules.ventas_inventario.repositories import devolucion_repository
-
-            devolucion_repository.actualizar_resultado_stripe_por_refund(
-                str(refund_id), str(refund_estado), str(fallo) if fallo else None
-            )
-    return {"status": "ok"}
+                procesar_evento_refund_stripe(str(obj['id']),str(obj.get('status') or 'pending'),
+                    str(obj.get('failure_reason') or ''),int(meta['devolucion_id']),int(meta['empresa_id']))
+            except (ValueError,KeyError,TypeError):
+                raise HTTPException(409,'Metadatos de devolución inválidos.')
+        return {'status':'recibido'}
+    if event.get('type') not in ('checkout.session.completed','checkout.session.expired'):
+        return {'status':'ignorado'}
+    obj=event.get('data',{}).get('object',{})
+    orden=repo.obtener_orden_por_session(obj.get('id',''))
+    if not orden or orden.get('modo_pago')!='LEGADO' or orden.get('concepto') not in ('RESERVA_ANTICIPO','RESERVA_SALDO'):
+        raise HTTPException(409,'La compra requiere el webhook específico de su empresa.')
+    meta=obj.get('metadata') or {}
+    if (str(meta.get('empresa_id'))!=str(orden['empresa_id']) or str(meta.get('orden_id'))!=str(orden['id'])
+        or obj.get('amount_total')!=int(Decimal(orden['monto_total'])*100) or str(obj.get('currency','')).upper()!=orden['moneda']):
+        raise HTTPException(409,'La confirmación no corresponde a la reserva, empresa, moneda o importe.')
+    if event.get('type')=='checkout.session.completed' and obj.get('payment_status')=='paid':
+        repo.marcar_orden_pagada(orden['id'],empresa_id=orden['empresa_id'])
+    elif event.get('type')=='checkout.session.expired':
+        repo.marcar_orden_no_pagada(orden['id'],'EXPIRADO','CANCELADA',orden['empresa_id'])
+    return {'status':'ok'}
 
 
 def confirmar_pago_prueba_service(usuario_actual: dict[str, object], orden_id: int, aprobar: bool) -> OrdenPagoResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
-    if not (secret_key.startswith("sk_test_") or secret_key == "MODO_PRUEBA"):
-        raise HTTPException(status_code=403, detail="La confirmacion de prueba solo esta disponible en modo de prueba.")
-    orden = repo.obtener_orden_pago(orden_id, empresa_id)
-    if orden is None:
-        raise HTTPException(status_code=404, detail="Orden de pago no encontrada.")
-    _validar_acceso_orden(usuario_actual, orden)
-    try:
-        if aprobar:
-            return _orden_response(repo.marcar_orden_pagada(orden_id, int(usuario_actual["id"]), empresa_id))
-        return _orden_response(repo.marcar_orden_no_pagada(orden_id, "RECHAZADO", "RECHAZADA", empresa_id))
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+    from .pagos_empresa_service import confirmar_simulacion
+    return _orden_response(confirmar_simulacion(usuario_actual,orden_id,aprobar,'STRIPE'))
 
 
 def _crear_session_stripe(orden: dict) -> dict:
@@ -472,7 +365,12 @@ def _checkout_response(orden: dict) -> CheckoutStripeResponse:
 
 
 def _orden_response(orden: dict) -> OrdenPagoResponse:
+    from .pagos_empresa_service import habilitado_pruebas, simulacion_reserva_legada
     return OrdenPagoResponse(
+        modo_pago=orden.get('modo_pago','LEGADO'),
+        confirmacion_prueba=habilitado_pruebas() and ((orden.get('modo_pago')=='PRUEBA' and str(orden.get('proveedor_session_id','')).startswith(('cs_simulada_','qr_prueba_'))) or simulacion_reserva_legada(orden)),
+        pago_recibido=orden.get('pago_recibido',False),
+        motivo_incidencia=orden.get('motivo_incidencia'),
         orden_id=int(orden["id"]),
         venta_id=int(orden["venta_id"]),
         cliente_id=int(orden["cliente_id"]) if orden.get("cliente_id") is not None else None,
@@ -516,6 +414,9 @@ def _historial_detalle_response(pago: dict) -> PagoHistorialDetalleResponse:
         checkout_url=_limpiar_texto(pago.get("checkout_url")),
         productos=[
             PagoProductoDetalleResponse(
+                tipo_compra=producto.get('tipo_compra','UNIDAD'),
+                paquete_origen_id=producto.get('paquete_origen_id'),
+                descuento_mayorista=producto.get('descuento_mayorista'),
                 producto=str(producto["producto"]),
                 categoria=_limpiar_texto(producto.get("categoria")),
                 talla=_limpiar_texto(producto.get("talla")),

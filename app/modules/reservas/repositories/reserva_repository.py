@@ -1312,6 +1312,8 @@ def _validar_fecha_cita(fecha_cita: date) -> None:
 
 
 def _validar_items_reserva(items: list[dict[str, object]], sucursal_id: int) -> None:
+    if any(item.get('paquete_id') for item in items):
+        raise ValueError('Los paquetes mayoristas son para compra directa; no admiten reserva gratuita.')
     cantidades_por_variante: dict[int, int] = {}
     for item in items:
         variante_id = int(item["producto_variante_id"])

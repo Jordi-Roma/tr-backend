@@ -144,12 +144,12 @@ def test_visor_preserva_camaras_y_propaga_codigo_a_sus_peticiones():
     assert vestidor.get_vestidor_config(10)["engine"] == "DECART_LUCY_VTON"
 
 
-def test_reembolso_ya_completado_filtra_empresa_y_conserva_404(monkeypatch):
-    monkeypatch.setattr(devolucion_service, "_obtener_y_validar_accion", Mock())
-    monkeypatch.setattr(devolucion_service.repo, "preparar_reembolso_stripe", Mock(return_value={"estado": "REEMBOLSADA"}))
-    consultar = Mock(return_value=None)
-    monkeypatch.setattr(devolucion_service.repo, "obtener_devolucion", consultar)
+def test_reembolso_delega_actor_y_conserva_404(monkeypatch):
+    from app.modules.ventas_inventario.services import posventa_service
+    actor = {"id": 7, "empresa_id": 10}
+    consultar = Mock(side_effect=HTTPException(404, "Devolución no encontrada."))
+    monkeypatch.setattr(posventa_service, "reembolsar", consultar)
     with pytest.raises(HTTPException) as error:
-        devolucion_service.procesar_reembolso_service({"id": 7, "empresa_id": 10}, 91)
+        devolucion_service.procesar_reembolso_service(actor, 91)
     assert error.value.status_code == 404
-    consultar.assert_called_once_with(91, 10)
+    consultar.assert_called_once_with(actor, 91)

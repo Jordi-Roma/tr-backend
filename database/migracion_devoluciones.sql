@@ -98,7 +98,8 @@ WITH asignaciones(rol_nombre, accion) AS (
         ('ADMINISTRADOR', 'devoluciones:recibir'), ('ADMINISTRADOR', 'devoluciones:reembolsar'),
         ('ENCARGADO_SUCURSAL', 'devoluciones:ver_sucursal'), ('ENCARGADO_SUCURSAL', 'devoluciones:revisar'),
         ('ENCARGADO_SUCURSAL', 'devoluciones:recibir'), ('ENCARGADO_SUCURSAL', 'devoluciones:reembolsar'),
-        ('CAJERO', 'devoluciones:ver_sucursal'), ('CAJERO', 'devoluciones:recibir')
+        ('CAJERO', 'devoluciones:ver_sucursal'), ('CAJERO', 'devoluciones:recibir'),
+        ('CAJERO', 'devoluciones:revisar'), ('CAJERO', 'devoluciones:reembolsar')
 )
 INSERT INTO rol_permiso (rol_id, permiso_id, activo)
 SELECT r.id, p.id, TRUE
@@ -106,11 +107,5 @@ FROM asignaciones a
 JOIN rol r ON r.nombre = a.rol_nombre
 JOIN permiso p ON p.modulo = 'VENTAS_INVENTARIO' AND p.accion = a.accion
 ON CONFLICT (rol_id, permiso_id) DO UPDATE SET activo = TRUE;
-
-DELETE FROM rol_permiso rp
-USING rol r, permiso p
-WHERE rp.rol_id = r.id AND rp.permiso_id = p.id
-  AND r.nombre = 'CAJERO' AND p.modulo = 'VENTAS_INVENTARIO'
-  AND p.accion = 'devoluciones:reembolsar';
 
 COMMIT;

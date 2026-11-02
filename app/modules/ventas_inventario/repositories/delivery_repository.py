@@ -151,59 +151,7 @@ def crear_delivery_para_venta(
 
 
 def crear_delivery_independiente(data: dict, empresa_id: int) -> dict:
-    connection = get_connection()
-    try:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT cliente_id, sucursal_id
-                FROM venta
-                WHERE id = %s
-                  AND empresa_id = %s
-                  AND activo = TRUE
-                LIMIT 1;
-                """,
-                (data["venta_id"], empresa_id),
-            )
-            venta = cursor.fetchone()
-            if venta is None:
-                raise ValueError("Venta no encontrada.")
-            if venta["cliente_id"] is None or int(venta["cliente_id"]) != int(data["cliente_id"]):
-                raise ValueError("La venta no pertenece al cliente.")
-            if data.get("sucursal_id") is not None and int(data["sucursal_id"]) != int(venta["sucursal_id"]):
-                raise ValueError("La sucursal no corresponde a la venta.")
-
-            delivery = crear_delivery_para_venta(
-                cursor,
-                empresa_id=empresa_id,
-                venta_id=int(data["venta_id"]),
-                cliente_id=int(venta["cliente_id"]) if venta["cliente_id"] is not None else data["cliente_id"],
-                sucursal_id=int(data.get("sucursal_id") or venta["sucursal_id"]),
-                direccion_entrega=str(data["direccion_entrega"]),
-                referencia=data.get("referencia"),
-                latitud_entrega=data["latitud_entrega"],
-                longitud_entrega=data["longitud_entrega"],
-                distancia_km=data["distancia_km"],
-                tiempo_estimado_min=int(data["tiempo_estimado_min"]),
-                costo_delivery=data["costo_delivery"],
-            )
-            cursor.execute(
-                """
-                UPDATE venta
-                SET tipo_entrega = 'DELIVERY',
-                    costo_delivery = %s,
-                    total = subtotal - descuento + %s
-                WHERE id = %s AND empresa_id = %s;
-                """,
-                (data["costo_delivery"], data["costo_delivery"], data["venta_id"], empresa_id),
-            )
-        connection.commit()
-        return delivery
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    raise ValueError('El envío debe cotizarse y pagarse junto con la compra; no se agregan cargos después del pago.')
 
 
 def listar_deliveries(
@@ -254,21 +202,26 @@ def listar_deliveries(
                 f"""
                 SELECT
                     d.*,
+                    EXISTS(SELECT 1 FROM orden_pago op WHERE op.venta_id=v.id AND op.empresa_id=d.empresa_id
+                        AND op.estado='PAGADO' AND op.monto_total=v.total AND op.moneda='BOB'
+                        AND v.estado='COMPLETADA' AND v.tipo_entrega='DELIVERY' AND v.metodo_pago IN ('QR','TARJETA')) AS pago_confirmado,
+                    q.ruta,
                     v.codigo AS venta_codigo,
                     v.total AS total_venta,
                     s.nombre AS sucursal_nombre,
                     s.direccion AS sucursal_direccion,
-                    s.latitud AS sucursal_latitud,
-                    s.longitud AS sucursal_longitud,
+                    COALESCE(q.origen_latitud,s.latitud) AS sucursal_latitud,
+                    COALESCE(q.origen_longitud,s.longitud) AS sucursal_longitud,
                     cii.nombre AS sucursal_ciudad,
                     u.correo AS cliente_correo,
                     TRIM(CONCAT(COALESCE(u.nombre, ''), ' ', COALESCE(u.apellido, ''))) AS cliente_nombre
                 FROM delivery d
-                JOIN venta v ON v.id = d.venta_id
-                LEFT JOIN sucursal s ON s.id = d.sucursal_id
+                JOIN venta v ON v.id = d.venta_id AND v.empresa_id=d.empresa_id
+                LEFT JOIN delivery_cotizacion q ON q.id=d.cotizacion_id AND q.empresa_id=d.empresa_id
+                LEFT JOIN sucursal s ON s.id = d.sucursal_id AND s.empresa_id=d.empresa_id
                 LEFT JOIN ciudad cii ON cii.id = s.ciudad_id
-                LEFT JOIN cliente c ON c.id = d.cliente_id
-                LEFT JOIN usuario u ON u.id = c.usuario_id
+                LEFT JOIN cliente c ON c.id = d.cliente_id AND c.empresa_id=d.empresa_id
+                LEFT JOIN usuario u ON u.id = c.usuario_id AND u.empresa_id=d.empresa_id
                 WHERE {' AND '.join(where)}
                 ORDER BY d.fecha_creacion DESC, d.id DESC;
                 """,
@@ -287,21 +240,26 @@ def obtener_delivery(delivery_id: int, empresa_id: int) -> dict | None:
                 """
                 SELECT
                     d.*,
+                    EXISTS(SELECT 1 FROM orden_pago op WHERE op.venta_id=v.id AND op.empresa_id=d.empresa_id
+                        AND op.estado='PAGADO' AND op.monto_total=v.total AND op.moneda='BOB'
+                        AND v.estado='COMPLETADA' AND v.tipo_entrega='DELIVERY' AND v.metodo_pago IN ('QR','TARJETA')) AS pago_confirmado,
+                    q.ruta,
                     v.codigo AS venta_codigo,
                     v.total AS total_venta,
                     s.nombre AS sucursal_nombre,
                     s.direccion AS sucursal_direccion,
-                    s.latitud AS sucursal_latitud,
-                    s.longitud AS sucursal_longitud,
+                    COALESCE(q.origen_latitud,s.latitud) AS sucursal_latitud,
+                    COALESCE(q.origen_longitud,s.longitud) AS sucursal_longitud,
                     cii.nombre AS sucursal_ciudad,
                     u.correo AS cliente_correo,
                     TRIM(CONCAT(COALESCE(u.nombre, ''), ' ', COALESCE(u.apellido, ''))) AS cliente_nombre
                 FROM delivery d
-                JOIN venta v ON v.id = d.venta_id
-                LEFT JOIN sucursal s ON s.id = d.sucursal_id
+                JOIN venta v ON v.id = d.venta_id AND v.empresa_id=d.empresa_id
+                LEFT JOIN delivery_cotizacion q ON q.id=d.cotizacion_id AND q.empresa_id=d.empresa_id
+                LEFT JOIN sucursal s ON s.id = d.sucursal_id AND s.empresa_id=d.empresa_id
                 LEFT JOIN ciudad cii ON cii.id = s.ciudad_id
-                LEFT JOIN cliente c ON c.id = d.cliente_id
-                LEFT JOIN usuario u ON u.id = c.usuario_id
+                LEFT JOIN cliente c ON c.id = d.cliente_id AND c.empresa_id=d.empresa_id
+                LEFT JOIN usuario u ON u.id = c.usuario_id AND u.empresa_id=d.empresa_id
                 WHERE d.id = %s
                   AND d.empresa_id = %s
                   AND v.empresa_id = d.empresa_id
@@ -311,39 +269,14 @@ def obtener_delivery(delivery_id: int, empresa_id: int) -> dict | None:
                 (delivery_id, empresa_id),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:return None
+            detalle=dict(row)
+            cursor.execute('SELECT tipo,estado_anterior,estado_nuevo,observacion,version,fecha FROM delivery_seguimiento WHERE delivery_id=%s AND empresa_id=%s ORDER BY version',(delivery_id,empresa_id))
+            detalle['historial']=[dict(h) for h in cursor.fetchall()]
+            return detalle
     finally:
         connection.close()
 
 
 def actualizar_estado(delivery_id: int, estado: str, observacion: str | None, empresa_id: int) -> dict:
-    connection = get_connection()
-    try:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                UPDATE delivery
-                SET estado = %s,
-                    observacion = COALESCE(%s, observacion),
-                    fecha_entrega = CASE WHEN %s = 'ENTREGADO' THEN CURRENT_TIMESTAMP ELSE fecha_entrega END,
-                    fecha_actualizacion = CURRENT_TIMESTAMP
-                WHERE id = %s
-                  AND empresa_id = %s
-                  AND activo = TRUE
-                RETURNING id;
-                """,
-                (estado, observacion, estado, delivery_id, empresa_id),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                raise ValueError("Delivery no encontrado.")
-        connection.commit()
-        delivery = obtener_delivery(delivery_id, empresa_id)
-        if delivery is None:
-            raise ValueError("Delivery no encontrado.")
-        return delivery
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    raise ValueError('Use el seguimiento CU18 con actor, versión y validación del pago.')

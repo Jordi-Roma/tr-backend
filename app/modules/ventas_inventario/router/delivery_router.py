@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Query
 from app.core.contexto_empresa import exigir_empresa_id
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.ventas_inventario.schemas.delivery.delivery_request import (
+    DeliveryIncidenciaRequest,
     DeliveryCotizarRequest,
     DeliveryEstadoRequest,
     DeliveryGeocodificarResponse,
@@ -33,7 +34,7 @@ def cotizar_delivery(
     request: DeliveryCotizarRequest,
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> DeliveryCotizacionResponse:
-    return cotizar_delivery_service(request, exigir_empresa_id(usuario_actual))
+    return cotizar_delivery_service(request, usuario_actual)
 
 
 @router.get("/geocodificar", response_model=DeliveryGeocodificarResponse)
@@ -92,3 +93,10 @@ def actualizar_estado_delivery(
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
 ) -> DeliveryEstadoResponse:
     return actualizar_estado_delivery_service(usuario_actual, delivery_id, request)
+
+
+@router.post('/{delivery_id}/incidencias', response_model=DeliveryEstadoResponse)
+def incidencia(delivery_id: int, request: DeliveryIncidenciaRequest, usuario_actual:dict=Depends(obtener_usuario_actual)):
+    from app.modules.ventas_inventario.services.delivery_cu18_service import cambiar
+    cambiar(usuario_actual,delivery_id,request,incidencia=True)
+    return DeliveryEstadoResponse(mensaje='Incidencia registrada.',delivery=obtener_delivery_service(usuario_actual,delivery_id))

@@ -97,11 +97,20 @@ app.include_router(coleccion_router)
 app.include_router(producto_router)
 app.include_router(promocion_router)
 app.include_router(variante_router)
+from app.modules.reservas.router.mayorista_router import router as mayorista_router
+app.include_router(mayorista_router)
 app.include_router(carrito_router)
 app.include_router(reserva_router)
 app.include_router(nota_venta_router)
 app.include_router(ventas_inventario_router)
+from app.modules.ventas_inventario.router.pagos_empresa_router import router as pagos_empresa_router, notificaciones as notificaciones_router
+app.include_router(pagos_empresa_router)
+app.include_router(notificaciones_router)
 app.include_router(pago_router)
+from app.modules.ventas_inventario.router.posventa_router import router as posventa_router
+app.include_router(posventa_router)
+from app.modules.ventas_inventario.router.cambio_router import router as cambio_router
+app.include_router(cambio_router)
 app.include_router(devolucion_router)
 app.include_router(delivery_router)
 app.include_router(bitacora_router)
@@ -136,7 +145,22 @@ def verificar_migracion_multitenant():
         cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_24_cu07_cu08_01",))
         if cur.fetchone() is None:
             raise RuntimeError("Falta la migración CU07/CU08; ejecute init_db.py antes de iniciar la API.")
-        print("[Startup] Esquema CU07/CU08 verificado.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_30_cu16_bloque1",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU16 bloque 1; ejecute init_db.py.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_30_cu17_mayorista",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración mayorista; ejecute init_db.py.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_31_cu18_delivery",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU18; ejecute init_db.py.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_31_posventa_politicas",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración de posventa; ejecute init_db.py.")
+        cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_31_cu19_cambios",))
+        if cur.fetchone() is None:
+            raise RuntimeError("Falta la migración CU19; ejecute init_db.py.")
+        print("[Startup] Esquema comercial verificado.")
         cur.execute("SELECT 1 FROM schema_migrations WHERE version=%s", ("2026_10_25_cu10_01",))
         if cur.fetchone() is None:
             raise RuntimeError("Falta la migración CU10; ejecute init_db.py antes de iniciar la API.")

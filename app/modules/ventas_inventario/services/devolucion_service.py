@@ -26,7 +26,10 @@ def listar_ventas_elegibles_service(usuario: dict[str, object]) -> list[VentaDev
     cliente_id = _cliente_id_opcional(usuario)
     if cliente_id is None:
         return []
-    return [VentaDevolucionElegibleResponse(**item) for item in repo.listar_ventas_elegibles(cliente_id, DIAS_PLAZO_DEVOLUCION, empresa_id)]
+    from .posventa_service import politica
+    pol=politica(empresa_id)
+    if not pol['devoluciones_habilitadas']:return []
+    return [VentaDevolucionElegibleResponse(**item) for item in repo.listar_ventas_elegibles(cliente_id, pol['plazo_devoluciones'], empresa_id)]
 
 
 def solicitar_devolucion_service(
@@ -44,6 +47,7 @@ def solicitar_devolucion_service(
             [item.model_dump() for item in request.items],
             DIAS_PLAZO_DEVOLUCION,
             empresa_id,
+            str(request.clave_operacion),
         )
         return DevolucionResponse(**result)
     except ValueError as error:
@@ -125,62 +129,8 @@ def registrar_recepcion_service(
 
 
 def procesar_reembolso_service(usuario: dict[str, object], devolucion_id: int) -> DevolucionResponse:
-    _obtener_y_validar_accion(usuario, devolucion_id, "devoluciones:reembolsar")
-    try:
-        devolucion = repo.preparar_reembolso_stripe(devolucion_id, int(usuario["id"]), exigir_empresa_id(usuario))
-    except LookupError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if devolucion is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Esta devolución requiere un reembolso manual; registra el método y la referencia del comprobante.",
-        )
-    if devolucion["estado"] == "REEMBOLSADA":
-        result = repo.obtener_devolucion(devolucion_id, exigir_empresa_id(usuario))
-        if result is None:
-            raise HTTPException(status_code=404, detail="Devolución no encontrada.")
-        return DevolucionResponse(**result)
-
-    secret_key = os.getenv("STRIPE_SECRET_KEY", "")
-    if not secret_key:
-        repo.marcar_error_reembolso(devolucion_id, "STRIPE_SECRET_KEY no está configurada.", exigir_empresa_id(usuario))
-        raise HTTPException(status_code=503, detail="Stripe no está configurado para procesar este reembolso.")
-    if not (secret_key.startswith("sk_test_") or secret_key == "MODO_PRUEBA"):
-        raise HTTPException(status_code=403, detail="Solo se permite Stripe en modo de prueba.")
-    try:
-        if secret_key.startswith("sk_test_placeholder") or secret_key == "MODO_PRUEBA":
-            refund_id = f"re_simulada_{devolucion_id}"
-            estado_stripe = "succeeded"
-        else:
-            import stripe
-
-            stripe.api_key = secret_key
-            amount = int((Decimal(devolucion["monto_aprobado"]) * 100).quantize(Decimal("1")))
-            if amount <= 0:
-                raise ValueError("El importe del reembolso debe ser mayor a cero.")
-            refund = stripe.Refund.create(
-                payment_intent=str(devolucion["proveedor_payment_intent_id"]),
-                amount=amount,
-                idempotency_key=str(devolucion["clave_idempotencia"]),
-                metadata={"devolucion_id": str(devolucion_id), "venta_id": str(devolucion["venta_id"]), "empresa_id": str(devolucion["empresa_id"])},
-            )
-            refund_id = str(refund.id)
-            estado_stripe = str(refund.status or "pending")
-        result = repo.actualizar_resultado_stripe(
-            devolucion_id, refund_id, estado_stripe, usuario_id=int(usuario["id"]), empresa_id=exigir_empresa_id(usuario)
-        )
-        if result is None:
-            result = repo.obtener_devolucion(devolucion_id, exigir_empresa_id(usuario))
-            if result is None or result["estado"] != "REEMBOLSADA":
-                raise HTTPException(status_code=409, detail="No se pudo conciliar el resultado confirmado por Stripe.")
-        return DevolucionResponse(**result)
-    except HTTPException:
-        raise
-    except Exception as error:
-        repo.marcar_error_reembolso(devolucion_id, str(error), exigir_empresa_id(usuario))
-        raise HTTPException(status_code=502, detail="Stripe no pudo confirmar el reembolso. Se puede reintentar de forma segura.") from error
+    from .posventa_service import reembolsar
+    return DevolucionResponse(**reembolsar(usuario,devolucion_id))
 
 
 def registrar_reembolso_manual_service(
@@ -245,6 +195,7 @@ def _obtener_y_validar_accion(usuario: dict[str, object], devolucion_id: int, ac
     item = repo.obtener_devolucion(devolucion_id, exigir_empresa_id(usuario))
     if item is None:
         raise HTTPException(status_code=404, detail="Devolución no encontrada.")
+    if item.get("tipo_operacion") == "CAMBIO":raise HTTPException(409,"Gestiona esta solicitud desde Cambios de prendas.")
     _validar_acceso_sucursal(usuario, int(item["sucursal_id"]), accion)
     return item
 
@@ -281,7 +232,7 @@ def _validar_estado(estado: str | None) -> str | None:
         return None
     validos = {
         "SOLICITADA", "EN_REVISION", "APROBADA", "RECHAZADA", "REEMBOLSO_PENDIENTE",
-        "ERROR_REEMBOLSO", "REEMBOLSADA", "CANCELADA",
+        "ERROR_REEMBOLSO", "REEMBOLSADA", "CANCELADA", "ESPERA_ACEPTACION",
     }
     normalizado = estado.strip().upper()
     if normalizado not in validos:

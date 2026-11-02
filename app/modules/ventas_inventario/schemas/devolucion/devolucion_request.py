@@ -1,3 +1,4 @@
+from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -7,6 +8,7 @@ class DevolucionItemRequest(BaseModel):
 
 
 class CrearDevolucionRequest(BaseModel):
+    clave_operacion: UUID
     motivo: str = Field(min_length=5, max_length=500)
     observacion: str | None = Field(default=None, max_length=1000)
     items: list[DevolucionItemRequest] = Field(min_length=1, max_length=50)
@@ -34,6 +36,7 @@ class RevisarDevolucionRequest(BaseModel):
 class DevolucionRecepcionItemRequest(BaseModel):
     detalle_id: int = Field(gt=0)
     cantidad_aceptada: int = Field(ge=0)
+    cantidad_no_vendible: int = Field(default=0, ge=0)
     observacion: str | None = Field(default=None, max_length=500)
 
 

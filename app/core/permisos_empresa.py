@@ -11,11 +11,15 @@ def es_operacion_nueva(metodo: str, ruta: str) -> bool:
         return False
     if ruta.startswith(("/api/v1/saas/", "/api/v1/perfil", "/api/v1/autenticacion/", "/api/v1/devoluciones")):
         return False
+    if ruta.startswith(("/api/v1/pagos-empresa", "/api/v1/notificaciones", "/api/v1/posventa")):
+        return False
     if ruta == "/api/v1/catalogo/vestidor/pausar-realtime":
         return False
     if re.fullmatch(r"/api/v1/pagos/(qr/confirmar|stripe/confirmar-prueba)/\d+", ruta):
         return False
     if re.fullmatch(r'/api/v1/ventas-presenciales/\d+/nota/correo',ruta):
+        return False
+    if re.fullmatch(r"/api/v1/delivery/\d+/(estado|incidencias)", ruta):
         return False
     if re.fullmatch(r"/api/v1/reservas/\d+/(cancelar|estado|anticipo/stripe|finalizar|finalizar-venta)", ruta):
         return False

@@ -13,6 +13,11 @@ class DeliverySucursalResponse(BaseModel):
 
 
 class DeliveryCotizacionResponse(BaseModel):
+    cotizacion_id: str | None = None
+    vence_en: str | None = None
+    ruta: list[list[float]] = []
+    origen_latitud: Decimal | None = None
+    origen_longitud: Decimal | None = None
     sucursal_id: int
     distancia_km: Decimal
     tiempo_estimado_min: int
@@ -22,6 +27,9 @@ class DeliveryCotizacionResponse(BaseModel):
 
 
 class DeliveryItemResponse(BaseModel):
+    version: int = 1
+    pago_confirmado: bool = False
+    incidencia_abierta: bool = False
     id: int
     venta_id: int
     venta_codigo: str | None = None
@@ -42,6 +50,11 @@ class DeliveryItemResponse(BaseModel):
 
 
 class DeliveryDetalleResponse(DeliveryItemResponse):
+    ruta: list[list[float]] = []
+    historial: list[dict] = []
+    transiciones: list[str] = []
+    puede_gestionar: bool = False
+    cotizacion_id: str | None = None
     sucursal_direccion: str | None = None
     sucursal_latitud: Decimal | None = None
     sucursal_longitud: Decimal | None = None

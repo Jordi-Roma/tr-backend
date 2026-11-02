@@ -84,6 +84,12 @@ def crear_orden_desde_carrito(
     proveedor: str = "STRIPE",
     checkout_url: str | None = None,
     empresa_id: int = 0,
+    clave_operacion: str | None = None,
+    solicitud_huella: str | None = None,
+    configuracion_version: int | None = None,
+    titular_pago: str | None = None,
+    total_esperado: Decimal | None = None,
+    version_actor: int | None = None,
 ) -> dict:
     if empresa_id <= 0:
         raise ValueError("La empresa es obligatoria para crear una orden.")
@@ -91,6 +97,11 @@ def crear_orden_desde_carrito(
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             exigir_operaciones_empresa(empresa_id, cursor=cursor)
+            if version_actor is not None:
+                cursor.execute('SELECT activo,version_acceso FROM usuario WHERE id=%s AND empresa_id=%s FOR SHARE',(usuario_id,empresa_id))
+                actual=cursor.fetchone()
+                if not actual or not actual['activo'] or actual['version_acceso']!=version_actor:
+                    raise ValueError('La cuenta cambió. Inicie sesión nuevamente antes de comprar.')
             cursor.execute(
                 "SELECT 1 FROM cliente WHERE id = %s AND empresa_id = %s AND activo = TRUE",
                 (cliente_id, empresa_id),
@@ -103,10 +114,22 @@ def crear_orden_desde_carrito(
             )
             if cursor.fetchone() is None:
                 raise ValueError("Sucursal no encontrada en la empresa.")
+            if clave_operacion:
+                cursor.execute("SELECT * FROM orden_pago WHERE empresa_id=%s AND cliente_id=%s AND clave_operacion=%s", (empresa_id,cliente_id,clave_operacion))
+                previa = cursor.fetchone()
+                if previa:
+                    if previa['solicitud_huella'] != solicitud_huella:
+                        raise ValueError('Esta clave ya se utilizó para otra solicitud de pago.')
+                    return dict(previa)
             carrito_id = _obtener_carrito_activo(cursor, cliente_id, empresa_id)
             if carrito_id is None:
                 raise ValueError("El carrito esta vacio.")
 
+            if clave_operacion:
+                cursor.execute("SELECT id FROM orden_pago WHERE empresa_id=%s AND carrito_origen_id=%s AND modo_pago='PRUEBA' AND estado='PENDIENTE'", (empresa_id,carrito_id))
+                pendiente = cursor.fetchone()
+                if pendiente:
+                    raise ValueError(f"Ya existe un pago pendiente para este carrito: orden {pendiente['id']}. Consulte o cancele ese intento.")
             items = _obtener_items_carrito(cursor, carrito_id, sucursal_id, empresa_id)
             if not items:
                 raise ValueError("El carrito esta vacio.")
@@ -126,6 +149,8 @@ def crear_orden_desde_carrito(
             subtotal_total = sum((Decimal(item["subtotal"]) for item in items), Decimal("0.00"))
             costo_delivery = Decimal(str(delivery.get("costo_delivery", 0))) if delivery else Decimal("0.00")
             total = subtotal_total + costo_delivery
+            if total_esperado is not None and total != total_esperado:
+                raise ValueError('El total cambió. Actualice y acepte el nuevo resumen antes de pagar.')
             sucursal_compra_id = next(iter(sucursales))
             venta_id = _crear_venta_pendiente(
                 cursor,
@@ -147,16 +172,16 @@ def crear_orden_desde_carrito(
                         cantidad,
                         precio_unitario,
                         descuento,
-                        subtotal
+                        subtotal, tipo_compra, paquete_origen_id, carrito_item_origen_id, descuento_mayorista
                     )
-                    VALUES (%s, %s, %s, %s, 0, %s);
+                    VALUES (%s, %s, %s, %s, 0, %s, %s, %s, %s, %s);
                     """,
                     (
                         venta_id,
                         item["producto_variante_id"],
                         item["cantidad"],
                         item["precio_unitario"],
-                        item["subtotal"],
+                        item["subtotal"], item.get('tipo_compra','UNIDAD'), item.get('paquete_id'), item['id'], item.get('descuento_mayorista'),
                     ),
                 )
 
@@ -180,23 +205,14 @@ def crear_orden_desde_carrito(
                 (empresa_id, venta_id, cliente_id, total, metodo, proveedor, checkout_url),
             )
             orden = dict(cursor.fetchone())
+            if clave_operacion:
+                cursor.execute("""UPDATE orden_pago SET modo_pago='PRUEBA',clave_operacion=%s,solicitud_huella=%s,
+                    carrito_origen_id=%s,configuracion_version=%s,titular_pago=%s WHERE id=%s RETURNING *""",
+                    (clave_operacion,solicitud_huella,carrito_id,configuracion_version,titular_pago,orden['id']))
+                orden = dict(cursor.fetchone())
             if delivery:
-                from app.modules.ventas_inventario.repositories.delivery_repository import crear_delivery_para_venta
-
-                crear_delivery_para_venta(
-                    cursor,
-                    venta_id=venta_id,
-                    cliente_id=cliente_id,
-                    sucursal_id=sucursal_compra_id,
-                    direccion_entrega=str(delivery["direccion_entrega"]),
-                    referencia=delivery.get("referencia"),
-                    latitud_entrega=delivery["latitud_entrega"],
-                    longitud_entrega=delivery["longitud_entrega"],
-                    distancia_km=delivery["distancia_km"],
-                    tiempo_estimado_min=int(delivery["tiempo_estimado_min"]),
-                    costo_delivery=costo_delivery,
-                    empresa_id=empresa_id,
-                )
+                from app.modules.ventas_inventario.services.delivery_cu18_service import vincular_cotizacion
+                vincular_cotizacion(cursor,usuario_id,empresa_id,orden,delivery)
             connection.commit()
             orden["items"] = items
             orden["costo_delivery"] = costo_delivery
@@ -434,6 +450,7 @@ def _listar_productos_pago_cursor(cursor, venta_id: int) -> list[dict]:
             ca.nombre AS categoria,
             t.nombre AS talla,
             co.nombre AS color,
+            vd.tipo_compra, vd.paquete_origen_id, vd.descuento_mayorista,
             vd.cantidad,
             vd.precio_unitario,
             vd.subtotal
@@ -635,44 +652,24 @@ def _obtener_carrito_activo(cursor, cliente_id: int, empresa_id: int) -> int | N
 
 
 def _obtener_items_carrito(cursor, carrito_id: int, sucursal_id: int | None, empresa_id: int) -> list[dict]:
-    cursor.execute(
-        """
-        SELECT
-            ci.id,
-            ci.producto_variante_id,
-            p.nombre AS producto,
-            ca.nombre AS categoria,
-            t.nombre AS talla,
-            co.nombre AS color,
-            %s AS sucursal_id,
-            ci.cantidad,
-            COALESCE(GREATEST(inv.stock_disponible - inv.stock_reservado, 0), 0)::INT AS stock_disponible
-        FROM carrito_item ci
-        JOIN producto_variante pv ON pv.id = ci.producto_variante_id AND pv.activo = TRUE
-        JOIN producto p ON p.id = pv.producto_id AND p.activo = TRUE
-        JOIN categoria ca ON ca.id = p.categoria_id
-        JOIN talla t ON t.id = pv.talla_id
-        JOIN color co ON co.id = pv.color_id
-        LEFT JOIN inventario_sucursal inv
-            ON inv.producto_variante_id = pv.id
-            AND inv.sucursal_id = %s
-            AND inv.activo = TRUE
-        WHERE ci.carrito_id = %s AND ci.activo = TRUE AND p.empresa_id = %s
-        ORDER BY ci.id ASC;
-        """,
-        (sucursal_id, sucursal_id, carrito_id, empresa_id),
-    )
-    items = []
-    for row in cursor.fetchall():
-        item = dict(row)
-        precio = _obtener_precio_final_variante_cursor(
-            cursor,
-            int(item["producto_variante_id"]),
-            sucursal_id,
-        )
-        item["precio_unitario"] = precio or Decimal("0.00")
-        item["subtotal"] = item["precio_unitario"] * int(item["cantidad"])
-        items.append(item)
+    from app.modules.reservas.repositories.carrito_repository import _armar_carrito_cursor, _obtener_stock_disponible_cursor
+    from collections import Counter
+    items = _armar_carrito_cursor(cursor,carrito_id)['items']
+    cantidades = Counter()
+    for item in items:
+        if not item['disponible_para_compra']:
+            raise ValueError(item.get('motivo_no_disponible') or 'Una prenda ya no está disponible.')
+        if item.get('paquete_id') and item['sucursal_id'] != sucursal_id:
+            raise ValueError('Los paquetes deben comprarse desde la sucursal donde fueron armados.')
+        item['sucursal_id'] = sucursal_id
+        if not item.get('paquete_id'):
+            item['precio_unitario'] = _obtener_precio_final_variante_cursor(cursor,item['producto_variante_id'],sucursal_id) or Decimal('0')
+            item['subtotal'] = item['precio_unitario']*item['cantidad']
+        cantidades[item['producto_variante_id']] += item['cantidad']
+    for item in items:
+        item['stock_disponible'] = _obtener_stock_disponible_cursor(cursor,item['producto_variante_id'],sucursal_id)
+        if item['stock_disponible'] < cantidades[item['producto_variante_id']]:
+            raise ValueError('El stock no alcanza para las unidades y paquetes combinados.')
     return items
 
 

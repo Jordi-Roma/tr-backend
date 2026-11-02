@@ -94,4 +94,5 @@ def obtener_usuario_actual(
         try: usuario["_ip"]=str(ipaddress.ip_address(request.client.host)) if request.client else None
         except ValueError: usuario["_ip"]=None
         usuario["_ua"]=request.headers.get("User-Agent","")[:255]
+    usuario["_sesion_id"] = sesion_id
     return usuario

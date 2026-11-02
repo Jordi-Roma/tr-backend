@@ -1,3 +1,6 @@
+import hashlib,json
+from psycopg2.extras import Json
+from app.modules.ventas_inventario.services.posventa_service import bloquear,politica,avisar
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
@@ -7,7 +10,7 @@ from app.database.connection import get_connection
 from app.modules.ventas_inventario.repositories.inventario_repository import _aplicar_movimiento
 
 CENTAVO = Decimal("0.01")
-ESTADOS_QUE_RESERVAN = ("SOLICITADA", "EN_REVISION", "APROBADA", "REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO", "REEMBOLSADA")
+ESTADOS_QUE_RESERVAN = ("SOLICITADA", "EN_REVISION", "APROBADA", "ESPERA_ACEPTACION", "REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO", "REEMBOLSADA")
 
 
 def cliente_id_por_usuario(usuario_id: int, empresa_id: int) -> int | None:
@@ -82,10 +85,24 @@ def crear_devolucion(
     items: list[dict],
     dias_plazo: int,
     empresa_id: int,
+    clave_operacion: str | None = None,
+    tipo_operacion: str = "DEVOLUCION",
 ) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            bloquear(cursor,empresa_id,usuario_id)
+            huella=hashlib.sha256(json.dumps({'venta':venta_id,'motivo':motivo.strip(),'observacion':observacion,'items':sorted(items,key=lambda i:i['venta_detalle_id'])},sort_keys=True).encode()).hexdigest()
+            if clave_operacion:
+                cursor.execute('SELECT id,solicitud_huella,tipo_operacion FROM devolucion WHERE empresa_id=%s AND cliente_id=%s AND solicitud_clave=%s',(empresa_id,cliente_id,clave_operacion))
+                previa=cursor.fetchone()
+                if previa:
+                    if previa['solicitud_huella']!=huella or previa['tipo_operacion']!=tipo_operacion:raise ValueError('La clave pertenece a otra solicitud.')
+                    return _obtener_devolucion_cursor(cursor,previa['id'],empresa_id)
+            pol=politica(empresa_id,cursor)
+            cambio = tipo_operacion == 'CAMBIO'
+            if not pol['cambios_habilitados' if cambio else 'devoluciones_habilitadas']:raise ValueError('La empresa todavía no habilitó esta política de posventa.')
+            dias_plazo=pol['plazo_cambios' if cambio else 'plazo_devoluciones']
             cursor.execute("SELECT * FROM venta WHERE id = %s AND empresa_id = %s FOR UPDATE;", (venta_id, empresa_id))
             venta = cursor.fetchone()
             if venta is None or int(venta["cliente_id"] or 0) != cliente_id or not venta["activo"]:
@@ -114,7 +131,7 @@ def crear_devolucion(
                 disponible = int(linea["cantidad"]) - reservada
                 if cantidad > disponible:
                     raise ValueError("La cantidad solicitada supera las unidades todavía disponibles para devolución.")
-                monto_solicitado += _calcular_parcial(Decimal(linea["subtotal"]), int(linea["cantidad"]), cantidad)
+                monto_solicitado += _calcular_parcial(_subtotal_pagado_cursor(cursor,detalle_id), int(linea["cantidad"]), cantidad)
 
             codigo = f"DEV-{uuid4().hex[:10].upper()}"
             clave_idempotencia = f"devolucion-{uuid4().hex}"
@@ -127,6 +144,11 @@ def crear_devolucion(
                 (empresa_id, codigo, venta_id, cliente_id, venta["sucursal_id"], usuario_id, motivo.strip(), observacion, monto_solicitado, clave_idempotencia),
             )
             devolucion_id = int(cursor.fetchone()["id"])
+            cursor.execute('UPDATE devolucion SET politica_snapshot=%s,solicitud_clave=%s,solicitud_huella=%s WHERE id=%s',(Json(pol),clave_operacion,huella,devolucion_id))
+            cursor.execute('UPDATE devolucion SET tipo_operacion=%s WHERE id=%s',(tipo_operacion,devolucion_id))
+            if cambio:
+                cursor.execute('INSERT INTO cambio_prenda(id,cantidad) VALUES(%s,%s)',(devolucion_id,int(items[0]['cantidad'])))
+            avisar(cursor,dict(id=devolucion_id,empresa_id=empresa_id,cliente_id=cliente_id),'solicitud','Solicitud de devolución recibida.')
             for item in items:
                 cursor.execute(
                     "INSERT INTO devolucion_detalle (devolucion_id, venta_detalle_id, cantidad_solicitada) VALUES (%s, %s, %s);",
@@ -168,10 +190,13 @@ def revisar_devolucion(devolucion_id: int, usuario_id: int, aprobar: bool, obser
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            bloquear(cursor,empresa_id,usuario_id,devolucion_id)
             cursor.execute("SELECT estado FROM devolucion WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id, empresa_id))
             row = cursor.fetchone()
             if row is None:
                 raise LookupError("Devolución no encontrada.")
+            if row['estado']==('APROBADA' if aprobar else 'RECHAZADA'):
+                return _obtener_devolucion_cursor(cursor,devolucion_id,empresa_id)
             if row["estado"] not in {"SOLICITADA", "EN_REVISION"}:
                 raise ValueError("La devolución ya fue revisada y no puede cambiarse desde esta acción.")
             estado = "APROBADA" if aprobar else "RECHAZADA"
@@ -195,10 +220,13 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], 
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            bloquear(cursor,empresa_id,usuario_id,devolucion_id)
             cursor.execute("SELECT * FROM devolucion WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;", (devolucion_id, empresa_id))
             devolucion = cursor.fetchone()
             if devolucion is None:
                 raise LookupError("Devolución no encontrada.")
+            if devolucion['fecha_recepcion'] is not None:
+                raise ValueError('La recepción ya está registrada. Actualiza para consultar el resultado; no se repone otra vez.')
             if devolucion["estado"] != "APROBADA":
                 raise ValueError("Solo se pueden recibir artículos de una devolución aprobada.")
             cursor.execute(
@@ -219,6 +247,9 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], 
                 detalle = detalles[detalle_id]
                 aceptada = int(item["cantidad_aceptada"])
                 solicitada = int(detalle["cantidad_solicitada"])
+                no_vendible=int(item.get('cantidad_no_vendible',0))
+                if no_vendible>aceptada:raise ValueError('Las unidades no vendibles no pueden superar las aceptadas.')
+                if no_vendible and len((item.get('observacion') or '').strip())<5:raise ValueError('Describe la condición de las prendas no vendibles.')
                 if aceptada > solicitada:
                     raise ValueError("La cantidad aceptada no puede superar la cantidad solicitada.")
                 cursor.execute(
@@ -226,7 +257,7 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], 
                               COALESCE(SUM(dd.monto_aprobado), 0) AS monto
                        FROM devolucion_detalle dd JOIN devolucion d ON d.id = dd.devolucion_id
                        WHERE dd.venta_detalle_id = %s AND d.id <> %s
-                         AND d.estado IN ('REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA');""",
+                         AND d.estado IN ('APROBADA','ESPERA_ACEPTACION','REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA','CAMBIO_COMPLETADO');""",
                     (detalle["venta_detalle_id"], devolucion_id),
                 )
                 previo = cursor.fetchone()
@@ -235,7 +266,7 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], 
                 cantidad_vendida = int(detalle["cantidad_vendida"])
                 if cantidad_previa + aceptada > cantidad_vendida:
                     raise ValueError("La cantidad aceptada supera las unidades que quedan por devolver.")
-                subtotal = Decimal(detalle["subtotal"])
+                subtotal = _subtotal_pagado_cursor(cursor,detalle["venta_detalle_id"])
                 cantidad_final = cantidad_previa + aceptada
                 if aceptada == 0:
                     monto_linea = Decimal("0.00")
@@ -250,29 +281,18 @@ def registrar_recepcion(devolucion_id: int, usuario_id: int, items: list[dict], 
                 cursor.execute(
                     """UPDATE devolucion_detalle
                        SET cantidad_aceptada = %s, cantidad_rechazada = %s,
-                           monto_aprobado = %s, observacion = %s, inventario_repuesto = %s
+                           monto_aprobado = %s, observacion = %s, inventario_repuesto = %s, cantidad_no_vendible=%s
                        WHERE id = %s;""",
-                    (aceptada, solicitada - aceptada, monto_linea, item.get("observacion"), aceptada > 0, detalle_id),
+                    (aceptada, solicitada - aceptada, monto_linea, item.get("observacion"), False, no_vendible, detalle_id),
                 )
-                if aceptada > 0:
-                    _aplicar_movimiento(
-                        cursor,
-                        usuario_id,
-                        int(devolucion["sucursal_id"]),
-                        int(detalle["producto_variante_id"]),
-                        "DEVOLUCION_VENTA",
-                        aceptada,
-                        f"Devolución {devolucion['codigo']}",
-                        "DEVOLUCION",
-                        devolucion_id,
-                    )
-            estado = "REEMBOLSO_PENDIENTE" if monto_aprobado > 0 else "RECHAZADA"
+            estado = "ESPERA_ACEPTACION" if monto_aprobado > 0 else "RECHAZADA"
             cursor.execute(
                 """UPDATE devolucion SET estado = %s, monto_aprobado = %s,
                        recibido_por_usuario_id = %s, fecha_recepcion = CURRENT_TIMESTAMP
                    WHERE id = %s;""",
                 (estado, monto_aprobado, usuario_id, devolucion_id),
             )
+            avisar(cursor,devolucion,'inspeccion','Inspección registrada. Revisa y acepta el importe de tu devolución.')
             resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
@@ -287,6 +307,7 @@ def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int, empresa_id: i
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            bloquear(cursor,empresa_id,usuario_id,devolucion_id)
             cursor.execute(
                 """SELECT d.*, v.metodo_pago, op.id AS orden_pago_id,
                           op.proveedor, op.proveedor_payment_intent_id, op.estado AS estado_pago
@@ -333,8 +354,9 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            bloquear(cursor,empresa_id,usuario_id,devolucion_id)
             cursor.execute(
-                """SELECT d.estado, d.monto_aprobado, op.proveedor
+                """SELECT d.*,v.metodo_pago,op.proveedor
                    FROM devolucion d JOIN venta v ON v.id = d.venta_id AND v.empresa_id = d.empresa_id
                    LEFT JOIN LATERAL (
                        SELECT proveedor FROM orden_pago WHERE venta_id = v.id AND empresa_id = d.empresa_id AND activo = TRUE
@@ -346,6 +368,9 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
             row = cursor.fetchone()
             if row is None:
                 raise LookupError("Devolución no encontrada.")
+            if not row['aceptada_cliente_en']:raise ValueError('Falta aceptación del importe por el cliente.')
+            if row['metodo_pago']!='EFECTIVO' or metodo!='EFECTIVO' or row['proveedor']:
+                raise ValueError('El reintegro debe usar el medio original; no se registran pagos electrónicos como devolución en caja.')
             if row["estado"] == "REEMBOLSADA":
                 raise ValueError("Este reembolso ya fue registrado.")
             if row["estado"] not in {"REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO"}:
@@ -362,6 +387,7 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
                    WHERE id = %s AND empresa_id = %s;""",
                 (metodo, referencia.strip(), observacion, usuario_id, devolucion_id, empresa_id),
             )
+            avisar(cursor,row,'reembolsada','Se registró la entrega efectiva del reintegro en caja.')
             resultado = _obtener_devolucion_cursor(cursor, devolucion_id, empresa_id)
         connection.commit()
         return resultado
@@ -432,13 +458,14 @@ def cancelar_devolucion(devolucion_id: int, cliente_id: int, usuario_id: int, em
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
-                """SELECT estado, cliente_id FROM devolucion
+                """SELECT estado, cliente_id, tipo_operacion FROM devolucion
                    WHERE id = %s AND empresa_id = %s AND activo = TRUE FOR UPDATE;""",
                 (devolucion_id, empresa_id),
             )
             row = cursor.fetchone()
             if row is None or int(row["cliente_id"] or 0) != cliente_id:
                 raise LookupError("Devolución no encontrada.")
+            if row["tipo_operacion"]=="CAMBIO":raise ValueError("Gestiona esta solicitud desde Cambios de prendas.")
             if row["estado"] != "SOLICITADA":
                 raise ValueError("Solo puedes cancelar una solicitud que aún no fue revisada.")
             cursor.execute(
@@ -482,7 +509,7 @@ def _listar_devoluciones(
     *, empresa_id: int, cliente_id: int | None = None, sucursal_id: int | None = None, ver_todas: bool = False,
     estado: str | None = None, venta_id: int | None = None, cliente: str | None = None,
 ) -> list[dict]:
-    condiciones = ["d.activo = TRUE", "d.empresa_id = %s"]
+    condiciones = ["d.activo = TRUE", "d.empresa_id = %s", "d.tipo_operacion = 'DEVOLUCION'"]
     parametros: list[object] = [empresa_id]
     if cliente_id is not None:
         condiciones.append("d.cliente_id = %s")
@@ -534,12 +561,12 @@ def _obtener_venta_elegible_cursor(cursor, venta_id: int, empresa_id: int) -> di
     data = dict(venta)
     cursor.execute(
         """SELECT vd.id AS venta_detalle_id, vd.producto_variante_id, p.nombre AS producto,
-                  t.nombre AS talla, co.nombre AS color, vd.cantidad AS cantidad_vendida,
+                  COALESCE(t.nombre,'Sin talla') AS talla, COALESCE(co.nombre,'Sin color') AS color, vd.cantidad AS cantidad_vendida,
                   vd.precio_unitario, vd.subtotal,
                   GREATEST(vd.cantidad - COALESCE((
                       SELECT SUM(CASE
                           WHEN d.estado IN ('SOLICITADA', 'EN_REVISION', 'APROBADA') THEN dd.cantidad_solicitada
-                          WHEN d.estado IN ('REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA') THEN dd.cantidad_aceptada
+                          WHEN d.estado IN ('ESPERA_ACEPTACION','REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA', 'CAMBIO_COMPLETADO') THEN dd.cantidad_aceptada
                           ELSE 0 END)
                       FROM devolucion_detalle dd JOIN devolucion d ON d.id = dd.devolucion_id
                       WHERE dd.venta_detalle_id = vd.id AND d.activo = TRUE
@@ -548,8 +575,8 @@ def _obtener_venta_elegible_cursor(cursor, venta_id: int, empresa_id: int) -> di
            JOIN venta v ON v.id = vd.venta_id
            JOIN producto_variante pv ON pv.id = vd.producto_variante_id
            JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = v.empresa_id
-           JOIN talla t ON t.id = pv.talla_id
-           JOIN color co ON co.id = pv.color_id
+           LEFT JOIN talla t ON t.id = pv.talla_id
+           LEFT JOIN color co ON co.id = pv.color_id
            WHERE vd.venta_id = %s AND v.empresa_id = %s ORDER BY vd.id;""",
         (venta_id, empresa_id),
     )
@@ -581,17 +608,17 @@ def _obtener_devolucion_cursor(cursor, devolucion_id: int, empresa_id: int) -> d
     data = dict(row)
     cursor.execute(
         """SELECT dd.id, dd.venta_detalle_id, vd.producto_variante_id, p.nombre AS producto,
-                  t.nombre AS talla, co.nombre AS color, vd.cantidad AS cantidad_vendida,
+                  COALESCE(t.nombre,'Sin talla') AS talla, COALESCE(co.nombre,'Sin color') AS color, vd.cantidad AS cantidad_vendida,
                   dd.cantidad_solicitada, dd.cantidad_aceptada, dd.cantidad_rechazada,
                   vd.precio_unitario, vd.subtotal AS subtotal_original, dd.monto_aprobado,
-                  dd.observacion, dd.inventario_repuesto
+                  dd.observacion, dd.inventario_repuesto,dd.cantidad_no_vendible
            FROM devolucion_detalle dd
            JOIN devolucion d ON d.id = dd.devolucion_id
            JOIN venta_detalle vd ON vd.id = dd.venta_detalle_id
            JOIN producto_variante pv ON pv.id = vd.producto_variante_id
            JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = d.empresa_id
-           JOIN talla t ON t.id = pv.talla_id
-           JOIN color co ON co.id = pv.color_id
+           LEFT JOIN talla t ON t.id = pv.talla_id
+           LEFT JOIN color co ON co.id = pv.color_id
            WHERE dd.devolucion_id = %s AND d.empresa_id = %s ORDER BY dd.id;""",
         (devolucion_id, empresa_id),
     )
@@ -604,7 +631,7 @@ def _cantidad_comprometida_cursor(cursor, venta_detalle_id: int) -> int:
     cursor.execute(
         """SELECT COALESCE(SUM(CASE
                    WHEN d.estado IN ('SOLICITADA', 'EN_REVISION', 'APROBADA') THEN dd.cantidad_solicitada
-                   WHEN d.estado IN ('REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA') THEN dd.cantidad_aceptada
+                   WHEN d.estado IN ('ESPERA_ACEPTACION','REEMBOLSO_PENDIENTE', 'ERROR_REEMBOLSO', 'REEMBOLSADA', 'CAMBIO_COMPLETADO') THEN dd.cantidad_aceptada
                    ELSE 0 END), 0) AS cantidad
            FROM devolucion_detalle dd JOIN devolucion d ON d.id = dd.devolucion_id
            WHERE dd.venta_detalle_id = %s AND d.activo = TRUE;""",
@@ -622,3 +649,17 @@ def _calcular_parcial(subtotal: Decimal, cantidad_total: int, cantidad: int) -> 
     if cantidad_total <= 0 or cantidad <= 0:
         return Decimal("0.00")
     return (subtotal * Decimal(cantidad) / Decimal(cantidad_total)).quantize(CENTAVO, rounding=ROUND_HALF_UP)
+
+
+def _subtotal_pagado_cursor(cur,linea_id):
+    cur.execute('SELECT v.id,v.total-v.costo_delivery neto FROM venta v JOIN venta_detalle d ON d.venta_id=v.id WHERE d.id=%s',(linea_id,))
+    v=cur.fetchone()
+    cur.execute('SELECT id,subtotal FROM venta_detalle WHERE venta_id=%s ORDER BY id',(v['id'],));lineas=list(cur.fetchall())
+    suma=sum(Decimal(l['subtotal']) for l in lineas)
+    if suma<=0:raise ValueError('La compra no tiene importe reembolsable.')
+    neto=min(Decimal(v['neto']),suma);asignado=Decimal(0)
+    for idx,l in enumerate(lineas):
+        monto=neto-asignado if idx==len(lineas)-1 else (Decimal(l['subtotal'])*neto/suma).quantize(CENTAVO,rounding=ROUND_HALF_UP)
+        monto=max(Decimal(0),min(monto,neto-asignado));asignado+=monto
+        if l['id']==linea_id:return monto
+    raise ValueError('Artículo no encontrado.')

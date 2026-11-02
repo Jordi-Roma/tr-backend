@@ -86,7 +86,7 @@ def agregar_item_carrito(
             WHERE carrito_id = %s
               AND producto_variante_id = %s
               AND COALESCE(sucursal_id, 0) = COALESCE(%s, 0)
-              AND activo = TRUE
+              AND activo = TRUE AND paquete_id IS NULL
             LIMIT 1;
             """,
             (carrito_id, producto_variante_id, sucursal_id),
@@ -145,7 +145,7 @@ def actualizar_item_carrito(cliente_id: int, item_id: int, cantidad: int) -> dic
         carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
         cursor.execute(
             """
-            SELECT producto_variante_id, sucursal_id
+            SELECT producto_variante_id, sucursal_id, paquete_id, cantidad
             FROM carrito_item
             WHERE id = %s AND carrito_id = %s AND activo = TRUE
             LIMIT 1;
@@ -158,6 +158,8 @@ def actualizar_item_carrito(cliente_id: int, item_id: int, cantidad: int) -> dic
             connection.rollback()
             return None
 
+        if item['paquete_id'] is not None:
+            raise ValueError('El paquete tiene cantidades fijas. Retíralo completo y arma uno nuevo.')
         cursor.execute('''SELECT 1 FROM producto_variante v JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
             WHERE v.id=%s AND v.activo AND p.activo''',(item['producto_variante_id'],))
         if cursor.fetchone() is None:
@@ -169,7 +171,8 @@ def actualizar_item_carrito(cliente_id: int, item_id: int, cantidad: int) -> dic
                 int(item["sucursal_id"]),
             )
 
-            if stock < cantidad:
+            otras = _obtener_cantidad_item_cursor(cursor, carrito_id, item['producto_variante_id'], item['sucursal_id']) - item['cantidad']
+            if stock < cantidad + otras:
                 raise ValueError("No hay stock suficiente para esa cantidad.")
         else:
             stock = _obtener_stock_disponible_total_cursor(cursor, int(item["producto_variante_id"]))
@@ -202,6 +205,13 @@ def eliminar_item_carrito(cliente_id: int, item_id: int) -> dict[str, object] | 
 
     try:
         carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
+        cursor.execute('SELECT paquete_id FROM carrito_item WHERE id=%s AND carrito_id=%s AND activo',(item_id,carrito_id))
+        fila=cursor.fetchone()
+        if fila and fila['paquete_id']:
+            cursor.execute('UPDATE carrito_item SET activo=FALSE WHERE carrito_id=%s AND paquete_id=%s',(carrito_id,fila['paquete_id']))
+            cursor.execute('UPDATE carrito_paquete SET activo=FALSE WHERE id=%s',(fila['paquete_id'],))
+            connection.commit()
+            return _armar_carrito_cursor(cursor,carrito_id)
         cursor.execute(
             """
             UPDATE carrito_item
@@ -242,6 +252,7 @@ def vaciar_carrito(cliente_id: int) -> dict[str, object]:
             """,
             (carrito_id,),
         )
+        cursor.execute('UPDATE carrito_paquete SET activo=FALSE WHERE carrito_id=%s',(carrito_id,))
         connection.commit()
         return _armar_carrito_cursor(cursor, carrito_id)
     except Exception:
@@ -306,14 +317,14 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
     cursor.execute(
         """
         SELECT
-            ci.id,
+            ci.id, ci.paquete_id,
             ci.producto_variante_id,
             p.id AS producto_id,
             p.empresa_id,
             p.nombre AS producto,
             ca.nombre AS categoria,
-            t.nombre AS talla,
-            co.nombre AS color,
+            COALESCE(t.nombre,'Sin talla') AS talla,
+            COALESCE(co.nombre,'Sin color') AS color,
             ci.sucursal_id,
             s.nombre AS sucursal,
             cd.nombre AS ciudad,
@@ -326,8 +337,8 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
         JOIN producto_variante pv ON pv.id = ci.producto_variante_id AND pv.empresa_id = cart.empresa_id
         JOIN producto p ON p.id = pv.producto_id AND p.empresa_id = cart.empresa_id
         JOIN categoria ca ON ca.id = p.categoria_id AND ca.empresa_id = cart.empresa_id
-        JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = cart.empresa_id
-        JOIN color co ON co.id = pv.color_id AND co.empresa_id = cart.empresa_id
+        LEFT JOIN talla t ON t.id = pv.talla_id AND t.empresa_id = cart.empresa_id
+        LEFT JOIN color co ON co.id = pv.color_id AND co.empresa_id = cart.empresa_id
         LEFT JOIN sucursal s ON s.id = ci.sucursal_id AND s.empresa_id = cart.empresa_id
         LEFT JOIN ciudad cd ON cd.id = s.ciudad_id
         LEFT JOIN precio_producto pp
@@ -353,6 +364,21 @@ def _armar_carrito_cursor(cursor, carrito_id: int) -> dict[str, object]:
         item["precio_unitario"] = precio_final
         item["subtotal"] = precio_final * int(item["cantidad"])
         items.append(item)
+    from app.modules.reservas.services.mayorista_service import validar_grupos
+    cursor.execute('SELECT empresa_id FROM carrito WHERE id=%s',(carrito_id,))
+    empresa=cursor.fetchone()['empresa_id']
+    errores=validar_grupos(cursor,empresa,items)
+    cantidades={}
+    for item in items:
+        llave=(item['producto_variante_id'],item['sucursal_id'])
+        cantidades[llave]=cantidades.get(llave,0)+item['cantidad']
+    for item in items:
+        motivo=errores.get(item['paquete_id'])
+        if item['sucursal_id'] is not None and cantidades[(item['producto_variante_id'],item['sucursal_id'])]>item['stock_disponible']:
+            motivo='El stock ya no alcanza para las unidades y paquetes del carrito.'
+        if motivo:
+            item['disponible_para_compra']=False
+            item['motivo_no_disponible']=motivo
     total = sum((item["subtotal"] or Decimal("0.00") for item in items), Decimal("0.00"))
 
     return {
@@ -385,6 +411,7 @@ def _obtener_sucursales_disponibles_carrito_cursor(cursor, carrito_id: int) -> l
         WHERE s.activo = TRUE
           AND c.activo = TRUE
           AND EXISTS (SELECT 1 FROM requerimientos)
+          AND NOT EXISTS (SELECT 1 FROM carrito_item ci WHERE ci.carrito_id=cart.id AND ci.activo AND ci.paquete_id IS NOT NULL AND ci.sucursal_id<>s.id)
           AND NOT EXISTS (
               SELECT 1
               FROM requerimientos r
@@ -490,13 +517,12 @@ def _obtener_cantidad_item_cursor(
 ) -> int:
     cursor.execute(
         """
-        SELECT cantidad
+        SELECT COALESCE(SUM(cantidad),0)::int cantidad
         FROM carrito_item
         WHERE carrito_id = %s
           AND producto_variante_id = %s
           AND COALESCE(sucursal_id, 0) = COALESCE(%s, 0)
-          AND activo = TRUE
-        LIMIT 1;
+          AND activo = TRUE;
         """,
         (carrito_id, producto_variante_id, sucursal_id),
     )

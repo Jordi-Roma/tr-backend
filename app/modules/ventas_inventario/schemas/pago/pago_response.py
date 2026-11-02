@@ -3,6 +3,8 @@ from pydantic import BaseModel
 
 
 class CheckoutStripeResponse(BaseModel):
+    modo_pago: str = "LEGADO"
+    confirmacion_prueba: bool = False
     orden_id: int
     venta_id: int
     estado: str
@@ -10,6 +12,8 @@ class CheckoutStripeResponse(BaseModel):
 
 
 class CheckoutQrResponse(BaseModel):
+    modo_pago: str = "LEGADO"
+    confirmacion_prueba: bool = False
     orden_id: int
     venta_id: int
     monto_total: Decimal
@@ -25,6 +29,10 @@ class CheckoutQrResponse(BaseModel):
 
 
 class OrdenPagoResponse(BaseModel):
+    modo_pago: str = 'LEGADO'
+    confirmacion_prueba: bool = False
+    pago_recibido: bool = False
+    motivo_incidencia: str | None = None
     orden_id: int
     venta_id: int
     cliente_id: int | None = None
@@ -39,6 +47,9 @@ class OrdenPagoResponse(BaseModel):
 
 
 class PagoProductoDetalleResponse(BaseModel):
+    tipo_compra: str = 'UNIDAD'
+    paquete_origen_id: int | None = None
+    descuento_mayorista: Decimal | None = None
     producto: str
     categoria: str | None = None
     talla: str | None = None

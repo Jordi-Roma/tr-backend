@@ -52,7 +52,10 @@ def generar_pdf(nota):
         p(f'Cliente: {datos.get("cliente") or "Consumidor final"}'),p(f'Atendido por: {datos.get("vendedor") or "—"}'),Spacer(1,.5*cm)]
     filas=[[p(t) for t in ['Prenda / variante','Cant.','P. unitario','Descuento','Subtotal']]]
     for item in datos['detalles']:
-        filas.append([p(f'{item["producto"]} · {item["talla"]} / {item["color"]}'),
+        concepto = item.get('tipo_compra', 'UNIDAD')
+        if item.get('paquete_origen_id'):
+            concepto += f" #{item['paquete_origen_id']} · {item.get('descuento_mayorista')}% mayorista"
+        filas.append([p(f'{item["producto"]} · {item["talla"]} / {item["color"]} · {concepto}'),
             p(item['cantidad']),p(f'Bs {Decimal(item["precio_unitario"]):.2f}'),
             p(f'Bs {Decimal(item["descuento"]):.2f}'),p(f'Bs {Decimal(item["subtotal"]):.2f}')])
     tabla=Table(filas,colWidths=[7.1*cm,1.5*cm,3*cm,3*cm,3*cm],repeatRows=1,hAlign='LEFT')

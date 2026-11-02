@@ -31,30 +31,9 @@ TRANSICIONES = {
 }
 
 
-def cotizar_delivery_service(request: DeliveryCotizarRequest, empresa_id: int) -> DeliveryCotizacionResponse:
-    sucursal = repo.obtener_sucursal(request.sucursal_id, empresa_id)
-    if sucursal is None:
-        raise HTTPException(status_code=404, detail="Sucursal no encontrada.")
-    if sucursal.get("latitud") is None or sucursal.get("longitud") is None:
-        raise HTTPException(status_code=400, detail="La sucursal no tiene ubicacion configurada.")
-
-    distancia_km, tiempo_min = _calcular_ruta(
-        Decimal(str(sucursal["latitud"])),
-        Decimal(str(sucursal["longitud"])),
-        request.latitud_entrega,
-        request.longitud_entrega,
-    )
-    costo = _calcular_costo(distancia_km)
-    max_km = _max_km()
-    disponible = distancia_km <= max_km
-    return DeliveryCotizacionResponse(
-        sucursal_id=request.sucursal_id,
-        distancia_km=_decimal(distancia_km),
-        tiempo_estimado_min=tiempo_min,
-        costo_delivery=costo if disponible else Decimal("0.00"),
-        disponible=disponible,
-        mensaje=None if disponible else "La direccion esta fuera del rango de delivery disponible.",
-    )
+def cotizar_delivery_service(request: DeliveryCotizarRequest, actor: dict) -> DeliveryCotizacionResponse:
+    from .delivery_cu18_service import cotizar
+    return DeliveryCotizacionResponse(**cotizar(actor,request))
 
 
 def geocodificar_delivery_service(direccion: str) -> DeliveryGeocodificarResponse:
@@ -113,25 +92,21 @@ def crear_delivery_service(
     empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso(usuario_actual, "delivery:solicitar")
     cliente_id = _cliente_id_obligatorio(usuario_actual)
-    cotizacion = cotizar_delivery_service(request, empresa_id)
-    if not cotizacion.disponible:
-        raise HTTPException(status_code=400, detail=cotizacion.mensaje)
+    # Compatibilidad de consulta/reintento. No añadir cargos a una venta ya pagada.
+    conn=repo.get_connection()
     try:
-        delivery = repo.crear_delivery_independiente(
-            {
-                **request.model_dump(),
-                "cliente_id": cliente_id,
-                "distancia_km": cotizacion.distancia_km,
-                "tiempo_estimado_min": cotizacion.tiempo_estimado_min,
-                "costo_delivery": cotizacion.costo_delivery,
-            },
-            empresa_id,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    detalle = repo.obtener_delivery(int(delivery["id"]), empresa_id)
-    if detalle is None:
-        raise HTTPException(status_code=404, detail="Delivery no encontrado.")
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT id FROM delivery WHERE empresa_id=%s AND venta_id=%s AND cliente_id=%s AND activo',(empresa_id,request.venta_id,cliente_id))
+            existente=cur.fetchone()
+    finally:
+        conn.close()
+    if not existente:
+        raise HTTPException(409,'El envío debe cotizarse y pagarse junto con la compra desde el carrito.')
+    detalle=repo.obtener_delivery(existente['id'],empresa_id)
+    if (detalle['direccion_entrega'].strip()!=request.direccion_entrega.strip() or detalle['latitud_entrega']!=request.latitud_entrega
+        or detalle['longitud_entrega']!=request.longitud_entrega or detalle['sucursal_id']!=request.sucursal_id):
+        raise HTTPException(409,'La entrega ya tiene un destino confirmado; no se modifican cargos ni dirección después del pago.')
     return _detalle_response(detalle)
 
 
@@ -164,7 +139,7 @@ def listar_deliveries_service(
     fecha_hasta: str | None = None,
 ) -> list[DeliveryItemResponse]:
     empresa_id = exigir_empresa_id(usuario_actual)
-    if _tiene_permiso(usuario_actual, "delivery:ver_todos") or "ADMINISTRADOR" in _roles(usuario_actual):
+    if "ADMINISTRADOR" in _roles(usuario_actual):
         rows = repo.listar_deliveries(
             empresa_id=empresa_id,
             estado=estado,
@@ -175,8 +150,9 @@ def listar_deliveries_service(
         )
         return [_item_response(item) for item in rows]
 
-    if _tiene_permiso(usuario_actual, "delivery:ver_sucursal") or _roles(usuario_actual).intersection({"ENCARGADO_SUCURSAL", "CAJERO"}):
+    if _roles(usuario_actual).intersection({"ENCARGADO_SUCURSAL", "CAJERO"}):
         sucursal_permitida = _sucursal_id_obligatoria(usuario_actual)
+        _validar_acceso_staff(usuario_actual,{'sucursal_id':sucursal_permitida})
         if sucursal_id is not None and sucursal_id != sucursal_permitida:
             raise HTTPException(status_code=403, detail="Solo puede consultar deliveries de su sucursal.")
         rows = repo.listar_deliveries(
@@ -197,7 +173,16 @@ def obtener_delivery_service(usuario_actual: dict[str, object], delivery_id: int
     if delivery is None:
         raise HTTPException(status_code=404, detail="Delivery no encontrado.")
     _validar_acceso_staff(usuario_actual, delivery)
-    return _detalle_response(delivery)
+    detalle=_detalle_response(delivery)
+    from .delivery_cu18_service import TRANSICIONES, validar_staff
+    from app.modules.autenticacion.repositories.perfil_repository import _transaccion
+    try:
+        with _transaccion() as cur:validar_staff(cur,usuario_actual,delivery)
+        detalle.puede_gestionar=True
+        detalle.transiciones=TRANSICIONES.get(delivery['estado'],[]) if delivery.get('pago_confirmado') else []
+    except HTTPException as error:
+        if error.status_code not in (403,404):raise
+    return detalle
 
 
 def actualizar_estado_delivery_service(
@@ -205,92 +190,38 @@ def actualizar_estado_delivery_service(
     delivery_id: int,
     request: DeliveryEstadoRequest,
 ) -> DeliveryEstadoResponse:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    estado = request.estado.strip().upper()
-    if estado not in ESTADOS:
-        raise HTTPException(status_code=400, detail="Estado de delivery no valido.")
+    from .delivery_cu18_service import cambiar
+    cambiar(usuario_actual,delivery_id,request)
+    return DeliveryEstadoResponse(mensaje='Seguimiento actualizado.',delivery=obtener_delivery_service(usuario_actual,delivery_id))
 
-    delivery = repo.obtener_delivery(delivery_id, empresa_id)
-    if delivery is None:
-        raise HTTPException(status_code=404, detail="Delivery no encontrado.")
-    _validar_acceso_staff(usuario_actual, delivery)
 
-    if estado == "CANCELADO":
-        _validar_permiso(usuario_actual, "delivery:cancelar")
-    else:
-        _validar_permiso(usuario_actual, "delivery:gestionar_estado")
+def preparar_delivery_para_checkout(request, actor: dict) -> dict:
+    from .delivery_cu18_service import preparar
+    return preparar(actor,request)
 
-    estado_actual = str(delivery["estado"])
-    if estado != estado_actual and estado not in TRANSICIONES.get(estado_actual, set()):
-        raise HTTPException(status_code=400, detail=f"No se puede cambiar de {estado_actual} a {estado}.")
 
+def _calcular_ruta(origen_lat: Decimal, origen_lng: Decimal, destino_lat: Decimal, destino_lng: Decimal):
+    # POST sin sufijo devuelve JSON; /geojson entrega features y LineString.
+    # https://giscience.github.io/openrouteservice/api-reference/endpoints/directions/requests-and-return-types
+    api_key=os.getenv('OPENROUTE_API_KEY','').strip()
+    if not api_key:raise HTTPException(503,'El servicio de rutas no está configurado. No se puede cotizar el envío.')
     try:
-        actualizado = repo.actualizar_estado(delivery_id, estado, request.observacion, empresa_id)
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    return DeliveryEstadoResponse(mensaje="Estado de delivery actualizado.", delivery=_detalle_response(actualizado))
-
-
-def preparar_delivery_para_checkout(request, empresa_id: int) -> dict | None:
-    if request is None:
-        return None
-    cotizacion = cotizar_delivery_service(request, empresa_id)
-    if not cotizacion.disponible:
-        raise HTTPException(status_code=400, detail=cotizacion.mensaje)
-    return {
-        "sucursal_id": request.sucursal_id,
-        "direccion_entrega": request.direccion_entrega,
-        "referencia": request.referencia,
-        "latitud_entrega": request.latitud_entrega,
-        "longitud_entrega": request.longitud_entrega,
-        "distancia_km": cotizacion.distancia_km,
-        "tiempo_estimado_min": cotizacion.tiempo_estimado_min,
-        "costo_delivery": cotizacion.costo_delivery,
-    }
-
-
-def _calcular_ruta(
-    origen_lat: Decimal,
-    origen_lng: Decimal,
-    destino_lat: Decimal,
-    destino_lng: Decimal,
-) -> tuple[Decimal, int]:
-    api_key = os.getenv("OPENROUTE_API_KEY", "").strip()
-    if api_key:
-        try:
-            response = requests.post(
-                "https://api.openrouteservice.org/v2/directions/driving-car",
-                headers={"Authorization": api_key, "Content-Type": "application/json"},
-                json={
-                    "coordinates": [
-                        [float(origen_lng), float(origen_lat)],
-                        [float(destino_lng), float(destino_lat)],
-                    ]
-                },
-                timeout=10,
-            )
-            response.raise_for_status()
-            data = response.json()
-            summary = data["features"][0]["properties"]["summary"]
-            distancia = Decimal(str(summary["distance"])) / Decimal("1000")
-            tiempo = max(1, int(round(float(summary["duration"]) / 60)))
-            return _decimal(distancia), tiempo
-        except Exception:
-            pass
-
-    distancia = _haversine_km(origen_lat, origen_lng, destino_lat, destino_lng)
-    tiempo = max(1, int(math.ceil(float(distancia) / 25 * 60)))
-    return _decimal(distancia), tiempo
-
-
-def _haversine_km(lat1: Decimal, lon1: Decimal, lat2: Decimal, lon2: Decimal) -> Decimal:
-    radio = 6371.0
-    lat1_f, lon1_f, lat2_f, lon2_f = map(math.radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
-    dlat = lat2_f - lat1_f
-    dlon = lon2_f - lon1_f
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_f) * math.cos(lat2_f) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return Decimal(str(radio * c))
+        response=requests.post('https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+            headers={'Authorization':api_key,'Content-Type':'application/json'},
+            json={'coordinates':[[float(origen_lng),float(origen_lat)],[float(destino_lng),float(destino_lat)]]},timeout=10)
+        if response.status_code==404:raise HTTPException(409,'No existe una ruta disponible para ese destino.')
+        response.raise_for_status()
+        data=response.json()['features'][0]
+        summary=data['properties']['summary'];geometry=data['geometry']
+        distancia=Decimal(str(summary['distance']))/1000;duracion=float(summary['duration'])
+        if not distancia.is_finite() or distancia<0 or not math.isfinite(duracion) or duracion<=0:raise ValueError()
+        ruta=geometry['coordinates']
+        if geometry['type']!='LineString' or not 2<=len(ruta)<=20000:raise ValueError()
+        if any(len(p)<2 or not math.isfinite(float(p[0])) or not math.isfinite(float(p[1])) or not -180<=p[0]<=180 or not -90<=p[1]<=90 for p in ruta):raise ValueError()
+        return _decimal(distancia),max(1,math.ceil(duracion/60)),[[float(p[0]),float(p[1])] for p in ruta]
+    except HTTPException:raise
+    except Exception as error:
+        raise HTTPException(503,'No se pudo obtener una ruta válida. Reintenta o elige retiro en sucursal; no se generó una cotización.') from error
 
 
 def _calcular_costo(distancia_km: Decimal) -> Decimal:
@@ -351,17 +282,16 @@ def _sucursal_id_obligatoria(usuario_actual: dict[str, object]) -> int:
 
 
 def _validar_acceso_staff(usuario_actual: dict[str, object], delivery: dict) -> None:
-    if _tiene_permiso(usuario_actual, "delivery:ver_todos") or "ADMINISTRADOR" in _roles(usuario_actual):
-        return
-    if _tiene_permiso(usuario_actual, "delivery:ver_sucursal") or _roles(usuario_actual).intersection({"ENCARGADO_SUCURSAL", "CAJERO"}):
-        if int(delivery["sucursal_id"]) != _sucursal_id_obligatoria(usuario_actual):
-            raise HTTPException(status_code=404, detail="Delivery no encontrado.")
-        return
-    raise HTTPException(status_code=403, detail="No tiene permisos para consultar deliveries.")
+    from .delivery_cu18_service import validar_staff
+    from app.modules.autenticacion.repositories.perfil_repository import _transaccion
+    with _transaccion() as cur:
+        validar_staff(cur,usuario_actual,delivery,gestionar=False)
 
 
 def _item_response(delivery: dict) -> DeliveryItemResponse:
     return DeliveryItemResponse(
+        version=delivery.get('version',1),pago_confirmado=bool(delivery.get('pago_confirmado')),
+        incidencia_abierta=delivery.get('incidencia_abierta',False),
         id=int(delivery["id"]),
         venta_id=int(delivery["venta_id"]),
         venta_codigo=_texto(delivery.get("venta_codigo")),
@@ -386,6 +316,8 @@ def _detalle_response(delivery: dict) -> DeliveryDetalleResponse:
     item = _item_response(delivery)
     return DeliveryDetalleResponse(
         **item.model_dump(),
+        cotizacion_id=str(delivery['cotizacion_id']) if delivery.get('cotizacion_id') else None,
+        ruta=delivery.get('ruta') or [],historial=delivery.get('historial') or [],
         sucursal_direccion=_texto(delivery.get("sucursal_direccion")),
         sucursal_latitud=delivery.get("sucursal_latitud"),
         sucursal_longitud=delivery.get("sucursal_longitud"),

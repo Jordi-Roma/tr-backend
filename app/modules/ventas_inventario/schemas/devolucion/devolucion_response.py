@@ -30,6 +30,7 @@ class VentaDevolucionElegibleResponse(BaseModel):
 
 
 class DevolucionDetalleResponse(BaseModel):
+    cantidad_no_vendible: int = 0
     id: int
     venta_detalle_id: int
     producto_variante_id: int
@@ -48,6 +49,9 @@ class DevolucionDetalleResponse(BaseModel):
 
 
 class DevolucionResponse(BaseModel):
+    politica_snapshot: dict | None = None
+    aceptada_cliente_en: datetime | None = None
+    comprobante: dict | None = None
     id: int
     codigo: str
     venta_id: int

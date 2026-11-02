@@ -37,6 +37,7 @@ SQL_FILES = [
 # bloqueante. Los SQL legados se conservan para bases que aun no tienen esta
 # version; volver a ejecutarlos despues podria restaurar unicidades globales.
 VERSIONED_SQL_FILES = [
+    # Mantener el orden de versiones: mayorista se agrega al final.
     ("2026_10_23_multitenant_01", "database/migracion_multitenant_01.sql"),
     ("2026_10_23_multitenant_02", "database/migracion_multitenant_02.sql"),
     ("2026_10_23_cu02_cu03_01", "database/migracion_cu02_cu03_01.sql"),
@@ -47,6 +48,11 @@ VERSIONED_SQL_FILES = [
     ("2026_10_27_cu09_unicode_01", "database/migracion_cu09_unicode_01.sql"),
     ("2026_10_27_cu11_cu15_01", "database/migracion_cu11_cu15_01.sql"),
     ("2026_10_28_registro_empresa_01", "database/migracion_registro_empresa_01.sql"),
+    ("2026_10_30_cu16_bloque1", "database/migracion_cu16_bloque1.sql"),
+    ("2026_10_30_cu17_mayorista", "database/migracion_cu17_mayorista.sql"),
+    ("2026_10_31_cu18_delivery", "database/migracion_cu18_delivery.sql"),
+    ("2026_10_31_posventa_politicas", "database/migracion_posventa_politicas.sql"),
+    ("2026_10_31_cu19_cambios", "database/migracion_cu19_cambios.sql"),
 ]
 
 

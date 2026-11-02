@@ -28,12 +28,12 @@ def emitir_nota_cursor(cur, venta_id, empresa_id):
         raise ValueError('La nota solo puede emitirse para una venta completada.')
     datos = dict(row)
     cur.execute('''SELECT vd.producto_variante_id,p.nombre AS producto,t.nombre AS talla,
-        c.nombre AS color,vd.cantidad,vd.precio_unitario,vd.descuento,vd.subtotal
+        c.nombre AS color,vd.tipo_compra,vd.paquete_origen_id,vd.descuento_mayorista,vd.cantidad,vd.precio_unitario,vd.descuento,vd.subtotal
         FROM venta_detalle vd
         JOIN producto_variante pv ON pv.id=vd.producto_variante_id AND pv.empresa_id=vd.empresa_id
         JOIN producto p ON p.id=pv.producto_id AND p.empresa_id=vd.empresa_id
-        JOIN talla t ON t.id=pv.talla_id AND t.empresa_id=vd.empresa_id
-        JOIN color c ON c.id=pv.color_id AND c.empresa_id=vd.empresa_id
+        LEFT JOIN talla t ON t.id=pv.talla_id AND t.empresa_id=vd.empresa_id
+        LEFT JOIN color c ON c.id=pv.color_id AND c.empresa_id=vd.empresa_id
         WHERE vd.venta_id=%s AND vd.empresa_id=%s ORDER BY vd.id''', (venta_id,empresa_id))
     datos['detalles'] = [dict(d) for d in cur.fetchall()]
     datos = json.loads(json.dumps(datos,default=str))

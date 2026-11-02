@@ -4,6 +4,10 @@ from pydantic import BaseModel
 
 
 class CarritoItemResponse(BaseModel):
+    paquete_id: int | None = None
+    tipo_compra: str = 'UNIDAD'
+    descuento_mayorista: Decimal | None = None
+    motivo_no_disponible: str | None = None
     id: int
     producto_variante_id: int
     producto_id: int

@@ -174,10 +174,10 @@ def verificar_migracion_multitenant():
         cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',('2026_10_28_registro_empresa_01',))
         if cur.fetchone() is None:
             raise RuntimeError('Falta la migración de registro de empresas; ejecute init_db.py antes de iniciar la API.')
-        for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes'):
+        for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes','2026_11_06_cu22_cu27_mejoras'):
             cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',(version,))
             if cur.fetchone() is None:
-                raise RuntimeError('Falta la migración de respaldos o planes; ejecute init_db.py antes de iniciar la API.')
+                raise RuntimeError(f'Falta la migración {version}; ejecute init_db.py antes de iniciar la API.')
     finally:
         conn.close()
 
@@ -197,6 +197,19 @@ async def iniciar_vencimientos():
     app.state.vencimientos=asyncio.create_task(ejecutar_vencimientos())
     app.state.respaldos_automaticos = asyncio.create_task(ejecutar_respaldo_automatico())
     app.state.reportes_automaticos = asyncio.create_task(ejecutar_reportes_automaticos())
+    app.state.push_automaticos = asyncio.create_task(ejecutar_push_automaticos())
+
+
+async def ejecutar_push_automaticos():
+    import asyncio
+    import logging
+    from app.modules.ventas_inventario.services.push_worker import procesar
+    while True:
+        try:
+            await asyncio.to_thread(procesar)
+        except Exception:
+            logging.getLogger(__name__).error('No se pudo procesar la cola de avisos; se reintentará.')
+        await asyncio.sleep(10)
 
 
 async def ejecutar_reportes_automaticos():
@@ -243,6 +256,11 @@ async def detener_vencimientos():
         reportes.cancel()
         with suppress(asyncio.CancelledError):
             await reportes
+    push=getattr(app.state,'push_automaticos',None)
+    if push:
+        push.cancel()
+        with suppress(asyncio.CancelledError):
+            await push
 
 
 @app.get("/api/v1/db-check")

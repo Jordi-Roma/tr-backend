@@ -3,6 +3,28 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 
 
+def candidatos_disponibles(empresa_id, sucursal_id=None, talla_id=None):
+    """Selección acotada sin construir miles de fichas de catálogo."""
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout='5000ms'")
+            cur.execute('''SELECT p.id AS producto_id,p.nombre,p.categoria_id,
+                sum(greatest(i.stock_disponible-i.stock_reservado,0))::int AS stock_total
+                FROM producto p JOIN categoria c ON c.id=p.categoria_id AND c.empresa_id=p.empresa_id AND c.activo
+                JOIN producto_variante v ON v.producto_id=p.id AND v.empresa_id=p.empresa_id AND v.activo
+                JOIN inventario_sucursal i ON i.producto_variante_id=v.id AND i.empresa_id=p.empresa_id AND i.activo
+                JOIN sucursal s ON s.id=i.sucursal_id AND s.empresa_id=p.empresa_id AND s.activo
+                WHERE p.empresa_id=%s AND p.activo AND i.stock_disponible-i.stock_reservado>0
+                AND (%s::bigint IS NULL OR s.id=%s) AND (%s::bigint IS NULL OR v.talla_id=%s)
+                AND precio_catalogo(v.id,p.empresa_id,%s) IS NOT NULL
+                GROUP BY p.id ORDER BY stock_total DESC,p.id LIMIT 2000''',
+                (empresa_id,sucursal_id,sucursal_id,talla_id,talla_id,sucursal_id))
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def listar_productos_para_indice(empresa_id: int) -> list[dict]:
     connection = get_connection()
     try:
@@ -26,13 +48,15 @@ def listar_productos_para_indice(empresa_id: int) -> list[dict]:
         connection.close()
 
 
-def obtener_embeddings(modelo: str, empresa_id: int) -> dict[int, dict]:
+def obtener_embeddings(modelo: str, empresa_id: int, producto_ids=None) -> dict[int, dict]:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute("SET LOCAL statement_timeout='5000ms'")
             cursor.execute("""SELECT pe.producto_id, pe.texto_hash, pe.embedding
                               FROM producto_embedding pe JOIN producto p ON p.id = pe.producto_id
-                              WHERE pe.modelo = %s AND p.empresa_id = %s""", (modelo, empresa_id))
+                              WHERE pe.modelo = %s AND p.empresa_id = %s
+                              AND (%s::bigint[] IS NULL OR p.id=ANY(%s))""", (modelo, empresa_id,producto_ids,producto_ids))
             return {int(row['producto_id']): dict(row) for row in cursor.fetchall()}
     finally:
         connection.close()

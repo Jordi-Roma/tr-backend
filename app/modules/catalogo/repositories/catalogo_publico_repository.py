@@ -277,12 +277,12 @@ def _obtener_variantes(cursor, producto_id: int, empresa_id: int, sucursal_id: o
                COALESCE(SUM(GREATEST(inv.stock_disponible - inv.stock_reservado, 0)), 0)::INT AS stock_total,
                v.activo
         FROM producto_variante v
-        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id
-        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id
-        LEFT JOIN precio_producto pp
-            ON pp.producto_variante_id = v.id AND pp.empresa_id = v.empresa_id
-            AND pp.activo = TRUE
-            AND CURRENT_DATE BETWEEN pp.fecha_inicio AND COALESCE(pp.fecha_fin, CURRENT_DATE)
+        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id AND t.activo
+        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id AND co.activo
+        LEFT JOIN LATERAL (SELECT precio FROM precio_producto pp0
+            WHERE pp0.producto_variante_id=v.id AND pp0.empresa_id=v.empresa_id AND pp0.activo
+            AND CURRENT_DATE BETWEEN pp0.fecha_inicio AND coalesce(pp0.fecha_fin,CURRENT_DATE)
+            ORDER BY pp0.fecha_inicio DESC,pp0.id DESC LIMIT 1) pp ON TRUE
         LEFT JOIN inventario_sucursal inv
             ON inv.producto_variante_id = v.id AND inv.empresa_id = v.empresa_id
             AND inv.activo = TRUE
@@ -342,8 +342,8 @@ def _obtener_disponibilidad(
         JOIN sucursal s ON s.id = inv.sucursal_id AND s.empresa_id = inv.empresa_id
         JOIN ciudad ci ON ci.id = s.ciudad_id
         JOIN producto_variante v ON v.id = inv.producto_variante_id
-        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id
-        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id
+        JOIN talla t ON t.id = v.talla_id AND t.empresa_id = v.empresa_id AND t.activo
+        JOIN color co ON co.id = v.color_id AND co.empresa_id = v.empresa_id AND co.activo
         WHERE {' AND '.join(filtros)}
         ORDER BY ci.nombre ASC, s.nombre ASC, t.nombre ASC, co.nombre ASC;
         """,
@@ -355,7 +355,7 @@ def _obtener_disponibilidad(
 def _obtener_promocion(cursor, producto_id: int, empresa_id: int, sucursal_id: object | None = None) -> dict[str, object] | None:
     cursor.execute(
         """
-        SELECT pr.tipo_descuento, pr.valor
+        SELECT pr.id, pr.nombre, pr.tipo_descuento, pr.valor, pr.fecha_inicio, pr.fecha_fin
         FROM promocion pr
         JOIN promocion_producto pp ON pp.promocion_id = pr.id AND pp.empresa_id=pr.empresa_id AND pp.activo
         WHERE pp.producto_id = %s AND pr.empresa_id = %s

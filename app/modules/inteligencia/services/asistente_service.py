@@ -1,4 +1,3 @@
-import os
 import re
 import unicodedata
 from decimal import Decimal
@@ -21,9 +20,7 @@ from app.modules.inteligencia.services.recomendacion_service import (
 )
 from app.modules.inteligencia.services.asistente_vertex_service import (
     interpretar_asistente_con_vertex,
-    redactar_asistente_con_vertex,
 )
-from app.modules.reservas.repositories.reserva_repository import listar_reservas_cliente
 
 STOPWORDS = {
     "hay", "tienes", "tienen", "tengo", "una", "uno", "unas", "unos", "para",
@@ -109,69 +106,81 @@ RESPUESTAS_AYUDA_PROCESO = {
 
 def responder_chat_asistente(request: AsistenteChatRequest, usuario_actual: dict[str, object] | None,
                             empresa_id: int) -> AsistenteChatResponse:
-    mensaje = request.mensaje.strip()
-    mensaje_normalizado = _normalizar(mensaje)
+    """Consulta datos autorizados; los hechos nunca proceden de texto generado."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from app.modules.inteligencia.repositories import asistente_repository as datos
     contexto = request.contexto
-    producto_id = contexto.producto_id if contexto else None
-    sucursal_id = contexto.sucursal_id if contexto else None
-    tipo, filtros, terminos = _interpretar_consulta_asistente(mensaje, mensaje_normalizado, producto_id, sucursal_id, empresa_id)
-
-    if _requiere_login(mensaje_normalizado, tipo) and usuario_actual is None:
-        return _respuesta_requiere_login()
-
-    if tipo == "saludo":
-        return AsistenteChatResponse(respuesta="¡Hola! Soy el asistente de StyleAR. Puedo ayudarte a buscar prendas por color, talla o categoría, consultar stock por sucursal, explicarte cómo reservar y mostrarte sucursales disponibles.", tipo=tipo)
-
-    if tipo == "capacidades":
-        return AsistenteChatResponse(respuesta="Puedo ayudarte a buscar prendas reales del catálogo, consultar stock por talla/color/sucursal, recomendar alternativas y explicarte procesos como reservas, delivery, pagos con Stripe, carrito, favoritos, cuenta, vestidor y dónde ver tus pagos o pedidos.", tipo=tipo)
-
-    if tipo == "agradecimiento":
-        return AsistenteChatResponse(respuesta="¡De nada! Si quieres, también puedo ayudarte a buscar una prenda, consultar stock o explicarte reservas, delivery, pagos, carrito y favoritos.", tipo=tipo)
-
-    if tipo == "consulta_personal_reservas":
-        return _respuesta_mis_reservas(usuario_actual, empresa_id)
-    if tipo == "consulta_personal_favoritos":
-        return _respuesta_mis_favoritos(usuario_actual, empresa_id)
-    if tipo == "consulta_personal_recomendaciones":
-        return _respuesta_mis_recomendaciones(usuario_actual, empresa_id)
-
-    if tipo in TIPOS_AYUDA_PROCESO:
-        return AsistenteChatResponse(respuesta=_respuesta_ayuda_proceso(tipo), tipo=tipo)
-
-    if tipo == "sucursales":
-        return AsistenteChatResponse(respuesta=_respuesta_sucursales(listar_sucursales_para_asistente(empresa_id)), tipo=tipo)
-
-    if tipo in {"recomendacion", "recomendacion_contextual"} and producto_id is not None:
-        recomendadas = _mapear_catalogo_a_productos(recomendar_desde_producto(producto_id, empresa_id, sucursal_id=sucursal_id))
-        if recomendadas:
-            return AsistenteChatResponse(respuesta="Encontré prendas reales parecidas a esta. Te muestro opciones disponibles con stock.", tipo="recomendacion_contextual", productos=recomendadas, filtros_detectados=_filtros_publicos(filtros))
-
-    productos = buscar_productos_para_asistente(
-        terminos=terminos,
-        color_patrones=filtros["color_patrones"],
-        talla_patrones=filtros["talla_patrones"],
-        sucursal_patrones=filtros["sucursal_patrones"],
-        precio_max=filtros["precio_max"],
-        producto_id=producto_id,
-        sucursal_id=sucursal_id,
-        empresa_id=empresa_id,
-    )
-
-    alternativas: list[dict[str, object]] = []
-    if not productos and _hay_filtros_estrictos(filtros):
-        alternativas = _buscar_alternativas(terminos, filtros, producto_id, sucursal_id, empresa_id)
-
-    respuesta_base = _respuesta_productos(productos, tipo, alternativas, filtros)
-    respuesta = _redactar_con_ia(mensaje, productos, respuesta_base, tipo, alternativas)
-
-    return AsistenteChatResponse(
-        respuesta=respuesta,
-        tipo=tipo,
-        productos=[_mapear_producto(row) for row in productos],
-        alternativas=[_mapear_producto(row) for row in alternativas],
-        filtros_detectados=_filtros_publicos(filtros),
-        requiere_login=False,
-    )
+    contexto = datos.validar_contexto(contexto, empresa_id)
+    if usuario_actual is not None and usuario_actual.get('empresa_id') != empresa_id:
+        raise HTTPException(403, 'La empresa no corresponde a la sesión.')
+    mensaje = _normalizar(request.mensaje)
+    tipo_personal = _intencion_personal(mensaje)
+    seguimiento = bool(re.search(r'^(y |en |cuando |cuanto |esa |ese |la misma|el mismo)',mensaje))
+    if contexto and contexto.recurso_tipo:
+        if usuario_actual is None:
+            return _respuesta_requiere_login()
+        # Revalidar incluso si el siguiente mensaje cambia de tema o cuenta.
+        propias = datos.consultar_operaciones_cliente(empresa_id,int(usuario_actual['id']),contexto.recurso_tipo,contexto.recurso_id)
+        if not propias:
+            return _respuesta('No encontré esa operación en tu cuenta. Selecciona una operación propia.', 'operacion_no_disponible', aclaracion=True)
+        if (seguimiento or re.search(r'politica|condicion|plazo',mensaje)) and not tipo_personal:
+            tipo_personal = contexto.recurso_tipo
+    if tipo_personal:
+        resultado = _consultar_personal(mensaje,tipo_personal,usuario_actual,empresa_id,contexto)
+    elif re.search(r'\b(cambiar(?:la|lo)?|cambios?|devolver(?:la|lo)?|devoluciones|devolucion|reembolsos?|reembolsar|politica)\b',mensaje):
+        resultado = _ayuda_empresa('posventa',empresa_id)
+    elif re.search(r'\b(delivery|envio|entrega)\b',mensaje) and re.search(r'cuanto|costo|precio|como',mensaje):
+        resultado = _ayuda_empresa('ayuda_delivery',empresa_id)
+    elif ('horario' in mensaje or re.search(r'(hora|cuando) (abre|cierra)',mensaje)):
+        sucursales = listar_sucursales_para_asistente(empresa_id,limite=11)
+        resultado = _respuesta('No hay horarios de atención registrados para consultar. Puedes contactar a la sucursal.',
+            'sucursales',datos=sucursales[:10],fuentes=['Sucursales publicadas'],hay_mas=len(sucursales)>10)
+    else:
+        producto_id = contexto.producto_id if contexto else None
+        sucursal_id = contexto.sucursal_id if contexto else None
+        tipo,filtros,terminos = _interpretar_consulta_asistente(request.mensaje,mensaje,producto_id,sucursal_id,empresa_id)
+        # Resolver nombres de sucursal de esta empresa; no mantener una lista fija de ciudades.
+        sucursales = listar_sucursales_para_asistente(empresa_id,limite=51)
+        nombradas = [s for s in sucursales if _normalizar(str(s['nombre'])) in mensaje]
+        if len(nombradas)==1:
+            sucursal_id = nombradas[0]['id']
+            filtros['sucursal_patrones'] = []
+        if seguimiento and contexto:
+            for campo in ('color_patrones','talla_patrones'):
+                if not filtros[campo]:
+                    filtros[campo] = getattr(contexto,campo)
+            if filtros['precio_max'] is None:
+                filtros['precio_max'] = contexto.precio_max
+            if contexto.terminos:
+                terminos = contexto.terminos
+        # Los colores, tallas y sucursales son filtros, no términos OR que amplían la búsqueda.
+        ignorados = set(STOPWORDS) | set(TALLAS_CONOCIDAS) | set(COLORES_CONOCIDOS) | {
+            'promocion','promociones','oferta','ofertas','descuento','descuentos','cuanto','cuantos','tienen','esta','este',
+            'cual','cuales','y','tambien','sucursal','sucursales','encuentro','quedan','negros','azules','camis','estan'}
+        nombres_sucursal = set(' '.join(_normalizar(str(s['nombre'])) for s in nombradas).split())
+        terminos = [t for t in terminos if _normalizar(t) not in ignorados|nombres_sucursal
+                    and not t.startswith(('promocion','ofert','descuent'))][:8]
+        if tipo in ('saludo','capacidades','agradecimiento') and not seguimiento:
+            texto = {'saludo':'¡Hola! Puedo ayudarte con prendas, precios, promociones, sucursales, políticas y tus operaciones al iniciar sesión.',
+                'capacidades':'Puedo consultar catálogo, variantes, precios, stock, promociones y políticas de esta empresa. Con tu sesión también puedes consultar reservas, compras, pagos, entregas y posventa propias.',
+                'agradecimiento':'¡De nada! Puedes consultar otra prenda o una operación de tu cuenta.'}[tipo]
+            resultado = _respuesta(texto,tipo)
+        elif tipo in TIPOS_AYUDA_PROCESO:
+            resultado = _ayuda_empresa(tipo,empresa_id)
+        elif tipo=='sucursales' and not seguimiento and not any(p in mensaje for p in PALABRAS_PRODUCTO):
+            seleccion = nombradas or sucursales
+            resultado = _respuesta(_respuesta_sucursales(seleccion),'sucursales',datos=seleccion[:10],fuentes=['Sucursales publicadas'],hay_mas=len(seleccion)>10)
+        elif tipo in ('consulta_personal_favoritos','consulta_personal_recomendaciones'):
+            resultado = _respuesta_mis_favoritos(usuario_actual,empresa_id) if tipo.endswith('favoritos') else _respuesta_mis_recomendaciones(usuario_actual,empresa_id)
+            resultado.fuentes = ['Favoritos propios'] if tipo.endswith('favoritos') else ['Recomendaciones disponibles']
+        elif tipo in ('recomendacion','recomendacion_contextual') and producto_id is not None:
+            productos = _mapear_catalogo_a_productos(recomendar_desde_producto(producto_id,empresa_id,sucursal_id=sucursal_id))
+            resultado = _respuesta('Estas son sugerencias disponibles relacionadas con la prenda seleccionada.','recomendacion_contextual',productos=productos,fuentes=['Catálogo actual','Recomendaciones relacionadas'])
+        else:
+            resultado = _consultar_catalogo(mensaje,tipo,filtros,terminos,producto_id,sucursal_id,contexto,empresa_id)
+    resultado.consultado_en = datetime.now(timezone.utc).isoformat()
+    return resultado
 
 
 def _interpretar_consulta_asistente(
@@ -194,7 +203,8 @@ def _interpretar_consulta_asistente(
     }:
         return tipo_reglas, _detectar_filtros(mensaje_normalizado), _extraer_terminos(mensaje_normalizado)
 
-    if AI_ASSISTANT_PROVIDER in {"VERTEX", "GEMINI"}:
+    contiene_sensible = re.search(r'@|eyJ[A-Za-z0-9_-]+\.|\b(token|password|contrasena|contraseña|clave|credencial)\b',mensaje,re.I)
+    if AI_ASSISTANT_PROVIDER in {"VERTEX", "GEMINI"} and not contiene_sensible:
         try:
             interpretacion = interpretar_asistente_con_vertex(
                 mensaje,
@@ -203,13 +213,15 @@ def _interpretar_consulta_asistente(
                 sucursales=listar_sucursales_para_asistente(empresa_id),
             )
             tipo = str(interpretacion["tipo"])
+            if tipo not in {'catalogo','disponibilidad','recomendacion','recomendacion_contextual'}:
+                tipo = tipo_reglas
             filtros = {
-                "color_patrones": list(interpretacion["color_patrones"]),
-                "talla_patrones": list(interpretacion["talla_patrones"]),
-                "sucursal_patrones": list(interpretacion["sucursal_patrones"]),
-                "precio_max": interpretacion["precio_max"],
+                "color_patrones": [str(v)[:60] for v in interpretacion["color_patrones"][:4]],
+                "talla_patrones": [str(v)[:10] for v in interpretacion["talla_patrones"][:4]],
+                "sucursal_patrones": [str(v)[:60] for v in interpretacion["sucursal_patrones"][:4]],
+                "precio_max": max(0,min(100000000,float(interpretacion["precio_max"]))) if interpretacion["precio_max"] is not None else None,
             }
-            terminos = list(interpretacion["terminos"])
+            terminos = [str(t)[:60] for t in interpretacion["terminos"][:8]]
             if not terminos and tipo in {"catalogo", "disponibilidad", "recomendacion"}:
                 terminos = _extraer_terminos(mensaje_normalizado)
             return tipo, filtros, terminos
@@ -302,6 +314,8 @@ def _extraer_terminos(mensaje: str) -> list[str]:
     for termino in terminos:
         if termino.endswith("s") and len(termino) > 3:
             expandidos.add(termino[:-1])
+        if termino.endswith('ones') and len(termino)>5:
+            expandidos.add(termino[:-2])
     return sorted(expandidos)
 
 
@@ -396,7 +410,9 @@ def _respuesta_productos(productos: list[dict[str, object]], tipo: str, alternat
 def _respuesta_sucursales(sucursales: list[dict[str, object]]) -> str:
     if not sucursales:
         return "No encontré sucursales activas registradas en este momento."
-    nombres = [f"{item['nombre']} ({item['ciudad']})" for item in sucursales[:5]]
+    nombres = [f"{item['nombre']} ({item['ciudad']})"+
+        (f", dirección: {item['direccion']}" if item.get('direccion') else '')+
+        (f", teléfono: {item['telefono']}" if item.get('telefono') else '') for item in sucursales[:5]]
     return "Estas son algunas sucursales activas: " + ", ".join(nombres) + "."
 
 
@@ -408,15 +424,6 @@ def _formatear_precio_simple(value: object) -> str:
 def _respuesta_ayuda_proceso(tipo: str) -> str:
     return RESPUESTAS_AYUDA_PROCESO.get(tipo, RESPUESTAS_AYUDA_PROCESO["ayuda_reservas"])
 
-
-def _respuesta_mis_reservas(usuario_actual: dict[str, object] | None, empresa_id: int) -> AsistenteChatResponse:
-    if usuario_actual is None:
-        return _respuesta_requiere_login()
-    reservas = listar_reservas_cliente(int(usuario_actual["id"]), empresa_id)
-    if not reservas:
-        return AsistenteChatResponse(respuesta="No encontré reservas registradas para tu cuenta.", tipo="consulta_personal_reservas")
-    resumen = [f"{reserva['codigo']} en {reserva['sucursal']} está {reserva['estado']}" for reserva in reservas[:3]]
-    return AsistenteChatResponse(respuesta="Estas son tus reservas más recientes: " + "; ".join(resumen) + ".", tipo="consulta_personal_reservas")
 
 
 def _respuesta_mis_favoritos(usuario_actual: dict[str, object] | None, empresa_id: int) -> AsistenteChatResponse:
@@ -438,48 +445,29 @@ def _respuesta_mis_recomendaciones(usuario_actual: dict[str, object] | None, emp
     cliente_id = recomendacion_repository.obtener_cliente_id(int(usuario_actual["id"]), empresa_id)
     if cliente_id is None:
         return AsistenteChatResponse(respuesta="Tu usuario no tiene un cliente asociado para generar recomendaciones personales.", tipo="consulta_personal_recomendaciones")
-    productos = _mapear_catalogo_a_productos(recomendar_para_cliente(cliente_id, empresa_id))
+    preferencias = recomendacion_repository.obtener_preferencias(cliente_id,empresa_id)
+    if not preferencias['usar_historial']:
+        return AsistenteChatResponse(respuesta='La personalización está desactivada en tus preferencias. Puedes consultar prendas relacionadas sin usar tu historial.',tipo='personalizacion_desactivada')
+    sugerencias = recomendar_para_cliente(cliente_id, empresa_id)
+    productos = _mapear_catalogo_a_productos(sugerencias)
     if not productos:
         return AsistenteChatResponse(respuesta="Aún no tengo suficientes favoritos, compras o preferencias para recomendarte prendas personalizadas.", tipo="consulta_personal_recomendaciones")
-    return AsistenteChatResponse(respuesta="Con base en tus favoritos, compras o preferencias, estas prendas podrían gustarte.", tipo="consulta_personal_recomendaciones", productos=productos)
+    return AsistenteChatResponse(respuesta="Estas son tus sugerencias disponibles. El motivo de cada una indica si es personalizada o inicial.", tipo="consulta_personal_recomendaciones", productos=productos)
 
 
 def _respuesta_requiere_login() -> AsistenteChatResponse:
     return AsistenteChatResponse(respuesta="Para revisar esa información personal necesito que inicies sesión.", tipo="requiere_login", requiere_login=True, acciones=[{"tipo": "login", "label": "Iniciar sesión", "url": "/login"}])
 
 
-def _redactar_con_ia(mensaje: str, productos: list[dict[str, object]], respuesta_base: str, tipo: str, alternativas: list[dict[str, object]] | None = None) -> str:
-    if AI_ASSISTANT_PROVIDER in {"VERTEX", "GEMINI"}:
-        try:
-            return redactar_asistente_con_vertex(mensaje, tipo, productos, alternativas or [], respuesta_base)
-        except Exception:
-            return respuesta_base
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return respuesta_base
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        modelo = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-        datos = [{"producto": row.get("nombre"), "categoria": row.get("categoria"), "marca": row.get("marca"), "talla": row.get("talla"), "color": row.get("color"), "sucursal": row.get("sucursal"), "ciudad": row.get("ciudad"), "stock_real": row.get("stock_real"), "precio_vigente": _serializar_decimal(row.get("precio_vigente"))} for row in productos[:6]]
-        completion = client.chat.completions.create(
-            model=modelo,
-            messages=[
-                {"role": "system", "content": "Eres el asistente de StyleAR. Responde breve en español. Solo usa datos reales entregados; no inventes productos, precios, stock ni sucursales."},
-                {"role": "user", "content": f"Pregunta: {mensaje}\nTipo: {tipo}\nDatos reales: {datos}\nRespuesta segura base: {respuesta_base}\nRedacta una respuesta natural manteniendo esos hechos."},
-            ],
-            temperature=0.2,
-            max_tokens=220,
-        )
-        contenido = completion.choices[0].message.content
-        return contenido.strip() if contenido else respuesta_base
-    except Exception:
-        return respuesta_base
+def _redactar_con_ia(mensaje, productos, respuesta_base, tipo, alternativas=None):
+    # El proveedor se limita a clasificación validada; los hechos se presentan mediante plantillas.
+    return respuesta_base
 
 
 def _mapear_producto(row: dict[str, object]) -> AsistenteProductoResponse:
-    return AsistenteProductoResponse(producto_id=int(row["producto_id"]), nombre=str(row["nombre"]), categoria=_str_o_none(row.get("categoria")), marca=_str_o_none(row.get("marca")), talla=_str_o_none(row.get("talla")), color=_str_o_none(row.get("color")), sucursal=_str_o_none(row.get("sucursal")), ciudad=_str_o_none(row.get("ciudad")), stock_disponible=_int_o_none(row.get("stock_disponible")), stock_reservado=_int_o_none(row.get("stock_reservado")), stock_real=_int_o_none(row.get("stock_real")), precio_vigente=_float_o_none(row.get("precio_vigente")))
+    return AsistenteProductoResponse(producto_id=int(row["producto_id"]), nombre=str(row["nombre"]), categoria=_str_o_none(row.get("categoria")), marca=_str_o_none(row.get("marca")), talla=_str_o_none(row.get("talla")), color=_str_o_none(row.get("color")), sucursal=_str_o_none(row.get("sucursal")), ciudad=_str_o_none(row.get("ciudad")), stock_disponible=_int_o_none(row.get("stock_disponible")), stock_reservado=_int_o_none(row.get("stock_reservado")), stock_real=_int_o_none(row.get("stock_real")), precio_vigente=_float_o_none(row.get("precio_vigente")),
+        precio_final=_float_o_none(row.get('precio_final')),precio_final_exacto=str(row['precio_final']) if row.get('precio_final') is not None else None,
+        variante_id=row.get('variante_id'),sucursal_id=row.get('sucursal_id'),descripcion=row.get('descripcion'),material=row.get('material'),promocion=row.get('promocion'))
 
 
 def _mapear_catalogo_a_productos(items: list[dict[str, object] | None]) -> list[AsistenteProductoResponse]:
@@ -487,7 +475,9 @@ def _mapear_catalogo_a_productos(items: list[dict[str, object] | None]) -> list[
     for item in items:
         if not item:
             continue
-        productos.append(AsistenteProductoResponse(producto_id=int(item["producto_id"]), nombre=str(item["nombre"]), categoria=_str_o_none(item.get("categoria")), marca=_str_o_none(item.get("marca")), stock_real=_int_o_none(item.get("stock_total")), precio_vigente=_float_o_none(item.get("precio_vigente"))))
+        productos.append(AsistenteProductoResponse(producto_id=int(item["producto_id"]), nombre=str(item["nombre"]), categoria=_str_o_none(item.get("categoria")), marca=_str_o_none(item.get("marca")), stock_real=_int_o_none(item.get("stock_total")), precio_vigente=_float_o_none(item.get("precio_vigente")),
+            precio_final=_float_o_none(item.get('precio_final')),precio_final_exacto=str(item['precio_final']) if item.get('precio_final') is not None else None,
+            descripcion=item.get('descripcion'),material=item.get('material'),motivo=item.get('motivo')))
     return productos
 
 
@@ -497,7 +487,7 @@ def _filtros_publicos(filtros: dict[str, object]) -> dict[str, object]:
 
 def _normalizar(texto: str) -> str:
     texto_normalizado = unicodedata.normalize("NFD", texto.lower().strip())
-    return "".join(caracter for caracter in texto_normalizado if unicodedata.category(caracter) != "Mn")
+    return "".join(caracter for caracter in texto_normalizado if unicodedata.category(caracter) != "Mn").strip('¿?¡!.,;: ')
 
 
 def _str_o_none(value: object) -> str | None:
@@ -518,3 +508,220 @@ def _float_o_none(value: object) -> float | None:
 
 def _serializar_decimal(value: object) -> object:
     return float(value) if isinstance(value, Decimal) else value
+
+
+def _respuesta(texto, tipo, **campos):
+    return AsistenteChatResponse(respuesta=texto,tipo=tipo,**campos)
+
+
+def _intencion_personal(mensaje):
+    if 'recom' in mensaje or 'favorit' in mensaje:
+        return None
+    personal = bool(re.search(r'\b(mi|mis|ese|esa)\b|ya me|me devolv|numero|codigo|#',mensaje))
+    if not personal:
+        personal = bool(re.search(r'\b(reserva|pedido|pago|compra|cambio|devolucion|reembolso)\s+\d+',mensaje))
+    if not personal:
+        return None
+    if any(t in mensaje for t in ('reembolso','reintegro','me devolv','me devolvier')):
+        return 'REEMBOLSO'
+    for palabras,tipo in ((('reserva',),'RESERVA'),(('pedido','delivery','entrega'),'DELIVERY'),
+                          (('devolucion',),'DEVOLUCION'),(('cambio',),'CAMBIO'),
+                          (('pago','historial','comprobante'),'ORDEN_PAGO'),(('compra',),'VENTA')):
+        if any(t in mensaje for t in palabras):
+            return tipo
+    return None
+
+
+def _consultar_personal(mensaje,tipo,usuario,empresa_id,contexto):
+    from app.modules.inteligencia.repositories.asistente_repository import consultar_operaciones_cliente
+    from app.modules.inteligencia.schemas.asistente.asistente_schemas import AsistenteContexto
+    from fastapi.encoders import jsonable_encoder
+    if usuario is None:
+        return _respuesta_requiere_login()
+    if recomendacion_repository.obtener_cliente_id(int(usuario['id']),empresa_id) is None:
+        return _respuesta('Esta cuenta no tiene un cliente asociado para consultar operaciones propias.','sin_cliente')
+    rid = contexto.recurso_id if contexto and contexto.recurso_tipo==tipo else None
+    codigo = None
+    referencia = re.search(r'(?:codigo|numero|nro|#)\s*[:#]?\s*([a-z0-9][a-z0-9_-]{0,39})',mensaje)
+    numero = re.search(r'\b(?:reserva|pago|pedido|compra|cambio|devolucion|reembolso)\s+(\d+)\b',mensaje)
+    if referencia:
+        if referencia[1].isdigit():
+            rid = int(referencia[1])
+        else:
+            codigo = referencia[1]
+            rid = None
+    elif numero:
+        rid = int(numero[1])
+    if rid is not None and not 0<rid<2**63:
+        return _respuesta('El identificador de la operación no es válido. Selecciona una operación de tu cuenta.','aclaracion',aclaracion=True)
+    if tipo=='REEMBOLSO':
+        if contexto and contexto.recurso_tipo in ('DEVOLUCION','CAMBIO','REEMBOLSO_PAGO') and not referencia and not numero:
+            filas = consultar_operaciones_cliente(empresa_id,int(usuario['id']),contexto.recurso_tipo,contexto.recurso_id)
+        elif contexto and contexto.recurso_tipo in ('ORDEN_PAGO','VENTA') and not referencia and not numero:
+            filtro = {'orden_id':contexto.recurso_id} if contexto.recurso_tipo=='ORDEN_PAGO' else {'venta_id':contexto.recurso_id}
+            filas = consultar_operaciones_cliente(empresa_id,int(usuario['id']),'REEMBOLSO_PAGO',**filtro)
+        else:
+            # IDs de dos fuentes distintas no se eligen por coincidencia: pedir el tipo si se proporciona solo número.
+            if rid is not None:
+                return _respuesta('Indica si se trata de la devolución de una prenda o del reembolso de un pago, y selecciona la operación.','aclaracion',aclaracion=True)
+            filas = consultar_operaciones_cliente(empresa_id,int(usuario['id']),'REEMBOLSO_PAGO',codigo=codigo)
+            devoluciones = consultar_operaciones_cliente(empresa_id,int(usuario['id']),'DEVOLUCION',codigo=codigo)
+            filas += devoluciones
+    else:
+        filas = consultar_operaciones_cliente(empresa_id,int(usuario['id']),tipo,rid,codigo)
+    if not filas:
+        return _respuesta('No encontré esa operación en tu cuenta. Puedes revisar tus operaciones y seleccionar una.','operacion_no_disponible',fuentes=['Operaciones propias'],aclaracion=True)
+    hay_mas = len(filas)>5
+    filas = filas[:5]
+    for fila in filas:
+        estado = fila['estado']
+        if tipo=='REEMBOLSO' or fila['recurso_tipo']=='REEMBOLSO_PAGO':
+            fila['reembolso_confirmado'] = estado in ('CONFIRMADO','REEMBOLSADA') or (estado=='CAMBIO_COMPLETADO' and fila.get('fecha_reembolso') is not None)
+        fila['siguiente_paso'] = _siguiente_paso(fila)
+    resumen = '; '.join(_resumen_operacion(r,mensaje) for r in filas)
+    texto = ('Estas son hasta cinco operaciones recientes de tu cuenta: ' if len(filas)>1 else 'Tu operación está registrada así: ') + resumen + '.'
+    if tipo=='REEMBOLSO':
+        texto += ' Aprobado o pendiente no significa reembolsado; consulta el indicador de confirmación de cada operación.'
+    if len(filas)>1:
+        texto += ' Selecciona el tipo e identificador de la operación que deseas consultar.'
+    nueva = AsistenteContexto(empresa_id=empresa_id,recurso_tipo=filas[0]['recurso_tipo'],recurso_id=filas[0]['id']) if len(filas)==1 else None
+    return _respuesta(texto,'consulta_personal',datos=jsonable_encoder(filas),contexto=nueva,
+        fuentes=['Operaciones propias actualizadas'],aclaracion=len(filas)>1,hay_mas=hay_mas)
+
+
+def _resumen_operacion(fila,mensaje):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    def fecha(valor):
+        return valor.astimezone(ZoneInfo('America/La_Paz')).isoformat() if isinstance(valor,datetime) else str(valor)
+    texto = f"{fila.get('codigo') or fila['id']}: estado registrado {fila['estado'].lower().replace('_',' ')}"
+    if fila.get('importe') is not None:
+        texto += f", importe {fila['importe']} {fila['moneda']}"
+    if fila.get('sucursal'):
+        texto += f", sucursal {fila['sucursal']}"
+    if fila.get('fecha_cita'):
+        texto += f", cita {fecha(fila['fecha_cita'])}"
+    if fila.get('fecha_expiracion'):
+        texto += f", vencimiento {fecha(fila['fecha_expiracion'])}"
+    if fila.get('tiempo_estimado_min') is not None:
+        texto += f", estimación registrada de {fila['tiempo_estimado_min']} minutos (no es una hora garantizada de llegada)"
+    if fila.get('fecha_entrega'):
+        texto += f", entrega registrada {fecha(fila['fecha_entrega'])}"
+    if 'reembolso_confirmado' in fila:
+        texto += ', reembolso confirmado en el sistema' if fila['reembolso_confirmado'] else ', todavía sin confirmación de reembolso'
+    if re.search(r'politica|condicion|plazo',mensaje) and fila.get('politica_aplicada'):
+        condiciones = ', '.join(f"{k.replace('_',' ')}: {v}" for k,v in fila['politica_aplicada'].items())
+        texto += ', política registrada al iniciar la operación: '+condiciones
+    if re.search(r'que hago|siguiente|paso|ahora',mensaje):
+        texto += '. '+fila['siguiente_paso']
+    return texto
+
+
+def _siguiente_paso(fila):
+    estado = fila['estado']
+    if fila['recurso_tipo']=='RESERVA':
+        if estado in ('COMPLETADA','CANCELADA','VENCIDA'):
+            return 'Consulta el detalle de tu reserva; no está pendiente de atención.'
+        return 'Revisa la fecha de cita y el vencimiento en el detalle de tu reserva.'
+    if estado in ('ESPERA_ACEPTACION','COTIZADO'):
+        return 'Revisa la propuesta en el detalle y acepta o rechaza desde el flujo correspondiente.'
+    if estado in ('ESPERA_PAGO','PENDIENTE_PAGO','PENDIENTE'):
+        return 'Consulta el detalle para comprobar si hay un pago o paso pendiente.'
+    if estado in ('REEMBOLSO_PENDIENTE','ESPERA_REINTEGRO','ERROR_REEMBOLSO'):
+        return 'Consulta el seguimiento del reembolso o contacta a la empresa; aún no se confirma la devolución del dinero.'
+    return 'Consulta el detalle de la operación para ver sus pasos y seguimiento.'
+
+
+def _ayuda_empresa(tipo,empresa_id):
+    from app.modules.ventas_inventario.services.posventa_service import politica
+    from app.modules.ventas_inventario.services.pagos_empresa_service import configuracion
+    if tipo=='posventa':
+        p = politica(empresa_id)
+        datos = {k:p.get(k) for k in ('cambios_habilitados','devoluciones_habilitadas','plazo_cambios','plazo_devoluciones','condiciones_cambios','condiciones_devoluciones')}
+        textos=[]
+        for plural in ('cambios','devoluciones'):
+            if datos['cambios_habilitados' if plural=='cambios' else 'devoluciones_habilitadas']:
+                textos.append(f"{plural.capitalize()}: plazo configurado de {datos['plazo_'+plural]} días. Condiciones: {datos['condiciones_'+plural]}")
+            else:
+                textos.append(f'{plural.capitalize()}: no están habilitados en la política actual de esta empresa.')
+        return _respuesta(' '.join(textos)+' La solicitud se evalúa en el proceso correspondiente; el chat no la aprueba.',
+            'politica_posventa',datos=[datos],fuentes=['Política vigente de la empresa'])
+    if tipo in ('ayuda_pagos','ayuda_historial_pagos'):
+        cfg = configuracion(empresa_id)
+        metodos = [nombre for nombre,k in (('tarjeta con Stripe','stripe_habilitado'),('QR','qr_habilitado')) if cfg[k]]
+        texto = ('Medios digitales habilitados: '+', '.join(metodos)+'.') if metodos else 'No hay medios digitales habilitados en esta empresa.'
+        texto += f" El entorno configurado es {cfg['modo']}; un pago de prueba no acredita un cobro real."
+        texto += ' Consulta tus pagos desde el historial autenticado para ver el estado de cada operación.'
+        return _respuesta(texto,'ayuda_pagos',datos=[{'modo':cfg['modo'],'medios':metodos}],fuentes=['Configuración de pagos de la empresa'])
+    if tipo=='ayuda_reservas':
+        from app.modules.reservas.repositories.reserva_repository import DIAS_RESERVA_GRATUITA
+        return _respuesta(f'La reserva desde el carrito vigente es gratuita y vence a los {DIAS_RESERVA_GRATUITA} días de su creación. Las reservas históricas que tengan anticipo conservan su importe y estado propios. Selecciona prendas con stock, talla, color y sucursal y confirma desde el flujo de reservas; consultar el chat no aparta unidades.',
+            tipo,fuentes=['Reglas vigentes de reservas'])
+    if tipo=='ayuda_delivery':
+        return _respuesta('Selecciona delivery y la dirección en el checkout para obtener la cotización vigente del sistema. El costo y tiempo dependen de esa cotización; aquí no se calcula ni crea un envío. Con tu sesión puedes consultar el estado de tus entregas.',tipo,fuentes=['Flujo vigente de entregas'])
+    return _respuesta(_respuesta_ayuda_proceso(tipo),tipo,fuentes=['Ayuda del sistema'])
+
+
+def _consultar_catalogo(mensaje,tipo,filtros,terminos,producto_id,sucursal_id,contexto,empresa_id):
+    from app.modules.inteligencia.schemas.asistente.asistente_schemas import AsistenteContexto
+    promocion = any(p in mensaje for p in ('promocion','oferta','descuento'))
+    if contexto is None and re.search(r'^(y |esa |ese |en )',mensaje) and not terminos:
+        return _respuesta('¿A qué prenda u operación te refieres? Selecciónala o indica su nombre o código.','aclaracion',aclaracion=True)
+    if producto_id is None and any(t in mensaje for t in ('esta prenda','ese producto','esa prenda','este producto')):
+        return _respuesta('Selecciona la prenda o indica su nombre para consultar su variante.','aclaracion',aclaracion=True)
+    if producto_id is not None and re.search(r'\b(material|descripcion|marca)\b',mensaje):
+        prenda = obtener_prenda_catalogo(producto_id,sucursal_id,empresa_id)
+        if not prenda:
+            return _respuesta('La prenda seleccionada ya no está disponible.','producto_no_disponible')
+        campos = [k for k in ('material','descripcion','marca') if k in mensaje]
+        texto = '; '.join(f"{k.capitalize()}: {prenda.get(k) or 'no registrado'}" for k in campos)
+        return _respuesta(texto,'detalle_producto',productos=_mapear_catalogo_a_productos([prenda]),
+            contexto=AsistenteContexto(empresa_id=empresa_id,producto_id=producto_id,sucursal_id=sucursal_id),fuentes=['Ficha publicada del producto'])
+    if not producto_id and not terminos and not promocion and not any(filtros.values()) and not ('ropa' in mensaje or 'prenda' in mensaje or 'recom' in mensaje):
+        return _respuesta('¿Qué prenda, talla o sucursal deseas consultar? También puedo ayudarte con políticas y tus operaciones.','aclaracion',aclaracion=True)
+    variante_id = contexto.variante_id if contexto else None
+    # Pedir otro color/talla debe cambiar de variante, no fijar la variante anterior.
+    if contexto and (_extraer_colores_mencionados(mensaje) or _extraer_tallas_mencionadas(mensaje)):
+        variante_id = None
+    productos = buscar_productos_para_asistente(terminos=terminos,empresa_id=empresa_id,producto_id=producto_id,
+        sucursal_id=sucursal_id,color_patrones=filtros['color_patrones'],talla_patrones=filtros['talla_patrones'],
+        sucursal_patrones=filtros['sucursal_patrones'],precio_max=filtros['precio_max'],limite=9,
+        solo_promociones=promocion,variante_id=variante_id)
+    hay_mas = len(productos)>8
+    productos = productos[:8]
+    alternativas=[]
+    if not productos and _hay_filtros_estrictos(filtros) and not promocion:
+        alternativas = _buscar_alternativas(terminos,filtros,producto_id,sucursal_id,empresa_id)
+    texto = _respuesta_productos(productos,tipo,alternativas,filtros)
+    diagnostico = None
+    if not productos and producto_id is not None:
+        prenda = obtener_prenda_catalogo(producto_id,sucursal_id,empresa_id)
+        variantes = [v for v in (prenda or {}).get('variantes',[]) if (not filtros['talla_patrones'] or v['talla'].lower() in filtros['talla_patrones'])
+            and (not filtros['color_patrones'] or any(p in _normalizar(v['color']) for p in filtros['color_patrones']))]
+        if not variantes:
+            diagnostico='VARIANTE_NO_ENCONTRADA'
+            texto='No encontré esa combinación de talla y color publicada para la prenda seleccionada.'
+        elif not any(v['stock_total']>0 for v in variantes):
+            diagnostico='SIN_STOCK'
+            texto='La variante está publicada, pero no tiene unidades utilizables en la sucursal o alcance seleccionado.'
+        elif all(v['precio_final'] is None for v in variantes):
+            diagnostico='PRECIO_NO_DISPONIBLE'
+            texto='La variante tiene existencias pero no cuenta con un precio vigente para ofrecerla.'
+    if productos:
+        p=productos[0]
+        if p['precio_final'] is not None:
+            texto += f" Precio de esa variante en {p['sucursal']}: {p['precio_final']:.2f} BOB."
+        else:
+            texto += ' No hay precio vigente registrado para esa variante.'
+        texto += ' El stock es informativo y se verifica otra vez al confirmar la operación.'
+    if alternativas:
+        texto += ' Las alternativas no cumplen necesariamente todos los filtros solicitados; revisa talla, color y sucursal.'
+    if hay_mas:
+        texto += ' Se muestran hasta ocho resultados; precisa la prenda o sucursal para acotar la búsqueda.'
+    ids = {p['producto_id'] for p in productos}
+    nuevo = AsistenteContexto(empresa_id=empresa_id,producto_id=next(iter(ids)) if len(ids)==1 else producto_id,
+        sucursal_id=sucursal_id,terminos=terminos,color_patrones=filtros['color_patrones'],
+        talla_patrones=filtros['talla_patrones'],precio_max=filtros['precio_max'])
+    return _respuesta(texto,'promociones' if promocion else tipo,productos=[_mapear_producto(p) for p in productos],
+        alternativas=[_mapear_producto(p) for p in alternativas],filtros_detectados={**_filtros_publicos(filtros),'diagnostico':diagnostico},
+        contexto=nuevo,fuentes=['Catálogo actual','Precios y promociones vigentes','Existencias por variante y sucursal'],hay_mas=hay_mas)

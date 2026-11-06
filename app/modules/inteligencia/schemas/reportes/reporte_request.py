@@ -32,6 +32,7 @@ class ReporteRequest(BaseModel):
     tipo_entrega: Literal["RECOJO_SUCURSAL", "DELIVERY"] | None = None
     rol: str | None = Field(default=None, max_length=80)
     activo: bool | None = None
+    tipo_venta: Literal['PRESENCIAL','DIGITAL'] | None = None
 
     @model_validator(mode="after")
     def validar_rango(self):
@@ -45,6 +46,25 @@ class ReporteRequest(BaseModel):
 class InterpretarRequest(BaseModel):
     texto: str = Field(min_length=3, max_length=500)
     origen: Literal['TEXTO','VOZ'] = 'TEXTO'
+
+
+class DetalleReporteRequest(ReporteRequest):
+    pagina: int = Field(default=1,ge=1)
+    tamano: int = Field(default=100,ge=1,le=500)
+
+
+class DashboardRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    fecha_desde: date
+    fecha_hasta: date
+    sucursal_id: int | None = Field(default=None,gt=0)
+    tipo_venta: Literal['PRESENCIAL','DIGITAL'] | None = None
+    comparar: bool = True
+
+    @model_validator(mode='after')
+    def validar_periodo(self):
+        ReporteRequest(tipo='VENTAS',fecha_desde=self.fecha_desde,fecha_hasta=self.fecha_hasta)
+        return self
 
 
 class CrearReporteProgramadoRequest(BaseModel):
@@ -72,7 +92,7 @@ class CrearReporteProgramadoRequest(BaseModel):
                 raise ValueError('Correo destinatario inválido.')
         except (ZoneInfoNotFoundError,IndexError) as error:
             raise ValueError('Zona horaria o correo inválido.') from error
-        if set(self.filtros)-{'agrupacion','estado','metodo_pago','proveedor_pago','tipo_entrega','rol','activo'}:
+        if set(self.filtros)-{'agrupacion','estado','metodo_pago','proveedor_pago','tipo_entrega','rol','activo','tipo_venta'}:
             raise ValueError('Filtros de programación desconocidos.')
         ReporteRequest(tipo=self.tipo,fecha_desde=date(2026,1,1),fecha_hasta=date(2026,1,1),**self.filtros)
         return self
@@ -80,3 +100,15 @@ class CrearReporteProgramadoRequest(BaseModel):
 
 class ActualizarEstadoProgramadoRequest(BaseModel):
     activo: bool
+
+
+class EditarReporteProgramadoRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(ge=1)
+    cambios: dict[str, object]
+
+    @model_validator(mode='after')
+    def claves_permitidas(self):
+        if set(self.cambios)-set(CrearReporteProgramadoRequest.model_fields):
+            raise ValueError('Campos de programación desconocidos.')
+        return self

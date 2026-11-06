@@ -48,14 +48,14 @@ def _cliente_vertex():
         raise RuntimeError("Falta instalar google-genai en el backend.") from exc
 
     if proveedor == "GEMINI":
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=10000,retry_options=types.HttpRetryOptions(attempts=1)))
         return client, types, GEMINI_MODEL
 
     client = genai.Client(
         vertexai=True,
         project=VERTEX_PROJECT_ID,
         location=VERTEX_LOCATION,
-        http_options=types.HttpOptions(api_version="v1"),
+        http_options=types.HttpOptions(api_version="v1", timeout=10000,retry_options=types.HttpRetryOptions(attempts=1)),
     )
     return client, types, VERTEX_MODEL
 
@@ -79,6 +79,7 @@ def interpretar_asistente_con_vertex(
     sucursales: list[dict[str, object]],
 ) -> dict[str, object]:
     client, types, modelo = _cliente_vertex()
+    sucursales = [{k:s[k] for k in ('id','nombre','ciudad') if k in s} for s in sucursales[:50]]
     prompt = f"""
 Eres el intérprete del asistente de tienda StyleAR.
 Convierte el mensaje del cliente a intención y filtros JSON para buscar en una base de datos real.
@@ -130,6 +131,7 @@ Mensaje: {mensaje}
         config=types.GenerateContentConfig(
             temperature=0,
             response_mime_type="application/json",
+            max_output_tokens=600,
         ),
     )
     data = _extraer_json(response.text or "")

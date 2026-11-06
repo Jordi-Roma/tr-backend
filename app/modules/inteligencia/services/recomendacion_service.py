@@ -14,7 +14,6 @@ from app.core.config import (
     VERTEX_PROJECT_ID,
 )
 from app.modules.catalogo.repositories.catalogo_publico_repository import (
-    listar_prendas_catalogo,
     obtener_prenda_catalogo,
 )
 from app.modules.inteligencia.repositories import recomendacion_repository as repo
@@ -121,7 +120,7 @@ def indexar_productos(empresa_id: int) -> dict:
     else:
         raise HTTPException(status_code=503, detail=f'Proveedor de recomendaciones no soportado: {AI_RECOMMENDATIONS_PROVIDER}.')
     productos = repo.listar_productos_para_indice(empresa_id)
-    guardados = repo.obtener_embeddings(MODELO, empresa_id)
+    guardados = repo.obtener_embeddings(f'{AI_RECOMMENDATIONS_PROVIDER}:{MODELO}', empresa_id)
     actualizados = 0
     errores = 0
     detalle_errores: list[str] = []
@@ -133,7 +132,7 @@ def indexar_productos(empresa_id: int) -> dict:
             continue
         try:
             vector = _crear_embedding(texto)
-            repo.guardar_embedding(int(producto['id']), MODELO, texto_hash, vector, empresa_id)
+            repo.guardar_embedding(int(producto['id']), f'{AI_RECOMMENDATIONS_PROVIDER}:{MODELO}', texto_hash, vector, empresa_id)
             actualizados += 1
         except Exception as exc:
             errores += 1
@@ -168,7 +167,7 @@ def _mensaje_error_embedding(exc: Exception) -> str:
 
 
 def _coseno(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b) or not a:
+    if not _vector_valido(a) or not _vector_valido(b) or len(a) != len(b):
         return -1.0
     norma_a = math.sqrt(sum(value * value for value in a))
     norma_b = math.sqrt(sum(value * value for value in b))
@@ -177,30 +176,33 @@ def _coseno(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b)) / (norma_a * norma_b)
 
 
+def _vector_valido(vector):
+    return (isinstance(vector,(list,tuple)) and bool(vector)
+        and all(isinstance(v,(float,int)) and math.isfinite(v) for v in vector)
+        and any(v!=0 for v in vector))
+
+
 def _candidatos_disponibles(sucursal_id: int | None, talla_id: int | None, empresa_id: int) -> list[dict]:
-    filtros: dict[str, object] = {'solo_disponibles': True, 'por_pagina': 500, 'pagina': 1}
-    if sucursal_id is not None:
-        filtros['sucursal_id'] = sucursal_id
-    if talla_id is not None:
-        filtros['talla_id'] = talla_id
-    prendas, _ = listar_prendas_catalogo(filtros, empresa_id)
-    return [p for p in prendas if p['stock_total'] > 0 and p['precio_final'] is not None]
+    # Solo IDs y metadatos para puntuar; materializar únicamente los mejores resultados.
+    return repo.candidatos_disponibles(empresa_id,sucursal_id,talla_id)
 
 
 def _validar_respuesta(producto_id: int, sucursal_id: int | None, talla_id: int | None, empresa_id: int) -> dict | None:
     prenda = obtener_prenda_catalogo(producto_id, sucursal_id, empresa_id)
     if not prenda or prenda['precio_final'] is None:
         return None
-    if talla_id is None:
-        return prenda if prenda['stock_total'] > 0 else None
     variantes = [v for v in prenda['variantes'] if
-        v['talla_id'] == talla_id and v['stock_total'] > 0 and v['precio_final'] is not None
+        (talla_id is None or v['talla_id'] == talla_id) and v['stock_total'] > 0 and v['precio_final'] is not None
     ]
     if not variantes:
         return None
     prenda['precio_final'] = min(v['precio_final'] for v in variantes)
     prenda['precio_vigente'] = min(v['precio_vigente'] for v in variantes if v['precio_vigente'] is not None)
     prenda['stock_total'] = sum(int(v['stock_total']) for v in variantes)
+    prenda['variantes'] = variantes
+    prenda['tallas'] = [t for t in prenda['tallas'] if t['id'] in {v['talla_id'] for v in variantes}]
+    prenda['colores'] = [c for c in prenda['colores'] if c['id'] in {v['color_id'] for v in variantes}]
+    prenda['tiene_promocion'] = any(v['tiene_promocion'] for v in variantes)
     return prenda
 
 
@@ -209,10 +211,10 @@ def recomendar_desde_producto(producto_id: int, empresa_id: int, sucursal_id: in
     origen = obtener_prenda_catalogo(producto_id, None, empresa_id)
     if origen is None:
         raise HTTPException(status_code=404, detail='Producto no encontrado.')
-    embeddings = repo.obtener_embeddings(MODELO, empresa_id)
-    vector_origen = embeddings.get(producto_id)
     disponibles = _candidatos_disponibles(sucursal_id, talla_id, empresa_id)
-    if not vector_origen:
+    embeddings = repo.obtener_embeddings(f'{AI_RECOMMENDATIONS_PROVIDER}:{MODELO}', empresa_id,[p['producto_id'] for p in disponibles]+[producto_id])
+    vector_origen = embeddings.get(producto_id)
+    if not vector_origen or not _vector_valido(vector_origen['embedding']):
         return _recomendaciones_iniciales(
             disponibles,
             producto_id,
@@ -227,7 +229,7 @@ def recomendar_desde_producto(producto_id: int, empresa_id: int, sucursal_id: in
     for item in disponibles:
         id_ = int(item['producto_id'])
         vector = embeddings.get(id_)
-        if id_ != producto_id and vector:
+        if id_ != producto_id and vector and _vector_valido(vector['embedding']) and len(vector['embedding'])==len(vector_origen['embedding']):
             puntuados.append((
                 _coseno(vector_origen['embedding'], vector['embedding']),
                 id_,
@@ -250,22 +252,24 @@ def recomendar_desde_producto(producto_id: int, empresa_id: int, sucursal_id: in
 
 
 def recomendar_para_cliente(cliente_id: int, empresa_id: int, limite: int = 8) -> list[dict]:
-    embeddings = repo.obtener_embeddings(MODELO, empresa_id)
     preferencias = repo.obtener_preferencias(cliente_id, empresa_id)
     if not preferencias['usar_historial']:
         return []
     favoritos = repo.listar_favoritos(cliente_id, empresa_id)
     compras = repo.listar_compras_confirmadas(cliente_id, empresa_id)
+    disponibles = _candidatos_disponibles(None,None,empresa_id)
+    ids_semilla = favoritos[:20]+[int(r['producto_id']) for r in compras]
+    embeddings = repo.obtener_embeddings(f'{AI_RECOMMENDATIONS_PROVIDER}:{MODELO}',empresa_id,[p['producto_id'] for p in disponibles]+ids_semilla)
     semillas: list[tuple[int, float]] = [(id_, 3.0) for id_ in favoritos[:20]]
     semillas.extend((int(row['producto_id']), min(float(row['peso']), 3.0) * 1.5) for row in compras)
     categorias = set(int(id_) for id_ in preferencias['categorias'])
     if categorias:
-        semillas.extend((int(row['id']), 0.6) for row in repo.listar_productos_para_indice(empresa_id)
-                        if int(row['id']) in embeddings and int(row.get('categoria_id') or 0) in categorias)
-    vectores = [(embeddings[id_]['embedding'], peso) for id_, peso in semillas if id_ in embeddings]
+        semillas.extend((int(row['producto_id']), 0.6) for row in disponibles
+                        if int(row['producto_id']) in embeddings and int(row.get('categoria_id') or 0) in categorias)
+    vectores = [(embeddings[id_]['embedding'], peso) for id_, peso in semillas if id_ in embeddings and _vector_valido(embeddings[id_]['embedding'])]
     if not vectores:
         return _recomendaciones_iniciales(
-            _candidatos_disponibles(None, None, empresa_id),
+            disponibles,
             None,
             None,
             None,
@@ -273,6 +277,7 @@ def recomendar_para_cliente(cliente_id: int, empresa_id: int, limite: int = 8) -
             None,
             'Recomendación inicial con prendas disponibles mientras conocemos tus gustos.',
             empresa_id,
+            set(favoritos) | {int(row['producto_id']) for row in compras},
         )
     dimension = len(vectores[0][0])
     perfil = [0.0] * dimension
@@ -282,19 +287,24 @@ def recomendar_para_cliente(cliente_id: int, empresa_id: int, limite: int = 8) -
         for idx, value in enumerate(vector):
             perfil[idx] += value * peso
     excluidos = set(favoritos) | {int(row['producto_id']) for row in compras}
+    if not _vector_valido(perfil):
+        return _recomendaciones_iniciales(disponibles,None,None,None,limite,None,
+            'Recomendación inicial con prendas disponibles.',empresa_id,excluidos)
     puntuados = []
-    motivo = _motivo_para_cliente(bool(favoritos), bool(compras), bool(categorias))
-    for item in _candidatos_disponibles(None, None, empresa_id):
+    usados = {id_ for id_,_ in semillas if id_ in embeddings and _vector_valido(embeddings[id_]['embedding']) and len(embeddings[id_]['embedding'])==dimension}
+    motivo = _motivo_para_cliente(bool(set(favoritos)&usados),
+        bool({int(r['producto_id']) for r in compras}&usados), bool(categorias))
+    for item in disponibles:
         id_ = int(item['producto_id'])
         vector = embeddings.get(id_)
-        if id_ not in excluidos and vector:
+        if id_ not in excluidos and vector and _vector_valido(vector['embedding']) and len(vector['embedding'])==dimension:
             puntuados.append((_coseno(perfil, vector['embedding']), id_, motivo))
     puntuados.sort(reverse=True)
     resultado = _materializar(puntuados, None, None, limite, empresa_id)
     if resultado:
         return resultado
     return _recomendaciones_iniciales(
-        _candidatos_disponibles(None, None, empresa_id),
+        disponibles,
         None,
         None,
         None,
@@ -309,7 +319,11 @@ def recomendar_para_cliente(cliente_id: int, empresa_id: int, limite: int = 8) -
 def _materializar(puntuados: list[tuple[float, int, str]], sucursal_id: int | None,
                  talla_id: int | None, limite: int, empresa_id: int) -> list[dict]:
     resultado = []
+    vistos = set()
     for score, producto_id, motivo in puntuados:
+        if producto_id in vistos:
+            continue
+        vistos.add(producto_id)
         prenda = _validar_respuesta(producto_id, sucursal_id, talla_id, empresa_id)
         if prenda:
             resultado.append(_con_motivo(prenda, motivo, score))
@@ -338,6 +352,7 @@ def _recomendaciones_iniciales(candidatos: list[dict], producto_id: int | None,
         id_ = int(item['producto_id'])
         if id_ in excluidos:
             continue
+        excluidos.add(id_)
         prenda = _validar_respuesta(id_, sucursal_id, talla_id, empresa_id)
         if prenda:
             resultado.append(_con_motivo(prenda, motivo, None))

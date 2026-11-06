@@ -183,18 +183,18 @@ def crear_sesion_stripe(orden):
 
 
 def notificar(cur, orden, clave, titulo, mensaje):
-    cur.execute('SELECT usuario_id FROM cliente WHERE id=%s AND empresa_id=%s',(orden['cliente_id'],orden['empresa_id']))
-    cliente = cur.fetchone()
-    if not cliente:
-        return
-    cur.execute('''INSERT INTO notificacion_usuario(empresa_id,usuario_id,clave,titulo,mensaje,orden_id)
-        VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(empresa_id,usuario_id,clave) DO NOTHING RETURNING id''',
-        (orden['empresa_id'],cliente['usuario_id'],clave,titulo,mensaje,orden['id']))
-    nueva = cur.fetchone()
-    if nueva:
-        cur.execute('''INSERT INTO salida_push(notificacion_id,dispositivo_id)
-            SELECT %s,id FROM dispositivo_push WHERE usuario_id=%s AND empresa_id=%s AND activo
-            ON CONFLICT DO NOTHING''',(nueva['id'],cliente['usuario_id'],orden['empresa_id']))
+    from .notificaciones_service import emitir_cliente
+    categoria='PAGO'
+    tipo,recurso='ORDEN_PAGO',orden['id']
+    if clave.startswith('compra:'):
+        categoria='COMPRA'
+    elif clave.startswith(('reembolso','reembolsado:')):
+        categoria='REEMBOLSO'
+    elif clave.startswith('delivery:'):
+        categoria='ENTREGA'
+        tipo,recurso='DELIVERY',int(clave.split(':')[1])
+    return emitir_cliente(cur,orden['empresa_id'],orden['cliente_id'],clave,titulo,mensaje,
+                          categoria,tipo,recurso,orden_id=orden['id'])
 
 
 def solicitar_reembolso(cur, orden, motivo):

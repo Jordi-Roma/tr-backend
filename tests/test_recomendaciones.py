@@ -9,7 +9,7 @@ def test_coseno_identifica_similitud_y_descarta_dimensiones_distintas():
 
 def test_perfil_para_ti_utiliza_compras_y_favoritos_sin_repetirlos(monkeypatch):
     monkeypatch.setattr(service.repo, 'obtener_preferencias', lambda cliente_id, empresa_id: {'categorias': [], 'usar_historial': True})
-    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id: {
+    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id, producto_ids=None: {
         1: {'embedding': [1.0, 0.0]}, 2: {'embedding': [0.8, 0.2]},
         3: {'embedding': [0.0, 1.0]}, 4: {'embedding': [0.7, 0.3]},
     })
@@ -27,14 +27,14 @@ def test_perfil_para_ti_utiliza_compras_y_favoritos_sin_repetirlos(monkeypatch):
 
 
 def test_cliente_puede_dejar_de_usar_historial(monkeypatch):
-    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id: {})
+    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id, producto_ids=None: {})
     monkeypatch.setattr(service.repo, 'obtener_preferencias', lambda cliente_id, empresa_id: {'categorias': [], 'usar_historial': False})
     assert service.recomendar_para_cliente(7, 1) == []
 
 
 def test_recomendacion_contextual_excluye_producto_origen(monkeypatch):
     monkeypatch.setattr(service, 'obtener_prenda_catalogo', lambda id_, sucursal_id, empresa_id: {'producto_id': id_})
-    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id: {
+    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id, producto_ids=None: {
         1: {'embedding': [1.0, 0.0]}, 2: {'embedding': [0.9, 0.1]},
     })
     monkeypatch.setattr(service, '_candidatos_disponibles', lambda sucursal, talla, empresa_id: [
@@ -50,7 +50,7 @@ def test_recomendacion_contextual_tiene_fallback_si_no_hay_embedding(monkeypatch
     monkeypatch.setattr(service, 'obtener_prenda_catalogo', lambda id_, sucursal_id, empresa_id: {
         'producto_id': id_, 'categoria_id': 5,
     })
-    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id: {})
+    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id, producto_ids=None: {})
     monkeypatch.setattr(service, '_candidatos_disponibles', lambda sucursal, talla, empresa_id: [
         {'producto_id': 1, 'categoria_id': 5, 'stock_total': 3, 'nombre': 'Origen'},
         {'producto_id': 2, 'categoria_id': 5, 'stock_total': 2, 'nombre': 'Similar'},
@@ -65,7 +65,7 @@ def test_recomendacion_contextual_tiene_fallback_si_no_hay_embedding(monkeypatch
 
 
 def test_para_ti_cliente_nuevo_devuelve_sugerencias_iniciales(monkeypatch):
-    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id: {})
+    monkeypatch.setattr(service.repo, 'obtener_embeddings', lambda modelo, empresa_id, producto_ids=None: {})
     monkeypatch.setattr(service.repo, 'obtener_preferencias', lambda cliente_id, empresa_id: {'categorias': [], 'usar_historial': True})
     monkeypatch.setattr(service.repo, 'listar_favoritos', lambda cliente_id, empresa_id: [])
     monkeypatch.setattr(service.repo, 'listar_compras_confirmadas', lambda cliente_id, empresa_id: [])

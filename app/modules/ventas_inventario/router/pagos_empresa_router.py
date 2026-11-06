@@ -1,7 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 import hashlib,hmac,time
-from fastapi import APIRouter,Depends,HTTPException,Request
+from fastapi import APIRouter,Depends,HTTPException,Request,Query
 from pydantic import BaseModel
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
@@ -176,6 +176,42 @@ def lista(actor=Depends(obtener_usuario_actual)):return notas.listar(actor)
 def estado(actor=Depends(obtener_usuario_actual)):
     exigir_empresa_id(actor)
     return notas.estado()
+
+
+@notificaciones.get('/bandeja')
+def bandeja(pagina:int=Query(default=1,ge=1),tamano:int=Query(default=20,ge=1,le=100),
+            leida:bool|None=None,categoria:notas.Categoria|None=None,actor=Depends(obtener_usuario_actual)):
+    return notas.bandeja(actor,pagina,tamano,leida,categoria)
+
+
+@notificaciones.get('/resumen')
+def resumen_notificaciones(actor=Depends(obtener_usuario_actual)):
+    return notas.resumen(actor)
+
+
+@notificaciones.patch('/leer-todas')
+def leer_todas(actor=Depends(obtener_usuario_actual)):
+    return notas.leer_todas(actor)
+
+
+@notificaciones.get('/preferencias')
+def preferencias(actor=Depends(obtener_usuario_actual)):
+    return notas.preferencias(actor)
+
+
+@notificaciones.put('/preferencias')
+def guardar_preferencias(datos:notas.PreferenciasRequest,actor=Depends(obtener_usuario_actual)):
+    return notas.preferencias(actor,datos)
+
+
+@notificaciones.get('/{nid}/destino')
+def destino_notificacion(nid:int,actor=Depends(obtener_usuario_actual)):
+    return notas.destino(actor,nid)
+
+
+@notificaciones.get('/{nid}/estado')
+def estado_notificacion(nid:int,actor=Depends(obtener_usuario_actual)):
+    return notas.trazabilidad(actor,nid)
 
 @notificaciones.patch('/{nid}/leer')
 def leer(nid:int,actor=Depends(obtener_usuario_actual)):return notas.leer(actor,nid)

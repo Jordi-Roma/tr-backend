@@ -365,7 +365,7 @@ def _programaciones(cur, empresa_id):
 def _ajustar_programaciones(cur, empresa_id, politica):
     pausar = seleccionar_pausas_reportes(_programaciones(cur,empresa_id),politica)
     if pausar:
-        cur.execute("""UPDATE reporte_programado SET activo=FALSE,pausa_motivo='CAMBIO_PLAN'
+        cur.execute("""UPDATE reporte_programado SET activo=FALSE,pausa_motivo='CAMBIO_PLAN',revision=revision+1
             WHERE empresa_id=%s AND id=ANY(%s)""",(empresa_id,pausar))
     if not politica['funciones']['horario_respaldo_configurable']:
         cur.execute("""UPDATE respaldo_programacion SET hora_local='02:00',zona_horaria='America/La_Paz',

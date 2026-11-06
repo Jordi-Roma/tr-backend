@@ -6,16 +6,19 @@ from fastapi.responses import StreamingResponse
 from app.core.contexto_empresa import exigir_empresa_id
 from app.core.plan_empresa import exigir_funcion_empresa
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin
+from app.modules.administracion.dependencies.empleado_access import requerir_admin_o_encargado
 from app.modules.inteligencia.exports.reporte_excel import crear_excel
 from app.modules.inteligencia.exports.reporte_pdf import crear_pdf
 from app.modules.inteligencia.schemas.reportes.reporte_request import (
     ActualizarEstadoProgramadoRequest,
     CrearReporteProgramadoRequest,
     InterpretarRequest,
+    DetalleReporteRequest, DashboardRequest, EditarReporteProgramadoRequest,
     ReporteRequest,
 )
 from app.modules.inteligencia.services.reporte_service import (
     actualizar_estado_programado_service,
+    limitar_reporte, generar_detalle, generar_dashboard, editar_programado_service,
     catalogo_reportes,
     crear_programado_service,
     ejecutar_programado_service,
@@ -25,7 +28,8 @@ from app.modules.inteligencia.services.reporte_service import (
     listar_programados_service,
 )
 
-def requerir_reportes(usuario: dict[str, object] = Depends(requerir_admin)):
+def requerir_reportes(usuario: dict[str, object] = Depends(requerir_admin_o_encargado)):
+    limitar_reporte(usuario)
     exigir_funcion_empresa(exigir_empresa_id(usuario), "reportes", permitir_consulta=True)
     return usuario
 
@@ -34,22 +38,25 @@ router = APIRouter(prefix="/api/v1/reportes", tags=["Reportes"], dependencies=[D
 
 
 @router.get("/catalogo")
-def catalogo_endpoint(usuario_actual: dict[str, object] = Depends(requerir_admin)):
-    return catalogo_reportes(exigir_empresa_id(usuario_actual))
+def catalogo_endpoint(usuario_actual: dict[str, object] = Depends(requerir_reportes)):
+    return catalogo_reportes(exigir_empresa_id(usuario_actual),usuario_actual)
 
 
 @router.post("/interpretar")
-def interpretar_endpoint(request: InterpretarRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+def interpretar_endpoint(request: InterpretarRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
     empresa_id=exigir_empresa_id(usuario_actual)
     exigir_funcion_empresa(empresa_id,'reportes_interpretacion')
     if request.origen=='VOZ':
         exigir_funcion_empresa(empresa_id,'reportes_voz')
-    return interpretar(request.texto, exigir_empresa_id(usuario_actual))
+    resultado=interpretar(request.texto, empresa_id, limitar_reporte(usuario_actual))
+    if resultado.get('filtros'):
+        resultado['filtros']=limitar_reporte(usuario_actual,ReporteRequest(**resultado['filtros'])).model_dump(mode='json')
+    return resultado
 
 
 @router.post("/generar")
-def generar_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
-    return generar_reporte(request, exigir_empresa_id(usuario_actual))
+def generar_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
+    return generar_reporte(limitar_reporte(usuario_actual,request), exigir_empresa_id(usuario_actual))
 
 
 def _archivo(request: ReporteRequest, extension: str, empresa_id: int):
@@ -61,18 +68,32 @@ def _archivo(request: ReporteRequest, extension: str, empresa_id: int):
 
 
 @router.post("/exportar/pdf")
-def pdf_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+def pdf_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
     exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_pdf')
-    return _archivo(request, "pdf", exigir_empresa_id(usuario_actual))
+    return _archivo(limitar_reporte(usuario_actual,request), "pdf", exigir_empresa_id(usuario_actual))
 
 
 @router.post("/exportar/excel")
-def excel_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+def excel_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_reportes)):
     exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_excel')
-    return _archivo(request, "xlsx", exigir_empresa_id(usuario_actual))
+    return _archivo(limitar_reporte(usuario_actual,request), "xlsx", exigir_empresa_id(usuario_actual))
 
 
 # ── Reportes Programados / Automáticos ─────────────────────────────
+
+@router.post('/detalle')
+def detalle(request:DetalleReporteRequest,usuario=Depends(requerir_reportes)):
+    return generar_detalle(limitar_reporte(usuario,request),exigir_empresa_id(usuario))
+
+
+@router.post('/dashboard')
+def dashboard(request:DashboardRequest,usuario=Depends(requerir_reportes)):
+    return generar_dashboard(limitar_reporte(usuario,request),exigir_empresa_id(usuario))
+
+
+@router.patch('/programados/{programado_id}')
+def editar_programado(programado_id:int,request:EditarReporteProgramadoRequest,usuario=Depends(requerir_admin)):
+    return editar_programado_service(programado_id,request,usuario)
 
 
 @router.get("/programados")

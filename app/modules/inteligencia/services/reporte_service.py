@@ -25,7 +25,7 @@ from app.modules.inteligencia.schemas.reportes.reporte_request import (
 )
 
 TITULOS = {
-    "VENTAS": "Ventas presenciales",
+    "VENTAS": "Ventas registradas",
     "PRODUCTOS_MAS_VENDIDOS": "Productos más vendidos",
     "INVENTARIO": "Inventario por sucursal",
     "RESERVAS": "Reservas",
@@ -38,8 +38,90 @@ TITULOS = {
 MONETARIOS = {"subtotal", "descuento", "total", "importe"}
 
 
-def catalogo_reportes(empresa_id: int) -> dict[str, object]:
-    return {"tipos": [{"id": key, "nombre": title} for key, title in TITULOS.items()], "sucursales": listar_sucursales(empresa_id)}
+def catalogo_reportes(empresa_id: int,usuario=None) -> dict[str, object]:
+    sucursal=limitar_reporte(usuario) if usuario is not None else None
+    return {"tipos": [{"id": key, "nombre": title} for key, title in TITULOS.items() if not (sucursal and key=='USUARIOS')],
+            "sucursales": [s for s in listar_sucursales(empresa_id) if sucursal is None or s['id']==sucursal]}
+
+
+def limitar_reporte(usuario,request=None):
+    from app.modules.inteligencia.repositories.reporte_repository import sucursal_encargado
+    e=exigir_empresa_id(usuario)
+    roles=set(usuario.get('roles',[]))
+    if 'ADMIN_SAAS' in roles:
+        raise HTTPException(403,'Los reportes comerciales requieren una cuenta de empresa.')
+    if 'ADMINISTRADOR' in roles:
+        return request
+    if 'ENCARGADO_SUCURSAL' not in roles:
+        raise HTTPException(403,'No tienes acceso a reportes.')
+    sucursal=sucursal_encargado(e,int(usuario['id']))
+    if sucursal is None:
+        raise HTTPException(403,'No tienes una sucursal activa asignada.')
+    if request is None:
+        return sucursal
+    if getattr(request,'tipo',None)=='USUARIOS':
+        raise HTTPException(403,'El reporte de usuarios está reservado al administrador.')
+    if request.sucursal_id not in (None,sucursal):
+        raise HTTPException(403,'Solo puedes consultar tu sucursal.')
+    return request.model_copy(update={'sucursal_id':sucursal})
+
+
+def generar_detalle(request,empresa_id):
+    _validar_sucursal_reporte(request,empresa_id)
+    datos=consultar_reporte(request,empresa_id,paginacion=(request.pagina,request.tamano))
+    r=datos['resumen']
+    return {'tipo':request.tipo,'titulo':TITULOS[request.tipo],
+        'filtros_efectivos':request.model_dump(mode='json'),'generado_en':datetime.now(ZoneInfo('America/La_Paz')).isoformat(),
+        'pagina':request.pagina,'tamano':request.tamano,'filas':datos['filas'],
+        'total_filas':r['total_filas'],'resumen':r,'serie_grafico':datos['serie_grafico'],
+        'sin_datos':r['total_filas']==0,
+        'columnas':[{'key':k,'label':k.replace('_',' ').title()} for k in datos['filas'][0]] if datos['filas'] else [],
+        'nota':'Los totales corresponden al resultado completo; el inventario es actual y los importes de órdenes son nominales.'}
+
+
+def generar_dashboard(request,empresa_id):
+    _validar_sucursal_reporte(request,empresa_id)
+    from app.modules.inteligencia.repositories.reporte_repository import consultar_dashboard
+    desde_anterior=request.fecha_desde-timedelta(days=(request.fecha_hasta-request.fecha_desde).days+1)
+    anterior=request.model_copy(update={'fecha_desde':desde_anterior,'fecha_hasta':request.fecha_desde-timedelta(days=1),'comparar':False})
+    datos=consultar_dashboard(request,empresa_id,anterior if request.comparar else None)
+    respuesta={'filtros':request.model_dump(mode='json'),'datos':datos['actual'],
+        'generado_en':datetime.now(ZoneInfo('America/La_Paz')).isoformat(),
+        'definiciones':{
+            'ventas':'Registros activos COMPLETADA, por fecha de venta; WEB se presenta como DIGITAL.',
+            'importe_vendido':'Suma de total de las ventas completadas, en BOB; no representa una utilidad.',
+            'cobrado':'Órdenes con pago recibido o confirmado, por fecha de pago; caja presencial por saldo no representado en órdenes.',
+            'fecha_cobro_legacy':'Si falta fecha de pago se utiliza la actualización de la orden y, en último término, su creación.',
+            'neto':'Flujo de cobros registrados menos reembolsos confirmados en el período, separado por moneda; no es ganancia.',
+            'reservas':'Estado actual de reservas creadas en el período.',
+            'inventario':'Existencias actuales; no se reconstruye ni compara stock histórico.',
+            'tipo_venta':'El canal filtra ventas y flujos monetarios; reservas e inventario se limitan por empresa y sucursal.'}}
+    if request.comparar:
+        comparaciones={}
+        for k in ('ventas','ventas_presenciales','ventas_digitales','importe_vendido','reservas_pendientes','reservas_vencidas'):
+            comparaciones[k]=comparar_valores(datos['actual'][k],datos['anterior'][k])
+        monedas=sorted({f['moneda'] for d in (datos['actual'],datos['anterior']) for f in d['flujos']})
+        for moneda in monedas:
+            for k in ('cobrado','reembolsado','neto'):
+                valores=[next((f[k] for f in d['flujos'] if f['moneda']==moneda),'0') for d in (datos['actual'],datos['anterior'])]
+                comparaciones[f'{k}_{moneda}']=comparar_valores(*valores)
+        respuesta['comparacion']={'fecha_desde':anterior.fecha_desde,'fecha_hasta':anterior.fecha_hasta,
+                                  'datos_anteriores':datos['anterior'],'indicadores':comparaciones}
+    return respuesta
+
+
+def comparar_valores(actual,anterior):
+    a,b=Decimal(str(actual)),Decimal(str(anterior))
+    return {'actual':str(a),'anterior':str(b),'diferencia':str(a-b),
+            'variacion_porcentual':str(((a-b)/abs(b)*100).quantize(Decimal('.01'))) if b!=0 else None,
+            'motivo':None if b!=0 else 'BASE_ANTERIOR_CERO'}
+
+
+def _validar_sucursal_reporte(request,empresa_id):
+    if request.sucursal_id is not None and not any(s['id']==request.sucursal_id for s in listar_sucursales(empresa_id)):
+        raise HTTPException(422,'La sucursal seleccionada no existe o está inactiva.')
+
+
 
 
 def _normalizar(texto: str) -> str:
@@ -47,7 +129,7 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in texto if unicodedata.category(c) != "Mn")
 
 
-def _interpretar_por_reglas(texto: str, empresa_id: int) -> dict[str, object]:
+def _interpretar_por_reglas(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
     normal = _normalizar(texto)
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
     inicio, fin = hoy.replace(day=1), hoy
@@ -104,7 +186,7 @@ def _interpretar_por_reglas(texto: str, empresa_id: int) -> dict[str, object]:
         inicio = date(2020, 1, 1)
         fin = hoy
     sucursal_id = None
-    sucursales = listar_sucursales(empresa_id)
+    sucursales = [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida]
     for sucursal in sucursales:
         nombre = _normalizar(str(sucursal["nombre"]))
         if nombre in normal:
@@ -157,19 +239,19 @@ def _interpretar_por_reglas(texto: str, empresa_id: int) -> dict[str, object]:
     return {"interpretado": True, "advertencias": [], "texto_normalizado": normal, "filtros": filtros.model_dump(mode="json"), "motor": "reglas"}
 
 
-def interpretar(texto: str, empresa_id: int) -> dict[str, object]:
+def interpretar(texto: str, empresa_id: int, sucursal_permitida=None) -> dict[str, object]:
     hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
     if AI_REPORTS_PROVIDER in {"VERTEX", "GEMINI"}:
         try:
-            return interpretar_con_vertex(texto, hoy, listar_sucursales(empresa_id))
+            return interpretar_con_vertex(texto, hoy, [s for s in listar_sucursales(empresa_id) if sucursal_permitida is None or s['id']==sucursal_permitida])
         except Exception as exc:
-            resultado = _interpretar_por_reglas(texto, empresa_id)
+            resultado = _interpretar_por_reglas(texto, empresa_id, sucursal_permitida)
             advertencias = list(resultado.get("advertencias") or [])
-            advertencias.append(f"{AI_REPORTS_PROVIDER.title()} no respondió; se usó interpretación local. Detalle: {exc}")
+            advertencias.append(f"{AI_REPORTS_PROVIDER.title()} no respondió; se usó interpretación local.")
             resultado["advertencias"] = advertencias
             resultado["motor"] = "reglas_fallback"
             return resultado
-    return _interpretar_por_reglas(texto, empresa_id)
+    return _interpretar_por_reglas(texto, empresa_id, sucursal_permitida)
 
 
 def _presentar(valor: object) -> object:
@@ -185,17 +267,27 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
     if request.sucursal_id is not None and not any(s["id"] == request.sucursal_id for s in sucursales):
         raise HTTPException(status_code=422, detail="La sucursal seleccionada no existe o está inactiva.")
     rows = consultar_reporte(request, empresa_id)
-    if len(rows) == 5000:
-        raise HTTPException(status_code=422, detail="El reporte alcanza el límite de 5000 filas. Reduce el período o selecciona una sucursal.")
+    if len(rows) > 5000:
+        raise HTTPException(status_code=422, detail="La consulta completa supera 5000 filas. Usa el detalle paginado o reduce el período para exportar.")
     filas = [{key: _presentar(value) for key, value in row.items()} for row in rows]
-    total = sum((Decimal(str(row.get("total", row.get("monto_total", 0)) or 0)) for row in rows), Decimal(0))
-    unidades = sum(int(row.get("real", row.get("unidades", row.get("cantidad", 0))) or 0) for row in rows)
+    medibles=[r for r in rows if request.tipo!='VENTAS' or r.get('estado','COMPLETADA')=='COMPLETADA']
+    total = sum((Decimal(str(row.get("total", row.get("monto_total", 0)) or 0)) for row in medibles), Decimal(0))
+    por_moneda=defaultdict(Decimal)
+    for row in medibles:
+        por_moneda[str(row.get('moneda') or 'BOB')]+=Decimal(str(row.get('total',row.get('monto_total',row.get('importe',0))) or 0))
+    if not por_moneda:
+        por_moneda['BOB']=Decimal(0)
+    unidades = sum(int(row.get("real", row.get("unidades", row.get("cantidad", 0))) or 0) for row in medibles)
     bajo_stock = sum(1 for row in rows if row.get("estado") == "BAJO STOCK") if request.tipo == "INVENTARIO" else 0
     serie: dict[str, float] = defaultdict(float)
     if request.tipo in {"VENTAS", "RESERVAS", "MOVIMIENTOS", "TRANSFERENCIAS", "PAGOS", "DELIVERIES", "USUARIOS"}:
         for row in rows:
+            if request.tipo=='VENTAS' and row.get('estado','COMPLETADA')!='COMPLETADA':
+                continue
             fecha = row["fecha"].astimezone(ZoneInfo("America/La_Paz"))
             key = fecha.strftime("%Y-%m" if request.agrupacion == "MES" else "%Y-%m-%d")
+            if request.tipo=='PAGOS':
+                key+=' · '+str(row.get('moneda') or 'BOB')
             serie[key] += float(row.get("total", row.get("monto_total", 1)) or (0 if request.tipo in {"VENTAS", "RESERVAS", "PAGOS"} else 1))
     elif request.tipo == "PRODUCTOS_MAS_VENDIDOS":
         serie = {f"{row['producto']} · {row['sku']}": int(row["unidades"]) for row in rows[:10]}
@@ -204,12 +296,13 @@ def generar_reporte(request: ReporteRequest, empresa_id: int) -> dict[str, objec
     return {
         "tipo": request.tipo,
         "titulo": TITULOS[request.tipo],
-        "nota": "El inventario muestra el estado actual; no existe historial de snapshots para reconstruirlo por fechas." if request.tipo == "INVENTARIO" else "El valor nominal incluye reservas de todos los estados; no equivale a dinero cobrado." if request.tipo == "RESERVAS" else None,
+        "importes_por_moneda": [{'moneda':m,'importe':str(v)} for m,v in sorted(por_moneda.items())],
+        "nota": "El inventario muestra el estado actual; no existe historial de snapshots para reconstruirlo por fechas." if request.tipo == "INVENTARIO" else "El valor nominal incluye reservas de todos los estados; no equivale a dinero cobrado." if request.tipo == "RESERVAS" else "Órdenes por fecha de creación, con importes nominales; el flujo cobrado se consulta en el dashboard." if request.tipo=='PAGOS' else "Los indicadores de ventas incluyen solo registros completados." if request.tipo=='VENTAS' else None,
         "filtros_efectivos": {**request.model_dump(mode="json"), "sucursal": next((str(s["nombre"]) for s in sucursales if s["id"] == request.sucursal_id), "Todas")},
         "generado_en": datetime.now(ZoneInfo("America/La_Paz")).isoformat(),
-        "indicadores": ([{"label": "Ventas", "valor": len(rows)}, {"label": "Unidades vendidas", "valor": unidades}, {"label": "Total ventas (Bs)", "valor": float(total)}] if request.tipo == "VENTAS" else
+        "indicadores": ([{"label": "Ventas completadas", "valor": len(medibles)}, {"label": "Unidades vendidas", "valor": unidades}, {"label": "Total ventas (Bs)", "valor": float(total)}] if request.tipo == "VENTAS" else
                         [{"label": "Reservas", "valor": len(rows)}, {"label": "Unidades solicitadas", "valor": unidades}, {"label": "Valor nominal (Bs)", "valor": float(total)}] if request.tipo == "RESERVAS" else
-                        [{"label": "Pagos", "valor": len(rows)}, {"label": "Monto pagado/registrado (Bs)", "valor": float(total)}] if request.tipo == "PAGOS" else
+                        [{"label": "Órdenes", "valor": len(rows)}, *[{'label':f'Importe nominal de órdenes ({m})','valor':float(v)} for m,v in sorted(por_moneda.items())]] if request.tipo == "PAGOS" else
                         [{"label": "Deliveries", "valor": len(rows)}, {"label": "Costo delivery (Bs)", "valor": float(sum((Decimal(str(row.get("costo_delivery", 0) or 0)) for row in rows), Decimal(0)))}] if request.tipo == "DELIVERIES" else
                         [{"label": "Usuarios", "valor": len(rows)}, {"label": "Activos", "valor": sum(1 for row in rows if row.get("activo") is True)}, {"label": "Inactivos", "valor": sum(1 for row in rows if row.get("activo") is False)}] if request.tipo == "USUARIOS" else
                         [{"label": "Variantes", "valor": len(rows)}, {"label": "Stock real", "valor": unidades}, {"label": "Bajo stock", "valor": bajo_stock}] if request.tipo == "INVENTARIO" else
@@ -243,6 +336,11 @@ def crear_programado_service(request: CrearReporteProgramadoRequest, usuario_act
     usuario_id = int(usuario_actual["id"]) if "id" in usuario_actual else None
     item = crear_reporte_programado(request.model_dump(), empresa_id, usuario_id)
     return _presentar_programado(item)
+
+
+def editar_programado_service(programado_id,request,usuario):
+    from app.modules.inteligencia.repositories.reporte_repository import editar_reporte_programado
+    return _presentar_programado(editar_reporte_programado(programado_id,exigir_empresa_id(usuario),request.revision,request.cambios))
 
 
 def actualizar_estado_programado_service(programado_id: int, activo: bool, usuario_actual: dict[str, object]) -> dict[str, object]:
@@ -294,9 +392,10 @@ def _ejecutar_programacion(programado_id, empresa_id, manual=False):
             ocurrencia=ahora if manual else item['proxima_ejecucion']
             if not manual and (ocurrencia is None or ocurrencia>ahora):
                 return {'estado':'NO_VENCIDO'}
-            cur.execute("""INSERT INTO reporte_ejecucion(reporte_id,ocurrencia,estado)
-                VALUES(%s,%s,'INICIADO') ON CONFLICT(reporte_id,ocurrencia) DO NOTHING RETURNING id""",
-                (programado_id,ocurrencia))
+            revision_intentada=item['revision']
+            cur.execute("""INSERT INTO reporte_ejecucion(reporte_id,ocurrencia,estado,reporte_revision)
+                VALUES(%s,%s,'INICIADO',%s) ON CONFLICT(reporte_id,ocurrencia) DO NOTHING RETURNING id""",
+                (programado_id,ocurrencia,revision_intentada))
             run=cur.fetchone()
             if not run:
                 # Un intento previo puede haber enviado antes de perder la conexión.
@@ -312,6 +411,8 @@ def _ejecutar_programacion(programado_id, empresa_id, manual=False):
             plan=_leer_plan(cur,empresa_id,bloquear=True,validar_vigencia=False)
             cur.execute('SELECT * FROM reporte_programado WHERE id=%s AND empresa_id=%s FOR UPDATE',(programado_id,empresa_id))
             item=dict(cur.fetchone())
+            if item['revision']!=revision_intentada:
+                raise HTTPException(409,'La programación cambió después de iniciar el intento; no se envió.')
             _validar_envio_programado(cur,item,plan,manual)
             desde,hasta=periodo_reporte(item,ocurrencia)
             request=ReporteRequest(tipo=item['tipo'],fecha_desde=desde,fecha_hasta=hasta,

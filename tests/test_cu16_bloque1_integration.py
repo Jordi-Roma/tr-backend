@@ -225,6 +225,8 @@ def test_fcm_aceptacion_no_duplica_y_fallo_conserva_pendiente(api,empresas,monke
     job=consulta('SELECT s.* FROM salida_push s JOIN notificacion_usuario n ON n.id=s.notificacion_id WHERE n.orden_id=%s',(o['orden_id'],),True)
     assert job['estado']=='FALLIDO' and job['intentos']==1
     monkeypatch.setattr(push_worker,'enviar_fcm',lambda *_:'projects/prueba/messages/1')
+    assert push_worker.procesar()['enviados']==0  # Respeta la espera progresiva persistida.
+    consulta("UPDATE salida_push SET proximo_intento=CURRENT_TIMESTAMP-INTERVAL '1 second' WHERE id=%s",(job['id'],))
     assert push_worker.procesar()['enviados']==1
     assert push_worker.procesar()['enviados']==0
 

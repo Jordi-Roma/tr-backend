@@ -61,10 +61,15 @@ def bloquear(cur,e,uid,did=None):
 
 
 def avisar(cur,d,evento,texto):
-    cur.execute('''INSERT INTO notificacion_usuario(empresa_id,usuario_id,clave,titulo,mensaje) SELECT %s,usuario_id,%s,'Devolución',%s FROM cliente WHERE id=%s AND empresa_id=%s
-       ON CONFLICT(empresa_id,usuario_id,clave) DO NOTHING RETURNING id,usuario_id''',(d['empresa_id'],f"devolucion:{d['id']}:{evento}",texto,d['cliente_id'],d['empresa_id']))
-    n=cur.fetchone()
-    if n:cur.execute('INSERT INTO salida_push(notificacion_id,dispositivo_id) SELECT %s,id FROM dispositivo_push WHERE usuario_id=%s AND empresa_id=%s AND activo ON CONFLICT DO NOTHING',(n['id'],n['usuario_id'],d['empresa_id']))
+    from .notificaciones_service import emitir_cliente
+    cur.execute('SELECT tipo_operacion FROM devolucion WHERE id=%s AND empresa_id=%s',(d['id'],d['empresa_id']))
+    fila=cur.fetchone()
+    tipo='CAMBIO' if fila and fila['tipo_operacion']=='CAMBIO' else 'DEVOLUCION'
+    categoria='REEMBOLSO' if evento in ('reembolsada','reembolso') else tipo
+    if tipo=='CAMBIO' and evento=='solicitud':
+        texto='Solicitud de cambio recibida.'
+    return emitir_cliente(cur,d['empresa_id'],d['cliente_id'],f"devolucion:{d['id']}:{evento}",
+                          'Actualización de '+tipo.lower(),texto,categoria,tipo,d['id'])
 
 
 def aceptar(actor,did,monto):

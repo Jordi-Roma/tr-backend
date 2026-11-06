@@ -499,6 +499,10 @@ def _restaurar_empresa(cur,z,manifiesto):
     cur.execute('UPDATE sesion SET activa=FALSE WHERE empresa_id=%s',(empresa_id,))
     cur.execute('UPDATE token_recuperacion SET utilizado=TRUE WHERE usuario_id IN (SELECT id FROM usuario WHERE empresa_id=%s)',(empresa_id,))
     cur.execute('UPDATE password_reset_token SET usado=TRUE WHERE usuario_id IN (SELECT id FROM usuario WHERE empresa_id=%s)',(empresa_id,))
+    cur.execute('UPDATE dispositivo_push SET activo=FALSE WHERE empresa_id=%s',(empresa_id,))
+    cur.execute("""UPDATE salida_push SET estado='OMITIDO',ultimo_error='Copia restaurada; aviso histórico no se reenvía.'
+        WHERE notificacion_id IN (SELECT id FROM notificacion_usuario WHERE empresa_id=%s)
+            AND estado IN ('PENDIENTE','FALLIDO')""",(empresa_id,))
     # Recuperar datos comerciales no permite recuperar un plan superior ni
     # reactivar automatizaciones retiradas por el administrador SaaS.
     politica=normalizar_politica(_leer_plan(cur,empresa_id,validar_vigencia=False))
@@ -542,6 +546,8 @@ def _restaurar_global(z, nuevos):
             c.execute('UPDATE sesion SET activa=FALSE')
             c.execute('UPDATE token_recuperacion SET utilizado=TRUE')
             c.execute('UPDATE password_reset_token SET usado=TRUE')
+            c.execute('UPDATE dispositivo_push SET activo=FALSE')
+            c.execute("UPDATE salida_push SET estado='OMITIDO' WHERE estado IN ('PENDIENTE','FALLIDO')")
         ensayo.commit()
     finally:
         ensayo.close()

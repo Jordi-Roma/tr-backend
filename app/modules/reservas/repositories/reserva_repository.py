@@ -19,6 +19,7 @@ from app.modules.reservas.repositories.carrito_repository import (
 )
 
 ESTADOS_FINALES = {"COMPLETADA", "CANCELADA", "VENCIDA"}
+DIAS_RESERVA_GRATUITA = 7
 ESTADOS_ADMIN_ACTIVOS = {"PENDIENTE", "PREPARADA", "EN_ATENCION"}
 
 
@@ -105,7 +106,7 @@ def crear_reserva_desde_carrito(
                 %s,
                 %s,
                 %s,
-                CURRENT_TIMESTAMP + INTERVAL '7 days',
+                CURRENT_TIMESTAMP + (%s * INTERVAL '1 day'),
                 TRUE,
                 %s
             )
@@ -121,6 +122,7 @@ def crear_reserva_desde_carrito(
                 monto_reserva,
                 anticipo_pagado,
                 fecha_cita,
+                DIAS_RESERVA_GRATUITA,
                 observacion,
             ),
         )
@@ -168,6 +170,8 @@ def crear_reserva_desde_carrito(
         )
 
         finalizar_operacion(cursor, empresa_id, usuario_id, 'RESERVA', clave_operacion, datos_operacion, reserva_id)
+        from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
+        avisar_reserva(cursor,reserva_id,'CREADA')
         connection.commit()
         reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
         if reserva is None:
@@ -625,6 +629,8 @@ def finalizar_reserva_como_venta(
         cursor.execute('UPDATE reserva SET finalizacion_datos=%s WHERE id=%s AND empresa_id=%s',
                        (Json(datos_finalizacion),reserva_id,empresa_id))
         emitir_nota_cursor(cursor, venta_id, empresa_id)
+        from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
+        avisar_reserva(cursor,reserva_id,'COMPLETADA')
         connection.commit()
         return _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
     except Exception:
@@ -1087,6 +1093,8 @@ def _confirmar_anticipo_reserva_cursor(cursor, connection, orden: dict[str, obje
         """,
         (orden["id"], reserva_id),
     )
+    from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
+    avisar_reserva(cursor,reserva_id,'ANTICIPO_PAGADO')
     resultado = _obtener_orden_pago_cursor(cursor, int(orden["id"]))
     connection.commit()
     return resultado
@@ -1226,6 +1234,8 @@ def _completar_reserva_con_venta_cursor(
         """,
         (monto_aplicado, venta_id, reserva_id),
     )
+    from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
+    avisar_reserva(cursor,reserva_id,'COMPLETADA')
 
 
 def _obtener_orden_pago_cursor(cursor, orden_id: int) -> dict[str, object]:
@@ -1307,8 +1317,8 @@ def _validar_y_reservar_stock_cursor(
 
 def _validar_fecha_cita(fecha_cita: date) -> None:
     hoy = datetime.now(ZoneInfo('America/La_Paz')).date()
-    if not hoy <= fecha_cita <= hoy + timedelta(days=7):
-        raise ValueError('La cita debe estar dentro de los próximos 7 días de la reserva gratuita.')
+    if not hoy <= fecha_cita <= hoy + timedelta(days=DIAS_RESERVA_GRATUITA):
+        raise ValueError(f'La cita debe estar dentro de los próximos {DIAS_RESERVA_GRATUITA} días de la reserva gratuita.')
 
 
 def _validar_items_reserva(items: list[dict[str, object]], sucursal_id: int) -> None:
@@ -1489,6 +1499,8 @@ def _actualizar_estado_reserva_cursor(cursor, reserva_id: int, estado: str) -> N
         """,
         (estado, reserva_id),
     )
+    from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
+    avisar_reserva(cursor,reserva_id,estado)
 
 
 def _obtener_reserva_por_id_cursor(cursor, reserva_id: int, empresa_id: int) -> dict[str, object] | None:

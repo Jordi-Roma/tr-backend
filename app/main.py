@@ -10,7 +10,7 @@ from app.modules.administracion.router.empresa_publica_router import (
 )
 from app.modules.administracion.router.empresa_saas_router import router as empresa_saas_router
 from app.modules.administracion.router.registro_empresa_router import router as registro_empresa_router
-from app.modules.administracion.router.respaldo_router import router as respaldo_router
+from app.modules.administracion.router.respaldo_router import router as respaldo_router, router_empresa as respaldo_empresa_router
 from app.modules.administracion.router.catalogo_router import (
     router as catalogo_router,
 )
@@ -86,6 +86,7 @@ app.include_router(empresa_publica_router)
 app.include_router(registro_empresa_router)
 app.include_router(empresa_saas_router)
 app.include_router(respaldo_router)
+app.include_router(respaldo_empresa_router)
 app.include_router(ciudad_sucursal_router)
 app.include_router(empleado_router)
 app.include_router(proveedor_router)
@@ -173,6 +174,10 @@ def verificar_migracion_multitenant():
         cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',('2026_10_28_registro_empresa_01',))
         if cur.fetchone() is None:
             raise RuntimeError('Falta la migración de registro de empresas; ejecute init_db.py antes de iniciar la API.')
+        for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes'):
+            cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',(version,))
+            if cur.fetchone() is None:
+                raise RuntimeError('Falta la migración de respaldos o planes; ejecute init_db.py antes de iniciar la API.')
     finally:
         conn.close()
 
@@ -190,6 +195,33 @@ async def iniciar_vencimientos():
     import asyncio
     from app.modules.reservas.services.vencimiento_service import ejecutar_vencimientos
     app.state.vencimientos=asyncio.create_task(ejecutar_vencimientos())
+    app.state.respaldos_automaticos = asyncio.create_task(ejecutar_respaldo_automatico())
+    app.state.reportes_automaticos = asyncio.create_task(ejecutar_reportes_automaticos())
+
+
+async def ejecutar_reportes_automaticos():
+    import asyncio
+    import logging
+    from app.modules.inteligencia.services.reporte_service import ejecutar_reportes_programados
+    while True:
+        try:
+            await asyncio.to_thread(ejecutar_reportes_programados)
+        except Exception:
+            logging.getLogger(__name__).error('Falló el ciclo de reportes automáticos.')
+        await asyncio.sleep(60)
+
+
+async def ejecutar_respaldo_automatico():
+    import asyncio
+    import logging
+    from app.modules.administracion.services.respaldo_service import ejecutar_respaldos_programados
+    logger = logging.getLogger(__name__)
+    while True:
+        try:
+            await asyncio.to_thread(ejecutar_respaldos_programados)
+        except Exception:
+            logger.exception("Falló el ciclo de respaldos automáticos.")
+        await asyncio.sleep(60)
 
 
 @app.on_event('shutdown')
@@ -201,6 +233,16 @@ async def detener_vencimientos():
         tarea.cancel()
         with suppress(asyncio.CancelledError):
             await tarea
+    respaldos = getattr(app.state, 'respaldos_automaticos', None)
+    if respaldos:
+        respaldos.cancel()
+        with suppress(asyncio.CancelledError):
+            await respaldos
+    reportes=getattr(app.state,'reportes_automaticos',None)
+    if reportes:
+        reportes.cancel()
+        with suppress(asyncio.CancelledError):
+            await reportes
 
 
 @app.get("/api/v1/db-check")

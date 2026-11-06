@@ -5,11 +5,12 @@ from fastapi import HTTPException
 
 from app.modules.autenticacion.repositories.perfil_repository import _transaccion
 from app.modules.administracion.repositories.empresa_saas_repository import auditar
+from app.core.plan_empresa import LOCK_PLANES
 
 
 def planes_publicos():
     with _transaccion() as cur:
-        cur.execute("""SELECT id,nombre,limites,funciones FROM plan
+        cur.execute("""SELECT id,nombre,descripcion,precio,moneda,condiciones,limites,funciones FROM plan
             WHERE activo AND publico AND codigo <> 'STYLEAR_LEGADO'
               AND coalesce((limites->>'usuarios')::int,1) >= 1 ORDER BY id""")
         return [dict(fila) for fila in cur.fetchall()]
@@ -17,6 +18,7 @@ def planes_publicos():
 
 def registrar(datos, password_hash, huella, origen_hash):
     with _transaccion() as cur:
+        cur.execute('SELECT pg_advisory_xact_lock_shared(%s)',(LOCK_PLANES,))
         for ambito in ('registro-clave:'+str(datos.clave_solicitud), 'registro-origen:'+origen_hash):
             cur.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))', (ambito,))
         cur.execute('SELECT empresa_id,huella_alta FROM solicitud_registro_empresa WHERE id=%s', (str(datos.clave_solicitud),))

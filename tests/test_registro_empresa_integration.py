@@ -50,7 +50,7 @@ def test_solo_planes_publicos_y_activos(api,publicada):
     r=api.get(BASE+'/planes')
     assert r.status_code==200
     p=next(p for p in r.json() if p['id']==plan['id'])
-    assert set(p)=={'id','nombre','limites','funciones'}
+    assert set(p)=={'id','nombre','limites','funciones','descripcion','precio','moneda','condiciones'}
     privado=consulta("INSERT INTO plan(codigo,nombre) VALUES(%s,'Interno') RETURNING id",('I_'+uuid4().hex,),True)['id']
     assert privado not in {p['id'] for p in api.get(BASE+'/planes').json()}
     consulta('UPDATE plan SET activo=FALSE WHERE id=%s',(plan['id'],))

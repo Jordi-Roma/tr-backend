@@ -2,30 +2,38 @@
 
 import re
 from datetime import date
+from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 from psycopg2 import IntegrityError
 
 from app.core.contexto_empresa import exigir_empresa_id, normalizar_codigo_empresa
 from app.core.security import hashear_password
-from app.core.plan_empresa import LIMITES_ADMITIDOS, FUNCIONES_ADMITIDAS
+from app.core.plan_empresa import LIMITES_ADMITIDOS, FUNCIONES_ADMITIDAS, catalogo_capacidades, capacidades_empresa
+from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin, requerir_admin_saas
 from app.modules.administracion.repositories.empresa_saas_repository import (
     asignar_plan_empresa, cambiar_estado_empresa, crear_empresa_con_admin,
     crear_plan, listar_empresas, listar_planes, obtener_plan_empresa, editar_plan, editar_empresa, listar_eventos_plataforma,
+    previsualizar_plan, historial_plan, historial_suscripciones, resumen_planes, empresas_por_plan,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["Plataforma SaaS"])
 
 
 class PlanAlta(BaseModel):
+    model_config = ConfigDict(extra='forbid')
     codigo: str
     nombre: str = Field(min_length=2, max_length=120)
-    limites: dict[str, int] = Field(default_factory=dict)
-    funciones: dict[str, bool] = Field(default_factory=dict)
+    limites: dict[str, StrictInt] = Field(default_factory=dict)
+    funciones: dict[str, StrictBool] = Field(default_factory=dict)
     publico: bool = False
+    descripcion: str = Field(default='', max_length=4000)
+    precio: Decimal = Field(default=Decimal('0'), ge=0, max_digits=12, decimal_places=2)
+    moneda: str = Field(default='BOB', pattern=r'^[A-Z]{3}$')
+    condiciones: str = Field(default='', max_length=10000)
 
     @model_validator(mode='after')
     def validar_publicacion(self):
@@ -59,8 +67,19 @@ class PlanAlta(BaseModel):
         return valor
 
 
-class PlanEdicion(PlanAlta):
-    activo: bool = True
+class PlanEdicion(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    codigo: str | None = None
+    nombre: str | None = None
+    descripcion: str | None = Field(default=None,max_length=4000)
+    precio: Decimal | None = Field(default=None,ge=0,max_digits=12,decimal_places=2)
+    moneda: str | None = None
+    condiciones: str | None = Field(default=None,max_length=10000)
+    limites: dict[str, StrictInt] | None = None
+    funciones: dict[str, StrictBool] | None = None
+    publico: StrictBool | None = None
+    activo: StrictBool | None = None
+    token_previsualizacion: str | None = None
 
 
 class EmpresaEdicion(BaseModel):
@@ -70,6 +89,8 @@ class EmpresaEdicion(BaseModel):
 class PlanRespuesta(PlanAlta):
     id: int
     activo: bool
+    revision: int = 1
+    model_config = ConfigDict(extra='ignore')
 
 
 class AdministradorInicial(BaseModel):
@@ -129,7 +150,10 @@ def listar_planes_endpoint(_: dict[str, object] = Depends(requerir_admin_saas)):
 @router.post("/saas/planes", response_model=PlanRespuesta, status_code=201)
 def crear_plan_endpoint(request: PlanAlta, actor: dict[str, object] = Depends(requerir_admin_saas)):
     try:
-        return crear_plan(request.codigo, request.nombre.strip(), request.limites, request.funciones, int(actor["id"]), request.publico)
+        return crear_plan(request.codigo, request.nombre.strip(), request.limites, request.funciones, int(actor["id"]), request.publico,
+                          descripcion=request.descripcion,precio=request.precio,moneda=request.moneda,condiciones=request.condiciones)
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from error
     except IntegrityError as error:
         raise HTTPException(status_code=409, detail="El codigo de plan ya existe.") from error
 
@@ -202,7 +226,7 @@ def consultar_mi_plan(usuario: dict[str, object] = Depends(requerir_admin)):
 @router.put("/saas/planes/{plan_id}", response_model=PlanRespuesta)
 def editar_plan_endpoint(plan_id: int, request: PlanEdicion, actor: dict = Depends(requerir_admin_saas)):
     try:
-        plan = editar_plan(plan_id, request.model_dump(), int(actor["id"]))
+        plan = editar_plan(plan_id, request.model_dump(exclude_unset=True), int(actor["id"]))
     except IntegrityError as error:
         raise HTTPException(status_code=409, detail="El código de plan ya existe.") from error
     except ValueError as error:
@@ -223,3 +247,54 @@ def editar_empresa_endpoint(empresa_id: int, request: EmpresaEdicion, actor: dic
 @router.get("/saas/eventos")
 def eventos_plataforma_endpoint(_: dict = Depends(requerir_admin_saas)):
     return listar_eventos_plataforma()
+
+
+@router.get('/saas/planes/catalogo')
+def catalogo_planes(_: dict = Depends(requerir_admin_saas)):
+    return catalogo_capacidades()
+
+
+@router.get('/saas/planes/resumen')
+def resumen_planes_endpoint(_: dict = Depends(requerir_admin_saas)):
+    return resumen_planes()
+
+
+@router.get('/saas/planes/comparacion')
+def comparar_planes(_: dict = Depends(requerir_admin_saas)):
+    return {'catalogo': catalogo_capacidades(), 'planes': listar_planes()}
+
+
+@router.post('/saas/planes/{plan_id}/previsualizar')
+def previsualizar_plan_endpoint(plan_id: int, request: PlanEdicion, _: dict = Depends(requerir_admin_saas)):
+    try:
+        return previsualizar_plan(plan_id,request.model_dump(exclude_unset=True))
+    except ValueError as error:
+        raise HTTPException(422,str(error)) from error
+
+
+@router.get('/saas/planes/{plan_id}/historial')
+def historial_plan_endpoint(plan_id: int, _: dict = Depends(requerir_admin_saas)):
+    return historial_plan(plan_id)
+
+
+@router.get('/saas/planes/empresas')
+def empresas_planes_endpoint(plan_id: int | None = Query(default=None,gt=0),
+        estado: Literal['ACTIVA','SUSPENDIDA','PENDIENTE','CANCELADA'] | None = None,
+        buscar: str = Query(default='',max_length=150),pagina: int = Query(default=1,ge=1),
+        tamano: int = Query(default=20,ge=1,le=100), _: dict = Depends(requerir_admin_saas)):
+    return empresas_por_plan(plan_id,estado,buscar,pagina,tamano)
+
+
+@router.get('/saas/empresas/{empresa_id}/suscripciones')
+def suscripciones_empresa_endpoint(empresa_id: int, _: dict = Depends(requerir_admin_saas)):
+    return historial_suscripciones(empresa_id)
+
+
+@router.get('/saas/empresas/{empresa_id}/plan')
+def plan_empresa_saas(empresa_id: int, _: dict = Depends(requerir_admin_saas)):
+    return capacidades_empresa(empresa_id)
+
+
+@router.get('/mi-empresa/capacidades')
+def capacidades_mi_empresa(usuario: dict = Depends(obtener_usuario_actual)):
+    return capacidades_empresa(exigir_empresa_id(usuario))

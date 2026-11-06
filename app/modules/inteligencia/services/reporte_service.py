@@ -259,23 +259,154 @@ def eliminar_programado_service(programado_id: int, usuario_actual: dict[str, ob
     return {"status": "ok", "mensaje": "Programación eliminada exitosamente."}
 
 
+
 def ejecutar_programado_service(programado_id: int, usuario_actual: dict[str, object]) -> dict[str, object]:
-    empresa_id = exigir_empresa_id(usuario_actual)
-    item = marcar_ejecucion_reporte_programado(programado_id, empresa_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Programación de reporte no encontrada.")
-    hoy = datetime.now(ZoneInfo("America/La_Paz")).date()
-    desde = hoy - timedelta(days=30)
-    rep_req = ReporteRequest(
-        tipo=item["tipo"],
-        fecha_desde=desde,
-        fecha_hasta=hoy,
-        sucursal_id=item.get("sucursal_id"),
-        solo_bajo_stock=item.get("solo_bajo_stock", False),
-    )
-    resultado = generar_reporte(rep_req, empresa_id)
-    return {
-        "programado": _presentar_programado(item),
-        "reporte": resultado,
-        "mensaje": f"Reporte '{item['titulo']}' ejecutado exitosamente para {item['destinatario_email']} ({item['formato']}).",
-    }
+    return _ejecutar_programacion(programado_id,exigir_empresa_id(usuario_actual),manual=True)
+
+
+def _ejecutar_programacion(programado_id, empresa_id, manual=False):
+    from datetime import timezone
+    from psycopg2.extras import RealDictCursor
+    from app.database.connection import get_connection
+    from app.core.plan_empresa import _leer_plan,normalizar_politica
+    from app.core.email import enviar_correo_con_adjunto
+    from app.modules.inteligencia.services.programacion_reporte import proxima_ejecucion,periodo_reporte
+    from app.modules.inteligencia.exports.reporte_pdf import crear_pdf
+    from app.modules.inteligencia.exports.reporte_excel import crear_excel
+    conn=get_connection()
+    ejecucion_id=None
+    item=None
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT pg_try_advisory_lock(hashtextextended('cu26-reporte:' || %s::text,0)) AS adquirido",(programado_id,))
+            if not cur.fetchone()['adquirido']:
+                raise HTTPException(409,'El reporte ya se está ejecutando.')
+        conn.commit()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            plan=_leer_plan(cur,empresa_id,bloquear=True,validar_vigencia=False)
+            cur.execute('SELECT * FROM reporte_programado WHERE id=%s AND empresa_id=%s FOR UPDATE',(programado_id,empresa_id))
+            row=cur.fetchone()
+            if not row:
+                raise HTTPException(404,'Programación de reporte no encontrada.')
+            item=dict(row)
+            _validar_envio_programado(cur,item,plan,manual)
+            ahora=datetime.now(timezone.utc)
+            ocurrencia=ahora if manual else item['proxima_ejecucion']
+            if not manual and (ocurrencia is None or ocurrencia>ahora):
+                return {'estado':'NO_VENCIDO'}
+            cur.execute("""INSERT INTO reporte_ejecucion(reporte_id,ocurrencia,estado)
+                VALUES(%s,%s,'INICIADO') ON CONFLICT(reporte_id,ocurrencia) DO NOTHING RETURNING id""",
+                (programado_id,ocurrencia))
+            run=cur.fetchone()
+            if not run:
+                # Un intento previo puede haber enviado antes de perder la conexión.
+                # No se reenvía automáticamente una ocurrencia ya reclamada.
+                cur.execute('UPDATE reporte_programado SET proxima_ejecucion=%s WHERE id=%s AND empresa_id=%s',
+                            (proxima_ejecucion(item,ahora),programado_id,empresa_id))
+                conn.commit()
+                return {'estado':'YA_INTENTADO','mensaje':'Consulta el historial antes de reintentar manualmente.'}
+            ejecucion_id=run['id']
+        conn.commit()
+        # Revalidar bajo el cerrojo del plan después de persistir el intento.
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            plan=_leer_plan(cur,empresa_id,bloquear=True,validar_vigencia=False)
+            cur.execute('SELECT * FROM reporte_programado WHERE id=%s AND empresa_id=%s FOR UPDATE',(programado_id,empresa_id))
+            item=dict(cur.fetchone())
+            _validar_envio_programado(cur,item,plan,manual)
+            desde,hasta=periodo_reporte(item,ocurrencia)
+            request=ReporteRequest(tipo=item['tipo'],fecha_desde=desde,fecha_hasta=hasta,
+                sucursal_id=item.get('sucursal_id'),solo_bajo_stock=item['solo_bajo_stock'],**(item.get('filtros') or {}))
+            reporte=generar_reporte(request,empresa_id)
+            pdf=item['formato']=='PDF'
+            contenido=crear_pdf(reporte) if pdf else crear_excel(reporte)
+            extension='pdf' if pdf else 'xlsx'
+            enviar_correo_con_adjunto(item['destinatario_email'],item['titulo'],
+                f"Reporte del {desde} al {hasta}.",contenido,f"reporte-{programado_id}.{extension}", 'StyleAR')
+            cur.execute("""UPDATE reporte_ejecucion SET estado='ENVIADO',terminado_en=CURRENT_TIMESTAMP
+                WHERE id=%s""",(ejecucion_id,))
+            cur.execute("""UPDATE reporte_programado SET ultima_ejecucion=CURRENT_TIMESTAMP,proxima_ejecucion=%s
+                WHERE id=%s AND empresa_id=%s RETURNING *""",(proxima_ejecucion(item),programado_id,empresa_id))
+            actualizado=dict(cur.fetchone())
+        conn.commit()
+        return {'estado':'ENVIADO','programado':_presentar_programado(actualizado),'reporte':reporte,
+                'mensaje':'Reporte generado y enviado mediante el transporte de correo configurado.'}
+    except Exception:
+        conn.rollback()
+        if ejecucion_id is not None:
+            with conn.cursor() as cur:
+                cur.execute("""UPDATE reporte_ejecucion SET estado='FALLIDO',terminado_en=CURRENT_TIMESTAMP,
+                    detalle='No se confirmó el envío. Revise antes de reintentar para evitar duplicados.' WHERE id=%s""",(ejecucion_id,))
+                if item is not None and not manual:
+                    cur.execute('UPDATE reporte_programado SET proxima_ejecucion=%s WHERE id=%s AND empresa_id=%s',
+                                (proxima_ejecucion(item),programado_id,empresa_id))
+            conn.commit()
+        raise
+    finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(hashtextextended('cu26-reporte:' || %s::text,0))",(programado_id,))
+        finally:
+            conn.close()
+
+
+def _validar_envio_programado(cur,item,plan,manual):
+    from app.core.plan_empresa import normalizar_politica
+    if not item['activo']:
+        raise HTTPException(409,'La programación está pausada.')
+    if not plan['operaciones_habilitadas']:
+        raise HTTPException(403,'La suscripción no está vigente para enviar reportes programados.')
+    funciones=normalizar_politica(plan)['funciones']
+    formato='reportes_pdf' if item['formato']=='PDF' else 'reportes_excel'
+    if not funciones['reportes_programacion'] or not funciones[formato]:
+        raise HTTPException(403,'La programación o su formato ya no están incluidos en el plan.')
+    if not manual:
+        cur.execute("""SELECT 1 FROM usuario u JOIN usuario_rol ur ON ur.usuario_id=u.id AND ur.activo
+            JOIN rol r ON r.id=ur.rol_id AND r.activo
+            WHERE u.id=%s AND u.empresa_id=%s AND u.activo AND r.nombre='ADMINISTRADOR' LIMIT 1""",
+            (item['creado_por'],item['empresa_id']))
+        if not cur.fetchone():
+            raise HTTPException(403,'El responsable del reporte ya no es administrador activo de esta empresa.')
+
+
+def ejecutar_reportes_programados():
+    import logging
+    from datetime import timezone
+    from psycopg2.extras import RealDictCursor
+    from app.database.connection import get_connection
+    from app.modules.inteligencia.services.programacion_reporte import proxima_ejecucion
+    conn=get_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('SELECT pg_try_advisory_lock(2026110527) AS adquirido')
+            if not cur.fetchone()['adquirido']:
+                return
+            cur.execute("""SELECT rp.* FROM reporte_programado rp JOIN empresa e ON e.id=rp.empresa_id
+                WHERE rp.activo AND e.estado='ACTIVA' ORDER BY rp.id""")
+            filas=[dict(r) for r in cur.fetchall()]
+        for item in filas:
+            try:
+                if item['proxima_ejecucion'] is None:
+                    with conn.cursor() as cur:
+                        cur.execute("""UPDATE reporte_programado SET proxima_ejecucion=%s
+                            WHERE id=%s AND proxima_ejecucion IS NULL""",(proxima_ejecucion(item),item['id']))
+                    conn.commit()
+                elif item['proxima_ejecucion'] <= datetime.now(timezone.utc):
+                    _ejecutar_programacion(item['id'],item['empresa_id'])
+            except HTTPException:
+                # Restricción vigente: se conserva la programación y no se envía.
+                conn.rollback()
+            except (ValueError,KeyError):
+                conn.rollback()
+                with conn.cursor() as cur:
+                    cur.execute("""UPDATE reporte_programado SET activo=FALSE,pausa_motivo='CONFIGURACION_INVALIDA'
+                        WHERE id=%s""",(item['id'],))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logging.getLogger(__name__).error('No se confirmó el reporte programado %s; consulte su historial.',item['id'])
+    finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute('SELECT pg_advisory_unlock(2026110527)')
+        finally:
+            conn.close()

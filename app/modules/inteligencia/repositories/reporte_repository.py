@@ -174,87 +174,106 @@ def consultar_reporte(request: ReporteRequest, empresa_id: int) -> list[dict[str
     """, (empresa_id, desde, hasta, activo, activo, rol, rol))
 
 
+
 def listar_reportes_programados(empresa_id: int) -> list[dict[str, object]]:
-    return _rows("""
-        SELECT rp.id, rp.titulo, rp.tipo, rp.frecuencia, rp.hora, rp.dia,
-               rp.formato, rp.destinatario_email, rp.sucursal_id, s.nombre AS sucursal_nombre,
-               rp.solo_bajo_stock, rp.activo, rp.ultima_ejecucion, rp.proxima_ejecucion, rp.creado_en
-        FROM reporte_programado rp
-        LEFT JOIN sucursal s ON s.id = rp.sucursal_id
-        WHERE rp.empresa_id = %s
-        ORDER BY rp.creado_en DESC
-    """, (empresa_id,))
+    return _rows("""SELECT rp.*,s.nombre AS sucursal_nombre FROM reporte_programado rp
+        LEFT JOIN sucursal s ON s.id=rp.sucursal_id AND s.empresa_id=rp.empresa_id
+        WHERE rp.empresa_id=%s ORDER BY rp.creado_en DESC""",(empresa_id,))
+
+
+def validar_cupo_programado(cursor, empresa_id, formato, excluir_id=None, activo=True):
+    from fastapi import HTTPException
+    from app.core.plan_empresa import exigir_capacidad_cursor,normalizar_politica
+    plan=exigir_capacidad_cursor(cursor,empresa_id,'reportes_programacion',bloquear=True)
+    politica=normalizar_politica(plan)
+    clave='reportes_pdf' if formato=='PDF' else 'reportes_excel'
+    if not politica['funciones'][clave]:
+        raise HTTPException(403,'El plan no permite el formato seleccionado.')
+    if not activo:
+        return
+    cursor.execute("""SELECT count(*) AS total FROM reporte_programado WHERE empresa_id=%s AND activo
+        AND (%s::bigint IS NULL OR id<>%s)""",(empresa_id,excluir_id,excluir_id))
+    cupo=politica['limites'].get('reportes_programados')
+    if cupo is not None and cursor.fetchone()['total']>=cupo:
+        raise HTTPException(409,'Se alcanzó el límite de reportes programados activos.')
 
 
 def crear_reporte_programado(data: dict[str, object], empresa_id: int, usuario_id: int | None = None) -> dict[str, object]:
-    connection = get_connection()
+    from psycopg2.extras import Json
+    from app.modules.inteligencia.services.programacion_reporte import proxima_ejecucion
+    connection=get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                INSERT INTO reporte_programado (
-                    empresa_id, titulo, tipo, frecuencia, hora, dia, formato,
-                    destinatario_email, sucursal_id, solo_bajo_stock, activo, creado_por
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
-                          destinatario_email, sucursal_id, solo_bajo_stock, activo,
-                          ultima_ejecucion, proxima_ejecucion, creado_en
-            """, (
-                empresa_id, data["titulo"], data["tipo"], data["frecuencia"], data.get("hora", "08:00"),
-                data.get("dia"), data.get("formato", "PDF"), data["destinatario_email"],
-                data.get("sucursal_id"), data.get("solo_bajo_stock", False), data.get("activo", True),
-                usuario_id
-            ))
-            row = cursor.fetchone()
-            connection.commit()
-            return dict(row)
+            validar_cupo_programado(cursor,empresa_id,data['formato'],activo=data.get('activo',True))
+            if data.get('sucursal_id') is not None:
+                cursor.execute('SELECT id FROM sucursal WHERE id=%s AND empresa_id=%s AND activo',(data['sucursal_id'],empresa_id))
+                if cursor.fetchone() is None:
+                    from fastapi import HTTPException
+                    raise HTTPException(422,'La sucursal no pertenece a la empresa o está inactiva.')
+            cursor.execute("""INSERT INTO reporte_programado
+                (empresa_id,titulo,tipo,frecuencia,hora,dia,formato,destinatario_email,sucursal_id,solo_bajo_stock,
+                 activo,creado_por,zona_horaria,periodo,filtros,proxima_ejecucion)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                (empresa_id,data['titulo'],data['tipo'],data['frecuencia'],data['hora'],data.get('dia'),data['formato'],
+                 data['destinatario_email'],data.get('sucursal_id'),data['solo_bajo_stock'],data['activo'],usuario_id,
+                 data['zona_horaria'],data['periodo'],Json(data['filtros']),proxima_ejecucion(data)))
+            row=dict(cursor.fetchone())
+        connection.commit()
+        return row
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
 
 def actualizar_estado_reporte_programado(programado_id: int, activo: bool, empresa_id: int) -> dict[str, object] | None:
-    connection = get_connection()
+    from app.core.plan_empresa import _leer_plan
+    from app.modules.inteligencia.services.programacion_reporte import proxima_ejecucion
+    connection=get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                UPDATE reporte_programado
-                SET activo = %s
-                WHERE id = %s AND empresa_id = %s
-                RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
-                          destinatario_email, sucursal_id, solo_bajo_stock, activo,
-                          ultima_ejecucion, proxima_ejecucion, creado_en
-            """, (activo, programado_id, empresa_id))
-            row = cursor.fetchone()
-            connection.commit()
-            return dict(row) if row else None
+            _leer_plan(cursor,empresa_id,bloquear=True,validar_vigencia=False)
+            cursor.execute('SELECT * FROM reporte_programado WHERE id=%s AND empresa_id=%s FOR UPDATE',(programado_id,empresa_id))
+            row=cursor.fetchone()
+            if not row:
+                return None
+            if activo:
+                validar_cupo_programado(cursor,empresa_id,row['formato'],programado_id)
+            cursor.execute("""UPDATE reporte_programado SET activo=%s,pausa_motivo=%s,proxima_ejecucion=%s
+                WHERE id=%s AND empresa_id=%s RETURNING *""",
+                (activo,None if activo else 'USUARIO',proxima_ejecucion(row) if activo else row['proxima_ejecucion'],
+                 programado_id,empresa_id))
+            resultado=dict(cursor.fetchone())
+        connection.commit()
+        return resultado
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
 
 def eliminar_reporte_programado(programado_id: int, empresa_id: int) -> bool:
-    connection = get_connection()
+    from app.core.plan_empresa import _leer_plan
+    connection=get_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM reporte_programado WHERE id = %s AND empresa_id = %s", (programado_id, empresa_id))
-            connection.commit()
-            return cursor.rowcount > 0
+            _leer_plan(cursor,empresa_id,bloquear=True,validar_vigencia=False)
+            cursor.execute('DELETE FROM reporte_programado WHERE id=%s AND empresa_id=%s',(programado_id,empresa_id))
+            eliminado=cursor.rowcount>0
+        connection.commit()
+        return eliminado
     finally:
         connection.close()
 
 
 def marcar_ejecucion_reporte_programado(programado_id: int, empresa_id: int) -> dict[str, object] | None:
-    connection = get_connection()
-    try:
-        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                UPDATE reporte_programado
-                SET ultima_ejecucion = NOW()
-                WHERE id = %s AND empresa_id = %s
-                RETURNING id, titulo, tipo, frecuencia, hora, dia, formato,
-                          destinatario_email, sucursal_id, solo_bajo_stock, activo,
-                          ultima_ejecucion, proxima_ejecucion, creado_en
-            """, (programado_id, empresa_id))
-            row = cursor.fetchone()
-            connection.commit()
-            return dict(row) if row else None
-    finally:
-        connection.close()
+    # Compatibilidad: leer no debe marcar como enviado un correo que aún no salió.
+    rows=_rows('SELECT * FROM reporte_programado WHERE id=%s AND empresa_id=%s',(programado_id,empresa_id))
+    return rows[0] if rows else None
+
+
+def ejecuciones_reporte(programado_id,empresa_id):
+    return _rows("""SELECT ej.* FROM reporte_ejecucion ej JOIN reporte_programado rp ON rp.id=ej.reporte_id
+        WHERE rp.id=%s AND rp.empresa_id=%s ORDER BY ej.id DESC LIMIT 100""",(programado_id,empresa_id))

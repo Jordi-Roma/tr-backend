@@ -13,6 +13,8 @@ def _transaccion():
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            from app.core.plan_empresa import LOCK_PLANES
+            cur.execute('SELECT pg_advisory_xact_lock_shared(%s)',(LOCK_PLANES,))
             yield cur
         conn.commit()
     except Exception:

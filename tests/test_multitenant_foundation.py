@@ -143,10 +143,10 @@ class TestPlanEmpresa(unittest.TestCase):
                 "funciones": funciones or {}, "limites": limites or {}}
 
     def test_funcion_inhabilitada_rechazada(self):
-        cursor = _CursorFalso(self._plan(funciones={"vestidor": False}))
+        cursor = _CursorFalso(self._plan(funciones={"reportes_pdf": False}))
         with patch("app.core.plan_empresa.get_connection", return_value=_ConexionFalsa(cursor)):
             with self.assertRaises(HTTPException) as raised:
-                exigir_funcion_empresa(10, "vestidor")
+                exigir_funcion_empresa(10, "reportes_pdf")
             self.assertEqual(raised.exception.status_code, 403)
 
     def test_plan_legacy_mantiene_funciones(self):
@@ -157,7 +157,8 @@ class TestPlanEmpresa(unittest.TestCase):
     def test_cupo_bloquea_empresa_antes_de_contar(self):
         cursor = _CursorFalso(self._plan(limites={"sucursales": 2}))
         self.assertEqual(bloquear_empresa_y_obtener_limite(cursor, 10, "sucursales"), 2)
-        self.assertIn("FOR UPDATE", cursor.consultas[0][0])
+        self.assertIn("pg_advisory_xact_lock_shared", cursor.consultas[0][0])
+        self.assertIn("FOR UPDATE", cursor.consultas[1][0])
 
     def test_suscripcion_vencida_bloquea_funcion(self):
         from datetime import date

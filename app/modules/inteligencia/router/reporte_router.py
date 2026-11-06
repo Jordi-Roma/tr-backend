@@ -40,6 +40,10 @@ def catalogo_endpoint(usuario_actual: dict[str, object] = Depends(requerir_admin
 
 @router.post("/interpretar")
 def interpretar_endpoint(request: InterpretarRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+    empresa_id=exigir_empresa_id(usuario_actual)
+    exigir_funcion_empresa(empresa_id,'reportes_interpretacion')
+    if request.origen=='VOZ':
+        exigir_funcion_empresa(empresa_id,'reportes_voz')
     return interpretar(request.texto, exigir_empresa_id(usuario_actual))
 
 
@@ -58,11 +62,13 @@ def _archivo(request: ReporteRequest, extension: str, empresa_id: int):
 
 @router.post("/exportar/pdf")
 def pdf_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+    exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_pdf')
     return _archivo(request, "pdf", exigir_empresa_id(usuario_actual))
 
 
 @router.post("/exportar/excel")
 def excel_endpoint(request: ReporteRequest, usuario_actual: dict[str, object] = Depends(requerir_admin)):
+    exigir_funcion_empresa(exigir_empresa_id(usuario_actual),'reportes_excel')
     return _archivo(request, "xlsx", exigir_empresa_id(usuario_actual))
 
 
@@ -96,3 +102,9 @@ def eliminar_programado(programado_id: int, usuario_actual: dict[str, object] = 
 @router.post("/programados/{programado_id}/ejecutar")
 def ejecutar_programado(programado_id: int, usuario_actual: dict[str, object] = Depends(requerir_admin)):
     return ejecutar_programado_service(programado_id, usuario_actual)
+
+
+@router.get('/programados/{programado_id}/ejecuciones')
+def historial_programado(programado_id: int,usuario_actual: dict = Depends(requerir_admin)):
+    from app.modules.inteligencia.repositories.reporte_repository import ejecuciones_reporte
+    return ejecuciones_reporte(programado_id,exigir_empresa_id(usuario_actual))

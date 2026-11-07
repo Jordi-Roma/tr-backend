@@ -90,8 +90,7 @@ _FROM=" FROM bitacora b LEFT JOIN usuario u ON u.id=b.usuario_id "
 def consultar_bitacora(empresa_id,pagina=1,por_pagina=50,**filtros):
     from app.modules.autenticacion.repositories.perfil_repository import _transaccion
     where,params=_filtros(empresa_id,**filtros)
-    with _transaccion() as cur:
-        cur.connection.set_session(isolation_level='REPEATABLE READ',readonly=True)
+    with _transaccion(isolation_level='REPEATABLE READ',readonly=True) as cur:
         cur.execute("SELECT count(*) total"+_FROM+where,params)
         total=cur.fetchone()['total']
         cur.execute("SELECT "+_CAMPOS+_FROM+where+" ORDER BY b.fecha DESC,b.id DESC LIMIT %s OFFSET %s",

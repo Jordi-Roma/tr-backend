@@ -172,8 +172,7 @@ def listar(actor, empresa, estado="ACTIVOS", busqueda="", pagina=1, por_pagina=2
     if busqueda:
         where += " AND concat_ws(' ',u.nombre,u.apellido,u.username,u.correo) ILIKE %s"
         params.append("%" + busqueda + "%")
-    with _transaccion() as cur:
-        cur.connection.set_session(isolation_level="REPEATABLE READ", readonly=True)
+    with _transaccion(isolation_level="REPEATABLE READ", readonly=True) as cur:
         validar_actor(cur, actor, "usuarios:ver")
         if empresa is not None:
             cur.execute("SELECT id FROM empresa WHERE id=%s", (empresa,))

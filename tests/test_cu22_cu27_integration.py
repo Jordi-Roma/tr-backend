@@ -174,6 +174,52 @@ def emitir(a,c,recurso,clave=None,categoria='COMPRA'):
         return avisos.emitir_cliente(cur,a['id'],c,clave or uuid4().hex,'Compra','Aviso',categoria,'VENTA',recurso)
 
 
+def test_instalacion_renovada_cambio_empresa_no_entrega_cola_anterior(empresas,monkeypatch):
+    a,b,_,_=empresas
+    actores=[]
+    for empresa in (a,b):
+        uid,c,_=cliente(empresa)
+        sesion=crear_sesion(uid,empresa['id'])
+        actores.append(({'id':uid,'empresa_id':empresa['id'],'version_acceso':0,'_sesion_id':sesion['id']},c))
+    aa,ca=actores[0]; ab,cb=actores[1]
+    instalacion=uuid4()
+    def registrar(actor,token):
+        avisos.registrar(actor,avisos.DispositivoRequest(instalacion_id=instalacion,token=token,plataforma='android'))
+    sa,_,_=mercaderia(a); sb,_,_=mercaderia(b)
+    va=venta(a,sa,ca); vb=venta(b,sb,cb)
+    registrar(aa,uuid4().hex)
+    primero=emitir(a,ca,va)
+    renovado=uuid4().hex
+    registrar(aa,renovado)
+    monkeypatch.setenv('STYLEAR_FIREBASE_PROJECT_ID','simulado')
+    monkeypatch.setenv('STYLEAR_FIREBASE_CREDENTIALS','simulado')
+    llamadas=[]
+    monkeypatch.setattr(push,'enviar_fcm',lambda token,nid,empresa: llamadas.append((token,nid,empresa)) or 'FCM/ensayo')
+    push.procesar(100)
+    assert (renovado,primero,a['id']) in llamadas
+    pendiente_a=emitir(a,ca,va)
+    token_b=uuid4().hex
+    registrar(ab,token_b)
+    # Una baja tardía de la cuenta anterior no debe desvincular la cuenta nueva.
+    avisos.retirar(aa,instalacion)
+    fila=consulta('SELECT * FROM dispositivo_push WHERE instalacion_id=%s',(str(instalacion),),True)
+    assert fila['activo'] and fila['usuario_id']==ab['id'] and fila['empresa_id']==b['id']
+    propio_b=emitir(b,cb,vb)
+    push.procesar(100)
+    assert consulta('SELECT estado FROM salida_push WHERE notificacion_id=%s',(pendiente_a,),True)['estado']=='OMITIDO'
+    assert not any(nid==pendiente_a for _,nid,_ in llamadas)
+    assert (token_b,propio_b,b['id']) in llamadas
+    with pytest.raises(HTTPException) as error:
+        avisos.destino(ab,primero)
+    assert error.value.status_code==404
+    avisos.preferencias(ab,avisos.PreferenciasRequest(categorias={'COMPRA':False}))
+    silenciado=emitir(b,cb,vb)
+    assert not consulta('SELECT id FROM salida_push WHERE notificacion_id=%s',(silenciado,))
+    assert any(n['id']==silenciado for n in avisos.bandeja(ab)['avisos'])
+    avisos.retirar(ab,instalacion)
+    assert not consulta('SELECT activo FROM dispositivo_push WHERE instalacion_id=%s',(str(instalacion),),True)['activo']
+
+
 def test_bandeja_transaccional_deduplicada_preferencias_y_destino(empresas):
     a,b,_,_=empresas
     s,_,_=mercaderia(a)

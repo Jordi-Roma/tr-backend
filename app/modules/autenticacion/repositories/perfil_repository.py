@@ -9,9 +9,13 @@ from app.core.security import verificar_password
 
 
 @contextmanager
-def _transaccion():
+def _transaccion(*, isolation_level=None, readonly=False):
     conn = get_connection()
     try:
+        # La política se fija antes del primer SELECT (incluido el cerrojo).
+        # psycopg2 no permite set_session dentro de una transacción iniciada.
+        if isolation_level is not None or readonly:
+            conn.set_session(isolation_level=isolation_level, readonly=readonly)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             from app.core.plan_empresa import LOCK_PLANES
             cur.execute('SELECT pg_advisory_xact_lock_shared(%s)',(LOCK_PLANES,))

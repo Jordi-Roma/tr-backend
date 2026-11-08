@@ -12,6 +12,7 @@ from app.modules.autenticacion.repositories.perfil_repository import _transaccio
 from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
 from ..repositories import devolucion_repository as devoluciones
 from ..repositories.inventario_repository import _aplicar_movimiento
+from ..repositories.nota_venta_repository import emitir_nota_cursor
 from . import posventa_service as posventa
 
 
@@ -50,6 +51,7 @@ class Version(BaseModel):
 
 class Cotizacion(Version):
     reemplazo_id: int = Field(gt=0)
+    adicional_id: int | None = Field(default=None, gt=0)
 
 
 class Aceptacion(Version):
@@ -65,7 +67,8 @@ def _acceso(cur, actor, cid, gestion=False):
     posventa.bloquear(cur, e, actor['id'], cid if gestion else None)
     cur.execute('''SELECT c.*,d.empresa_id,d.cliente_id,d.sucursal_id,d.venta_id,
         d.codigo,d.tipo_operacion,d.monto_solicitado,d.monto_aprobado,d.estado estado_devolucion,
-        d.aceptada_cliente_en,d.referencia_reembolso,d.metodo_reembolso,d.proveedor_refund_id
+        d.aceptada_cliente_en,d.referencia_reembolso,d.metodo_reembolso,d.proveedor_refund_id,
+        d.proveedor_refund_estado
         FROM cambio_prenda c JOIN devolucion d ON d.id=c.id
         WHERE c.id=%s AND d.empresa_id=%s AND d.activo FOR UPDATE OF c,d''', (cid,e))
     c = cur.fetchone()
@@ -91,12 +94,15 @@ def _detalle(cur, cid, e):
     cur.execute('SELECT * FROM cambio_prenda WHERE id=%s', (cid,))
     c = dict(cur.fetchone())
     c['original'] = devoluciones._obtener_devolucion_cursor(cur,cid,e)
-    if c['reemplazo_id']:
+    for campo in ('reemplazo', 'adicional'):
+        variante = c[f'{campo}_id']
+        if variante is None:
+            continue
         cur.execute('''SELECT p.nombre producto,COALESCE(t.nombre,'Sin talla') talla,COALESCE(co.nombre,'Sin color') color
             FROM producto_variante v JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
             LEFT JOIN talla t ON t.id=v.talla_id LEFT JOIN color co ON co.id=v.color_id
-            WHERE v.id=%s AND v.empresa_id=%s''',(c['reemplazo_id'],e))
-        c['reemplazo'] = dict(cur.fetchone())
+            WHERE v.id=%s AND v.empresa_id=%s''', (variante, e))
+        c[campo] = dict(cur.fetchone())
     if c['orden_id']:
         from .pagos_empresa_service import habilitado_pruebas
         cur.execute('SELECT id,estado,checkout_url,proveedor,proveedor_session_id,monto_total FROM orden_pago WHERE id=%s AND empresa_id=%s', (c['orden_id'],e))
@@ -187,7 +193,7 @@ def revisar(actor,cid,datos):
         return _detalle(cur,cid,c['empresa_id'])
 
 
-def opciones(actor,cid):
+def opciones(actor, cid, incluir_adicionales=False):
     with _transaccion() as cur:
         c=_acceso(cur,actor,cid)
         cur.execute('''SELECT v.id,p.nombre producto,COALESCE(t.nombre,'Sin talla') talla,COALESCE(co.nombre,'Sin color') color,
@@ -196,7 +202,8 @@ def opciones(actor,cid):
             JOIN inventario_sucursal i ON i.producto_variante_id=v.id AND i.empresa_id=v.empresa_id AND i.sucursal_id=%s
             LEFT JOIN talla t ON t.id=v.talla_id LEFT JOIN color co ON co.id=v.color_id
             WHERE v.empresa_id=%s AND v.activo AND p.activo AND i.activo
-            AND i.stock_disponible-i.stock_reservado>=%s ORDER BY p.nombre,v.id LIMIT 500''',(c['sucursal_id'],c['empresa_id'],c['cantidad']))
+            AND i.stock_disponible-i.stock_reservado>=%s ORDER BY p.nombre,v.id LIMIT 500''',
+            (c['sucursal_id'], c['empresa_id'], 1 if incluir_adicionales else c['cantidad']))
         opciones=[]
         for o in cur.fetchall():
             precio=_obtener_precio_final_variante_cursor(cur,o['id'],c['sucursal_id'])
@@ -204,14 +211,22 @@ def opciones(actor,cid):
         return opciones
 
 
-def _stock(cur,c):
+def _lineas(c):
+    cantidades = {c['reemplazo_id']: c['cantidad']}
+    if c['adicional_id'] is not None:
+        adicional = c['adicional_id']
+        cantidades[adicional] = cantidades.get(adicional, 0) + 1
+    return sorted(cantidades.items())
+
+
+def _stock(cur, c, variante, cantidad):
     cur.execute('''SELECT i.* FROM inventario_sucursal i JOIN producto_variante v ON v.id=i.producto_variante_id AND v.empresa_id=i.empresa_id
         JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
         WHERE i.empresa_id=%s AND i.sucursal_id=%s AND i.producto_variante_id=%s AND i.activo AND v.activo AND p.activo FOR UPDATE OF i FOR SHARE OF v,p''',
-        (c['empresa_id'],c['sucursal_id'],c['reemplazo_id']))
+        (c['empresa_id'],c['sucursal_id'],variante))
     i=cur.fetchone()
-    if not i or i['stock_disponible']-i['stock_reservado']<c['cantidad']:
-        raise HTTPException(409,'El reemplazo ya no tiene existencias suficientes. Selecciona otra opción.')
+    if not i or i['stock_disponible'] - i['stock_reservado'] < cantidad:
+        raise HTTPException(409,'Una de las prendas ya no tiene existencias suficientes. Selecciona otra opción.')
     return i
 
 
@@ -220,11 +235,23 @@ def cotizar(actor,cid,datos):
         c=_acceso(cur,actor,cid);_version(c,datos.version)
         if c['estado'] not in ('APROBADO','COTIZADO'):
             raise HTTPException(409,'Primero debe aprobarse e inspeccionarse la prenda original.')
-        c['reemplazo_id']=datos.reemplazo_id;_stock(cur,c)
+        c.update(reemplazo_id=datos.reemplazo_id, adicional_id=datos.adicional_id)
+        for variante, cantidad in _lineas(c):
+            _stock(cur, c, variante, cantidad)
         precio=_obtener_precio_final_variante_cursor(cur,datos.reemplazo_id,c['sucursal_id'])
         if precio is None or precio<=0:raise HTTPException(409,'El reemplazo no tiene precio vigente.')
-        diferencia=(precio*c['cantidad']-c['credito']).quantize(Decimal('.01'))
-        cur.execute("UPDATE cambio_prenda SET reemplazo_id=%s,precio_reemplazo=%s,diferencia=%s,cotizacion_vence=CURRENT_TIMESTAMP+INTERVAL '15 minutes' WHERE id=%s",(datos.reemplazo_id,precio,diferencia,cid))
+        subtotal = precio * c['cantidad']
+        adicional = None
+        if datos.adicional_id is not None:
+            if subtotal >= c['credito']:
+                raise HTTPException(409, 'La prenda adicional se puede agregar cuando queda saldo a favor.')
+            adicional = _obtener_precio_final_variante_cursor(cur, datos.adicional_id, c['sucursal_id'])
+            if adicional is None or adicional <= 0:
+                raise HTTPException(409, 'La prenda adicional no tiene precio vigente.')
+        diferencia = (subtotal + (adicional or Decimal(0)) - c['credito']).quantize(Decimal('.01'))
+        cur.execute("""UPDATE cambio_prenda SET reemplazo_id=%s,precio_reemplazo=%s,adicional_id=%s,
+            precio_adicional=%s,diferencia=%s,cotizacion_vence=CURRENT_TIMESTAMP+INTERVAL '15 minutes' WHERE id=%s""",
+            (datos.reemplazo_id, precio, datos.adicional_id, adicional, diferencia, cid))
         _actualizar(cur,cid,'COTIZADO')
         return _detalle(cur,cid,c['empresa_id'])
 
@@ -236,11 +263,15 @@ def aceptar(actor,cid,datos):
         _version(c,datos.version)
         if c['estado']!='COTIZADO' or c['cotizacion_vence']<=datetime.now(timezone.utc):
             raise HTTPException(409,'La cotización venció. Selecciona nuevamente el reemplazo.')
+        reservas = [(_stock(cur, c, variante, cantidad)['id'], cantidad) for variante, cantidad in _lineas(c)]
         precio=_obtener_precio_final_variante_cursor(cur,c['reemplazo_id'],c['sucursal_id'])
-        if precio!=c['precio_reemplazo'] or datos.diferencia!=c['diferencia']:
+        adicional = (_obtener_precio_final_variante_cursor(cur, c['adicional_id'], c['sucursal_id'])
+                     if c['adicional_id'] is not None else None)
+        if precio!=c['precio_reemplazo'] or adicional!=c['precio_adicional'] or datos.diferencia!=c['diferencia']:
             raise HTTPException(409,'Cambió el precio o la diferencia. Revisa una nueva cotización.')
-        i=_stock(cur,c)
-        cur.execute('UPDATE inventario_sucursal SET stock_reservado=stock_reservado+%s WHERE id=%s',(c['cantidad'],i['id']))
+        for inventario_id, cantidad in reservas:
+            cur.execute('UPDATE inventario_sucursal SET stock_reservado=stock_reservado+%s WHERE id=%s',
+                        (cantidad, inventario_id))
         cur.execute('UPDATE cambio_prenda SET reservado=TRUE,aceptado_en=CURRENT_TIMESTAMP WHERE id=%s',(cid,))
         cur.execute("UPDATE devolucion SET estado='REEMBOLSO_PENDIENTE',aceptada_cliente_en=CURRENT_TIMESTAMP,importe_reintegro=%s WHERE id=%s",(max(-c['diferencia'],Decimal(0)),cid))
         _actualizar(cur,cid,'ESPERA_PAGO' if c['diferencia']>0 else 'ESPERA_REINTEGRO' if c['diferencia']<0 else 'LISTO')
@@ -250,10 +281,11 @@ def aceptar(actor,cid,datos):
 
 def _liberar(cur,c):
     if c['reservado']:
-        cur.execute('''UPDATE inventario_sucursal SET stock_reservado=stock_reservado-%s
-            WHERE empresa_id=%s AND sucursal_id=%s AND producto_variante_id=%s AND stock_reservado>=%s''',
-            (c['cantidad'],c['empresa_id'],c['sucursal_id'],c['reemplazo_id'],c['cantidad']))
-        if cur.rowcount!=1:raise HTTPException(409,'La reserva requiere revisión de inventario.')
+        for variante, cantidad in _lineas(c):
+            cur.execute('''UPDATE inventario_sucursal SET stock_reservado=stock_reservado-%s
+                WHERE empresa_id=%s AND sucursal_id=%s AND producto_variante_id=%s AND stock_reservado>=%s''',
+                (cantidad,c['empresa_id'],c['sucursal_id'],variante,cantidad))
+            if cur.rowcount!=1:raise HTTPException(409,'La reserva requiere revisión de inventario.')
         cur.execute('UPDATE cambio_prenda SET reservado=FALSE WHERE id=%s',(c['id'],))
 
 
@@ -276,16 +308,31 @@ def cancelar(actor,cid,version):
         return _detalle(cur,cid,c['empresa_id'])
 
 
-def convertir(actor,cid,version):
+def convertir(actor, cid, version, gestion=False):
     with _transaccion() as cur:
-        c=_acceso(cur,actor,cid)
+        c = _acceso(cur, actor, cid, gestion)
         if c['estado']=='DEVOLUCION':return _detalle(cur,cid,c['empresa_id'])
         _version(c,version)
-        if c['estado'] not in ('APROBADO','COTIZADO'):
-            raise HTTPException(409,'La conversión se ofrece después de la inspección y antes de aceptar un reemplazo.')
-        cur.execute("UPDATE devolucion SET tipo_operacion='DEVOLUCION',estado='ESPERA_ACEPTACION' WHERE id=%s",(cid,))
+        estados = ('ESPERA_PAGO', 'ESPERA_REINTEGRO', 'LISTO') if gestion else ('APROBADO', 'COTIZADO')
+        if c['estado'] not in estados:
+            raise HTTPException(409, 'El estado actual del cambio no permite continuar por devolución.')
+        if c['estado_devolucion'] == 'REEMBOLSADA' or c['proveedor_refund_estado'] or c['proveedor_refund_id']:
+            raise HTTPException(409, 'Ya se inició un reintegro del cambio. Consulta su estado antes de modificarlo.')
+        if c['orden_id'] is not None:
+            from .pagos_empresa_service import solicitar_reembolso
+            cur.execute('SELECT * FROM orden_pago WHERE id=%s AND empresa_id=%s FOR UPDATE',
+                        (c['orden_id'], c['empresa_id']))
+            orden = cur.fetchone()
+            if orden['pago_recibido']:
+                solicitar_reembolso(cur, orden, 'El reemplazo del cambio no está disponible.')
+            else:
+                cur.execute("UPDATE orden_pago SET estado='CANCELADO' WHERE id=%s AND estado='PENDIENTE'", (orden['id'],))
+                cur.execute("UPDATE venta SET estado='CANCELADA' WHERE id=%s", (orden['venta_id'],))
+        _liberar(cur, c)
+        cur.execute("""UPDATE devolucion SET tipo_operacion='DEVOLUCION',estado='ESPERA_ACEPTACION',
+            aceptada_cliente_en=NULL,importe_reintegro=NULL WHERE id=%s""", (cid,))
         _actualizar(cur,cid,'DEVOLUCION')
-        posventa.avisar(cur,c,'conversion','Aceptaste continuar por devolución. Revisa y acepta el importe en Mis devoluciones.')
+        posventa.avisar(cur,c,'conversion','El cambio continúa como devolución. Revisa y acepta el importe en Mis devoluciones.')
         return _detalle(cur,cid,c['empresa_id'])
 
 
@@ -364,16 +411,23 @@ def completar(actor,cid,datos):
         if c['estado']!='LISTO' or not datos.entrega_confirmada or not c['reservado']:
             raise HTTPException(409,'Se requiere liquidación confirmada y entrega física del reemplazo.')
         _liberar(cur,c)
-        _aplicar_movimiento(cur,actor['id'],c['sucursal_id'],c['reemplazo_id'],'VENTA_DIGITAL',c['cantidad'],'Entrega por cambio','CAMBIO',cid,empresa_id=c['empresa_id'])
+        try:
+            for variante, cantidad in _lineas(c):
+                _aplicar_movimiento(cur, actor['id'], c['sucursal_id'], variante, 'VENTA_DIGITAL', cantidad,
+                                    'Entrega por cambio', 'CAMBIO', cid, empresa_id=c['empresa_id'])
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
         cur.execute('SELECT dd.*,vd.producto_variante_id FROM devolucion_detalle dd JOIN venta_detalle vd ON vd.id=dd.venta_detalle_id WHERE dd.devolucion_id=%s',(cid,))
-        l=cur.fetchone();vendibles=l['cantidad_aceptada']-l['cantidad_no_vendible']
-        if vendibles:
-            _aplicar_movimiento(cur,actor['id'],c['sucursal_id'],l['producto_variante_id'],'DEVOLUCION_VENTA',vendibles,'Prenda original de cambio','CAMBIO',cid,empresa_id=c['empresa_id'])
-            cur.execute('UPDATE devolucion_detalle SET inventario_repuesto=TRUE WHERE id=%s',(l['id'],))
+        l = cur.fetchone()
+        devoluciones.registrar_reingreso_cursor(cur, actor['id'], c, l, 'CAMBIO')
+        nota_original = emitir_nota_cursor(cur, c['venta_id'], c['empresa_id'])
         comprobante={'codigo':f'CAM-{cid}','venta_original_id':c['venta_id'],'original_variante_id':l['producto_variante_id'],
+            'nota_venta_numero':nota_original['numero'],
             'reemplazo_id':c['reemplazo_id'],'cantidad':c['cantidad'],'no_vendibles':l['cantidad_no_vendible'],
             'credito':str(c['credito']),'precio_reemplazo':str(c['precio_reemplazo']),'diferencia':str(c['diferencia']),
             'moneda':'BOB','orden_diferencia_id':c['orden_id'],'referencia_reintegro':c['referencia_reembolso'] or c['proveedor_refund_id']}
+        if c['adicional_id'] is not None:
+            comprobante.update(adicional_id=c['adicional_id'], precio_adicional=str(c['precio_adicional']))
         cur.execute('UPDATE cambio_prenda SET comprobante=%s WHERE id=%s',(Json(comprobante),cid))
         cur.execute("UPDATE devolucion SET estado='CAMBIO_COMPLETADO' WHERE id=%s",(cid,))
         _actualizar(cur,cid,'COMPLETADO')

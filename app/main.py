@@ -175,7 +175,8 @@ def verificar_migracion_multitenant():
         if cur.fetchone() is None:
             raise RuntimeError('Falta la migración de registro de empresas; ejecute init_db.py antes de iniciar la API.')
         for version in ('2026_11_05_cu25_respaldos_r2','2026_11_05_cu26_planes','2026_11_06_cu22_cu27_mejoras',
-                        '2026_11_07_cu26_stripe','2026_11_08_cu21_offline'):
+                        '2026_11_07_cu26_stripe','2026_11_08_cu21_offline','2026_11_08_cu19_prenda_adicional',
+                        '2026_11_08_posventa_no_vendible'):
             cur.execute('SELECT 1 FROM schema_migrations WHERE version=%s',(version,))
             if cur.fetchone() is None:
                 raise RuntimeError(f'Falta la migración {version}; ejecute init_db.py antes de iniciar la API.')

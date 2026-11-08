@@ -55,6 +55,11 @@ def test_igual_precio_reserva_y_entrega_unica_con_inspeccion(api,compra,no_vendi
   r=api.post(url,headers=c['ha'],json=body);assert r.status_code==200 and r.json()['comprobante'],r.text
  assert stock(c,c['rv'])==dict(stock_disponible=4,stock_reservado=0)
  assert stock(c,c['vid'])['stock_disponible']==10-no_vendibles
+ if no_vendibles:
+  mov=consulta("""SELECT cantidad,stock_anterior,stock_nuevo FROM movimiento_inventario
+                  WHERE referencia_tipo='CAMBIO' AND referencia_id=%s AND tipo='DEVOLUCION_NO_VENDIBLE'""",
+               (x['id'],),True)
+  assert mov==dict(cantidad=1,stock_anterior=9,stock_nuevo=9)
  assert api.get(BASE+'/elegibles',headers=c['h']).json()==[]
  assert api.get('/api/v1/devoluciones/ventas-elegibles',headers=c['h']).json()==[]
 
@@ -187,3 +192,87 @@ def test_desistir_cotizacion_menor_antes_de_aceptarla_libera_elegibilidad(api,co
  r=api.post(url+'/cancelar',headers=c['h'],json={'version':x['version']});assert r.status_code==200 and r.json()['estado']=='CANCELADO',r.text
  assert stock(c,c['rv'])['stock_reservado']==0
  assert len(api.get(BASE+'/elegibles',headers=c['h']).json())==1
+
+
+def test_prenda_adicional_recalcula_pago_y_mueve_ambas_variantes_una_vez(api, compra):
+    c = compra
+    x = aprobado(api, c)
+    url = f'{BASE}/{x["id"]}'
+    consulta('UPDATE precio_producto SET precio=30 WHERE producto_variante_id=%s', (c['rv'],))
+    r = api.post(url + '/cotizar', headers=c['h'], json={
+        'version': x['version'], 'reemplazo_id': c['rv'], 'adicional_id': c['vid'],
+    })
+    assert r.status_code == 200, r.text
+    x = r.json()
+    assert Decimal(str(x['diferencia'])) == 30
+    assert x['adicional_id'] == c['vid']
+    r = api.post(url + '/aceptar', headers=c['h'], json={
+        'version': x['version'], 'diferencia': 30,
+    })
+    assert r.status_code == 200, r.text
+    assert stock(c, c['rv']) == dict(stock_disponible=5, stock_reservado=1)
+    assert stock(c, c['vid']) == dict(stock_disponible=9, stock_reservado=1)
+    x = api.post(url + '/pago', headers=c['h'], json={
+        'version': r.json()['version'], 'medio': 'QR_BCP',
+    }).json()
+    pago = x['pago']
+    assert Decimal(str(pago['monto_total'])) == 30
+    assert api.post(f'/api/v1/pagos/qr/confirmar/{pago["id"]}', headers=c['h']).status_code == 200
+    x = api.get(BASE, headers=c['h']).json()[0]
+    for _ in range(2):
+        r = api.post(url + '/completar', headers=c['ha'], json={
+            'version': x['version'], 'entrega_confirmada': True,
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()['comprobante']['adicional_id'] == c['vid']
+        assert r.json()['comprobante']['nota_venta_numero'] > 0
+    assert stock(c, c['rv']) == dict(stock_disponible=4, stock_reservado=0)
+    assert stock(c, c['vid']) == dict(stock_disponible=9, stock_reservado=0)
+    assert consulta("SELECT count(*) AS n FROM movimiento_inventario WHERE referencia_tipo='CAMBIO' AND referencia_id=%s",
+                    (x['id'],), True)['n'] == 3
+
+
+def test_misma_variante_adicional_valida_stock_y_pasa_a_devolucion(api, compra):
+    c = compra
+    x = aprobado(api, c)
+    url = f'{BASE}/{x["id"]}'
+    consulta('UPDATE precio_producto SET precio=25 WHERE producto_variante_id=%s', (c['rv'],))
+    consulta('UPDATE inventario_sucursal SET stock_disponible=1 WHERE sucursal_id=%s AND producto_variante_id=%s',
+             (c['sid'], c['rv']))
+    body = {'version': x['version'], 'reemplazo_id': c['rv'], 'adicional_id': c['rv']}
+    assert api.post(url + '/cotizar', headers=c['h'], json=body).status_code == 409
+    consulta('UPDATE inventario_sucursal SET stock_disponible=2 WHERE sucursal_id=%s AND producto_variante_id=%s',
+             (c['sid'], c['rv']))
+    x = api.post(url + '/cotizar', headers=c['h'], json=body).json()
+    assert Decimal(str(x['diferencia'])) == 0
+    x = api.post(url + '/aceptar', headers=c['h'], json={'version': x['version'], 'diferencia': 0}).json()
+    assert x['estado'] == 'LISTO'
+    assert stock(c, c['rv'])['stock_reservado'] == 2
+    assert api.post(url + '/sin-reemplazo', headers=c['h'], json={'version': x['version']}).status_code == 403
+    r = api.post(url + '/sin-reemplazo', headers=c['ha'], json={'version': x['version']})
+    assert r.status_code == 200, r.text
+    assert r.json()['estado'] == 'DEVOLUCION'
+    assert stock(c, c['rv']) == dict(stock_disponible=2, stock_reservado=0)
+    assert api.post(f'/api/v1/posventa/devoluciones/{x["id"]}/aceptar', headers=c['h'],
+                    json={'monto': 50}).status_code == 200
+    assert stock(c, c['vid'])['stock_disponible'] == 10
+
+
+def test_plazo_delivery_empieza_con_entrega_confirmada(api, compra):
+    c = compra
+    consulta("UPDATE venta SET tipo_entrega='DELIVERY', fecha_venta=CURRENT_TIMESTAMP-INTERVAL '30 days' WHERE id=%s",
+             (c['venta'],))
+    consulta("""INSERT INTO delivery(empresa_id,venta_id,sucursal_id,direccion_entrega,
+                 latitud_entrega,longitud_entrega,estado)
+                 VALUES(%s,%s,%s,'Entrega de prueba',-17,-63,'EN_CAMINO')""",
+             (c['a']['id'], c['venta'], c['sid']))
+    assert api.get(BASE + '/elegibles', headers=c['h']).json() == []
+    body = {'clave_operacion': str(uuid4()), 'venta_id': c['venta'], 'venta_detalle_id': c['vd'],
+            'cantidad': 1, 'motivo': 'Necesito otra talla'}
+    assert api.post(BASE, headers=c['h'], json=body).status_code == 409
+    consulta("UPDATE delivery SET estado='ENTREGADO', fecha_entrega=CURRENT_TIMESTAMP-INTERVAL '16 days' WHERE venta_id=%s",
+             (c['venta'],))
+    assert api.post(BASE, headers=c['h'], json=body).status_code == 409
+    consulta("UPDATE delivery SET fecha_entrega=CURRENT_TIMESTAMP WHERE venta_id=%s", (c['venta'],))
+    assert len(api.get(BASE + '/elegibles', headers=c['h']).json()) == 1
+    assert api.post(BASE, headers=c['h'], json=body).status_code == 201

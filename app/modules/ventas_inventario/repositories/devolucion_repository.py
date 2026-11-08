@@ -11,6 +11,9 @@ from app.modules.ventas_inventario.repositories.inventario_repository import _ap
 
 CENTAVO = Decimal("0.01")
 ESTADOS_QUE_RESERVAN = ("SOLICITADA", "EN_REVISION", "APROBADA", "ESPERA_ACEPTACION", "REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO", "REEMBOLSADA")
+FECHA_INICIO_POSVENTA = "CASE WHEN v.tipo_entrega = 'DELIVERY' THEN en.fecha_entrega ELSE v.fecha_venta END"
+ENTREGA_POSVENTA = """LEFT JOIN delivery en ON en.venta_id = v.id AND en.empresa_id = v.empresa_id
+                     AND en.activo AND en.estado = 'ENTREGADO'"""
 
 
 def cliente_id_por_usuario(usuario_id: int, empresa_id: int) -> int | None:
@@ -22,6 +25,23 @@ def cliente_id_por_usuario(usuario_id: int, empresa_id: int) -> int | None:
             return int(row["id"]) if row else None
     finally:
         connection.close()
+
+
+def registrar_reingreso_cursor(cursor, usuario_id, devolucion, linea, referencia):
+    if linea['inventario_repuesto']:
+        return
+    no_vendible = linea['cantidad_no_vendible']
+    vendible = linea['cantidad_aceptada'] - no_vendible
+    for tipo, cantidad, motivo in (
+        ('DEVOLUCION_VENTA', vendible, 'Reingreso de prenda vendible'),
+        ('DEVOLUCION_NO_VENDIBLE', no_vendible, 'Prenda recibida fuera del stock vendible'),
+    ):
+        if cantidad:
+            _aplicar_movimiento(cursor, usuario_id, devolucion['sucursal_id'], linea['producto_variante_id'],
+                                tipo, cantidad, motivo, referencia, devolucion['id'],
+                                empresa_id=devolucion['empresa_id'])
+    if vendible:
+        cursor.execute('UPDATE devolucion_detalle SET inventario_repuesto=TRUE WHERE id=%s', (linea['id'],))
 
 
 def usuario_tiene_permiso(usuario_id: int, accion: str) -> bool:
@@ -57,9 +77,9 @@ def listar_ventas_elegibles(cliente_id: int, dias_plazo: int, empresa_id: int) -
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
-                """SELECT v.id FROM venta v
+                f"""SELECT v.id FROM venta v {ENTREGA_POSVENTA}
                    WHERE v.cliente_id = %s AND v.empresa_id = %s AND v.activo = TRUE AND v.estado = 'COMPLETADA'
-                     AND v.fecha_venta >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
+                     AND ({FECHA_INICIO_POSVENTA}) >= CURRENT_TIMESTAMP - (%s * INTERVAL '1 day')
                      AND (v.tipo = 'PRESENCIAL' OR EXISTS (
                          SELECT 1 FROM orden_pago op WHERE op.venta_id = v.id AND op.empresa_id = v.empresa_id AND op.estado = 'PAGADO' AND op.activo = TRUE
                      ))
@@ -103,14 +123,18 @@ def crear_devolucion(
             cambio = tipo_operacion == 'CAMBIO'
             if not pol['cambios_habilitados' if cambio else 'devoluciones_habilitadas']:raise ValueError('La empresa todavía no habilitó esta política de posventa.')
             dias_plazo=pol['plazo_cambios' if cambio else 'plazo_devoluciones']
-            cursor.execute("SELECT * FROM venta WHERE id = %s AND empresa_id = %s FOR UPDATE;", (venta_id, empresa_id))
+            cursor.execute(f"""SELECT v.*, ({FECHA_INICIO_POSVENTA}) AS inicio_posventa
+                FROM venta v {ENTREGA_POSVENTA} WHERE v.id = %s AND v.empresa_id = %s FOR UPDATE OF v""",
+                (venta_id, empresa_id))
             venta = cursor.fetchone()
             if venta is None or int(venta["cliente_id"] or 0) != cliente_id or not venta["activo"]:
                 raise ValueError("No se encontró una compra elegible para este cliente.")
             if venta["estado"] != "COMPLETADA":
                 raise ValueError("Solo se pueden devolver compras completadas.")
-            if venta["fecha_venta"] < _fecha_limite_cursor(cursor, dias_plazo):
-                raise ValueError(f"El plazo para solicitar la devolución es de {dias_plazo} días desde la compra.")
+            if venta["inicio_posventa"] is None:
+                raise ValueError("La entrega de la compra todavía no está confirmada.")
+            if venta["inicio_posventa"] < _fecha_limite_cursor(cursor, dias_plazo):
+                raise ValueError(f"El plazo de posventa es de {dias_plazo} días desde la compra en tienda o la entrega a domicilio.")
             if venta["tipo"] != "PRESENCIAL":
                 cursor.execute("SELECT 1 FROM orden_pago WHERE venta_id = %s AND empresa_id = %s AND estado = 'PAGADO' AND activo = TRUE LIMIT 1;", (venta_id, empresa_id))
                 if cursor.fetchone() is None:
@@ -350,7 +374,8 @@ def preparar_reembolso_stripe(devolucion_id: int, usuario_id: int, empresa_id: i
         connection.close()
 
 
-def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str, referencia: str, observacion: str | None, empresa_id: int) -> dict:
+def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str, referencia: str,
+                              observacion: str | None, empresa_id: int, *, para_cambio: bool = False) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -368,6 +393,8 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
             row = cursor.fetchone()
             if row is None:
                 raise LookupError("Devolución no encontrada.")
+            if (row['tipo_operacion'] == 'CAMBIO') != para_cambio:
+                raise ValueError('La operación cambió. Consulta la pantalla correspondiente al reintegro.')
             if not row['aceptada_cliente_en']:raise ValueError('Falta aceptación del importe por el cliente.')
             if row['metodo_pago']!='EFECTIVO' or metodo!='EFECTIVO' or row['proveedor']:
                 raise ValueError('El reintegro debe usar el medio original; no se registran pagos electrónicos como devolución en caja.')
@@ -375,7 +402,8 @@ def registrar_reembolso_manual(devolucion_id: int, usuario_id: int, metodo: str,
                 raise ValueError("Este reembolso ya fue registrado.")
             if row["estado"] not in {"REEMBOLSO_PENDIENTE", "ERROR_REEMBOLSO"}:
                 raise ValueError("La devolución todavía no está lista para reembolso.")
-            if Decimal(row["monto_aprobado"]) <= 0:
+            importe = row['importe_reintegro'] if row['importe_reintegro'] is not None else row['monto_aprobado']
+            if importe <= 0:
                 raise ValueError("El importe del reembolso debe ser mayor a cero.")
             if str(row.get("proveedor") or "").upper() == "STRIPE":
                 raise ValueError("Esta compra se pagó con Stripe; usa el reembolso automático para evitar duplicarlo.")

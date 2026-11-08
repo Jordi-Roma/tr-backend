@@ -23,8 +23,8 @@ def revisar(cid:int,datos:s.Revision,actor=Depends(obtener_usuario_actual)):
     return s.revisar(actor,cid,datos)
 
 @router.get('/{cid}/opciones')
-def opciones(cid:int,actor=Depends(obtener_usuario_actual)):
-    return s.opciones(actor,cid)
+def opciones(cid:int,incluir_adicionales:bool=False,actor=Depends(obtener_usuario_actual)):
+    return s.opciones(actor,cid,incluir_adicionales)
 
 @router.post('/{cid}/cotizar')
 def cotizar(cid:int,datos:s.Cotizacion,actor=Depends(obtener_usuario_actual)):
@@ -41,6 +41,10 @@ def cancelar(cid:int,datos:s.Version,actor=Depends(obtener_usuario_actual)):
 @router.post('/{cid}/devolucion')
 def convertir(cid:int,datos:s.Version,actor=Depends(obtener_usuario_actual)):
     return s.convertir(actor,cid,datos.version)
+
+@router.post('/{cid}/sin-reemplazo')
+def sin_reemplazo(cid:int,datos:s.Version,actor=Depends(obtener_usuario_actual)):
+    return s.convertir(actor,cid,datos.version,gestion=True)
 
 class Pago(s.Version):
     medio:str=Field(pattern='^(STRIPE|QR_BCP)$')
@@ -70,7 +74,10 @@ def efectivo(cid:int,datos:Efectivo,actor=Depends(obtener_usuario_actual)):
         if c['estado']=='LISTO':return s._detalle(cur,cid,c['empresa_id'])
         if c['estado']!='ESPERA_REINTEGRO':raise HTTPException(409,'No hay reintegro de cambio pendiente.')
     if c['estado_devolucion']!='REEMBOLSADA':
-        registrar_reembolso_manual(cid,actor['id'],'EFECTIVO',datos.referencia,None,c['empresa_id'])
+        try:
+            registrar_reembolso_manual(cid,actor['id'],'EFECTIVO',datos.referencia,None,c['empresa_id'],para_cambio=True)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
     with _transaccion() as cur:
         c=s._acceso(cur,actor,cid,True)
         if c['estado_devolucion']=='REEMBOLSADA' and c['estado']=='ESPERA_REINTEGRO':s._actualizar(cur,cid,'LISTO')

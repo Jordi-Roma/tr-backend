@@ -638,7 +638,7 @@ def _aplicar_movimiento(
     proveedor_id: int | None = None,
     empresa_id: int | None = None,
 ) -> int:
-    if tipo not in TIPOS_SUMA and tipo not in TIPOS_RESTA:
+    if tipo not in TIPOS_SUMA and tipo not in TIPOS_RESTA and tipo != "DEVOLUCION_NO_VENDIBLE":
         raise ValueError("Tipo de movimiento invalido.")
     if cantidad <= 0:
         raise ValueError('La cantidad debe ser mayor a cero.')
@@ -649,7 +649,8 @@ def _aplicar_movimiento(
             raise ValueError("Sucursal no encontrada.")
         empresa_id = int(sucursal["empresa_id"])
     _validar_sucursal_cursor(cursor, sucursal_id, empresa_id)
-    _validar_variante_cursor(cursor, producto_variante_id, empresa_id, exigir_producto_activo=tipo != "DEVOLUCION_VENTA")
+    _validar_variante_cursor(cursor, producto_variante_id, empresa_id,
+                            exigir_producto_activo=tipo not in {"DEVOLUCION_VENTA", "DEVOLUCION_NO_VENDIBLE"})
     if proveedor_id is not None:
         cursor.execute("SELECT 1 FROM proveedor WHERE id = %s AND empresa_id = %s AND activo = TRUE", (proveedor_id, empresa_id))
         if cursor.fetchone() is None:
@@ -657,7 +658,9 @@ def _aplicar_movimiento(
     inventario = _obtener_o_crear_inventario(cursor, sucursal_id, producto_variante_id, empresa_id)
     stock_anterior = int(inventario["stock_disponible"])
     stock_reservado = int(inventario["stock_reservado"])
-    if tipo in TIPOS_SUMA:
+    if tipo == "DEVOLUCION_NO_VENDIBLE":
+        stock_nuevo = stock_anterior
+    elif tipo in TIPOS_SUMA:
         stock_nuevo = stock_anterior + cantidad
     else:
         stock_real = stock_anterior - stock_reservado

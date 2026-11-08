@@ -74,7 +74,7 @@ def avisar(cur,d,evento,texto):
 
 def aceptar(actor,did,monto):
     from ..repositories import devolucion_repository as repo
-    from ..repositories.inventario_repository import _aplicar_movimiento
+    from ..repositories.nota_venta_repository import emitir_nota_cursor
     e=exigir_empresa_id(actor)
     with _transaccion() as cur:
         bloquear(cur,e,actor['id'])
@@ -89,11 +89,10 @@ def aceptar(actor,did,monto):
         cur.execute('SELECT dd.*,vd.producto_variante_id FROM devolucion_detalle dd JOIN venta_detalle vd ON vd.id=dd.venta_detalle_id WHERE dd.devolucion_id=%s ORDER BY vd.producto_variante_id FOR UPDATE OF dd',(did,))
         lineas=[dict(x) for x in cur.fetchall()]
         for l in lineas:
-            vendible=l['cantidad_aceptada']-l['cantidad_no_vendible']
-            if vendible and not l['inventario_repuesto']:
-                _aplicar_movimiento(cur,actor['id'],d['sucursal_id'],l['producto_variante_id'],'DEVOLUCION_VENTA',vendible,'Devolución aceptada por cliente','DEVOLUCION',did,empresa_id=e)
-                cur.execute('UPDATE devolucion_detalle SET inventario_repuesto=TRUE WHERE id=%s',(l['id'],))
-        recibo={'codigo':d['codigo'],'empresa_id':e,'venta_id':d['venta_id'],'monto':str(d['monto_aprobado']),'moneda':d['moneda'],
+            repo.registrar_reingreso_cursor(cur, actor['id'], d, l, 'DEVOLUCION')
+        nota_original = emitir_nota_cursor(cur, d['venta_id'], e)
+        recibo={'codigo':d['codigo'],'empresa_id':e,'venta_id':d['venta_id'],'nota_venta_numero':nota_original['numero'],
+            'monto':str(d['monto_aprobado']),'moneda':d['moneda'],
             'articulos':[{'venta_detalle_id':l['venta_detalle_id'],'cantidad_aceptada':l['cantidad_aceptada'],'no_vendibles':l['cantidad_no_vendible']} for l in lineas]}
         cur.execute("UPDATE devolucion SET aceptada_cliente_en=CURRENT_TIMESTAMP,estado='REEMBOLSO_PENDIENTE',comprobante=%s WHERE id=%s",(Json(recibo),did))
         avisar(cur,d,'aceptada','Devolución confirmada. El reintegro todavía está pendiente.')
@@ -110,7 +109,8 @@ def reembolsar(actor,did,para_cambio=False):
           FROM devolucion d JOIN venta v ON v.id=d.venta_id AND v.empresa_id=d.empresa_id
           LEFT JOIN LATERAL(SELECT * FROM orden_pago WHERE venta_id=v.id AND empresa_id=d.empresa_id AND estado='PAGADO' ORDER BY id DESC LIMIT 1)o ON TRUE
           WHERE d.id=%s AND d.empresa_id=%s FOR UPDATE OF d''',(did,e));d=cur.fetchone()
-        if d['tipo_operacion']=='CAMBIO' and not para_cambio:raise HTTPException(409,'Gestiona el reintegro desde el cambio de prendas.')
+        if (d['tipo_operacion'] == 'CAMBIO') != para_cambio:
+            raise HTTPException(409, 'Gestiona el reintegro desde la pantalla de la operación actual.')
         importe=d['importe_reintegro'] if d['importe_reintegro'] is not None else d['monto_aprobado']
         if importe<=0:raise HTTPException(409,'No hay un importe que reintegrar.')
         if d['estado']=='REEMBOLSADA':return repo._obtener_devolucion_cursor(cur,did,e)
@@ -125,6 +125,8 @@ def reembolsar(actor,did,para_cambio=False):
         key=secreto(e,'STRIPE_SECRET_KEY');pi=d['proveedor_pago_id'] or d['proveedor_payment_intent_id']
         if not key.startswith('sk_test_') or not pi:raise HTTPException(503,'Faltan credenciales Stripe test o la referencia original de esta empresa.')
         datos=dict(d);datos['importe']=importe
+        if para_cambio and d['proveedor_refund_estado'] is None:
+            cur.execute("UPDATE devolucion SET proveedor_refund_estado='INICIADO' WHERE id=%s", (did,))
     import stripe
     try:
         r=stripe.Refund.create(api_key=key,idempotency_key=f'devolucion-{e}-{did}',payment_intent=pi,amount=int(datos['importe']*100),metadata={'empresa_id':str(e),'devolucion_id':str(did)})

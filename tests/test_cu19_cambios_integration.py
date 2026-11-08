@@ -43,6 +43,49 @@ def aceptado(api,c,precio=50,no_vendibles=0):
 
 def stock(c,variante):return consulta('SELECT stock_disponible,stock_reservado FROM inventario_sucursal WHERE sucursal_id=%s AND producto_variante_id=%s',(c['sid'],variante),True)
 
+
+def test_solicitud_inicial_guarda_variante_sin_adelantar_inspeccion_pago_o_stock(api,compra):
+ c=compra
+ params={'venta_id':c['venta'],'venta_detalle_id':c['vd'],'cantidad':1}
+ previa=api.get(BASE+'/opciones-solicitud',headers=c['h'],params=params)
+ assert previa.status_code==200,previa.text
+ assert Decimal(previa.json()['credito_estimado'])==50
+ assert any(v['id']==c['rv'] and v['producto_id'] for v in previa.json()['opciones'])
+ # Una variante de otra empresa no crea una solicitud parcialmente guardada.
+ _,_,ajena=mercaderia(c['b'])
+ body={'clave_operacion':str(uuid4()),'venta_id':c['venta'],'venta_detalle_id':c['vd'],'cantidad':1,'motivo':'Solicito otra talla','reemplazo_id':ajena}
+ assert api.post(BASE,headers=c['h'],json=body).status_code==409
+ assert api.get(BASE,headers=c['h']).json()==[]
+ body['reemplazo_id']=c['rv']
+ r=api.post(BASE,headers=c['h'],json=body)
+ assert r.status_code==201,r.text
+ x=r.json()
+ assert x['estado']=='SOLICITADO' and x['reemplazo_id']==c['rv'] and x['credito'] is None
+ assert Decimal(x['diferencia'])==0 and x['reservado'] is False and x['orden_id'] is None
+ assert stock(c,c['rv'])==dict(stock_disponible=5,stock_reservado=0)
+ assert api.post(BASE,headers=c['h'],json=body).json()['id']==x['id']
+ assert api.post(BASE,headers=c['h'],json={**body,'reemplazo_id':c['vid']}).status_code==409
+ assert api.post(f'{BASE}/{x["id"]}/pago',headers=c['h'],json={'version':x['version'],'medio':'STRIPE'}).status_code==409
+ # La cotización definitiva utiliza precios actuales después de inspeccionar.
+ r=api.patch(f'{BASE}/{x["id"]}/revision',headers=c['ha'],json={'version':x['version'],'aceptar':True,'recepcion_confirmada':True,'no_vendibles':0,'condicion':'Prenda recibida en buen estado'})
+ assert r.status_code==200,r.text
+ x=r.json()
+ assert x['estado']=='COTIZADO' and x['reemplazo_id']==c['rv']
+ assert not x['reservado'] and x['orden_id'] is None
+ consulta('UPDATE precio_producto SET precio=70 WHERE producto_variante_id=%s',(c['rv'],))
+ r=api.post(f'{BASE}/{x["id"]}/cotizar',headers=c['h'],json={'version':x['version'],'reemplazo_id':c['rv']})
+ assert r.status_code==200 and Decimal(r.json()['diferencia'])==20,r.text
+
+
+def test_opciones_iniciales_no_exponen_compra_ajena_ni_cantidad_excedida(api,compra):
+ from test_multitenant_integration import cliente
+ c=compra
+ _,_,nombre=cliente(c['b'])
+ hb=login(api,c['b'],nombre)
+ params={'venta_id':c['venta'],'venta_detalle_id':c['vd'],'cantidad':1}
+ assert api.get(BASE+'/opciones-solicitud',headers=hb,params=params).status_code==404
+ assert api.get(BASE+'/opciones-solicitud',headers=c['h'],params={**params,'cantidad':2}).status_code==409
+
 @pytest.mark.parametrize('no_vendibles',[0,1])
 def test_igual_precio_reserva_y_entrega_unica_con_inspeccion(api,compra,no_vendibles):
  c=compra;x=aceptado(api,c,no_vendibles=no_vendibles);assert x['estado']=='LISTO'
@@ -276,3 +319,23 @@ def test_plazo_delivery_empieza_con_entrega_confirmada(api, compra):
     consulta("UPDATE delivery SET fecha_entrega=CURRENT_TIMESTAMP WHERE venta_id=%s", (c['venta'],))
     assert len(api.get(BASE + '/elegibles', headers=c['h']).json()) == 1
     assert api.post(BASE, headers=c['h'], json=body).status_code == 201
+
+
+@pytest.mark.parametrize('precio,estado', [(70,'ESPERA_PAGO'),(30,'ESPERA_REINTEGRO'),(50,'LISTO')])
+def test_aprobar_cotiza_seleccion_inicial_y_cliente_continua_sin_reseleccionar(api,compra,precio,estado):
+ c=compra
+ body={'clave_operacion':str(uuid4()),'venta_id':c['venta'],'venta_detalle_id':c['vd'],'cantidad':1,'motivo':'Cambiar talla solicitada','reemplazo_id':c['rv']}
+ x=api.post(BASE,headers=c['h'],json=body).json()
+ consulta('UPDATE precio_producto SET precio=%s WHERE producto_variante_id=%s',(precio,c['rv']))
+ r=api.patch(f'{BASE}/{x["id"]}/revision',headers=c['ha'],json={'version':x['version'],'aceptar':True,'recepcion_confirmada':True,'condicion':'Prenda inspeccionada correctamente'})
+ assert r.status_code==200,r.text
+ x=r.json()
+ assert x['estado']=='COTIZADO' and x['reemplazo_id']==c['rv']
+ assert Decimal(x['diferencia'])==precio-50
+ assert not x['reservado'] and x['orden_id'] is None
+ r=api.post(f'{BASE}/{x["id"]}/aceptar',headers=c['h'],json={'version':x['version'],'diferencia':x['diferencia']})
+ assert r.status_code==200 and r.json()['estado']==estado,r.text
+ if estado=='ESPERA_PAGO':
+  x=r.json()
+  r=api.post(f'{BASE}/{x["id"]}/pago',headers=c['h'],json={'version':x['version'],'medio':'STRIPE'})
+  assert r.status_code==200 and Decimal(r.json()['pago']['monto_total'])==20,r.text

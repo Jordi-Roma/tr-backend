@@ -23,6 +23,7 @@ class Solicitud(BaseModel):
     venta_detalle_id: int = Field(gt=0)
     cantidad: int = Field(gt=0, strict=True)
     motivo: str = Field(min_length=5, max_length=500)
+    reemplazo_id: int | None = Field(default=None, gt=0)
 
     @field_validator('motivo')
     @classmethod
@@ -148,12 +149,28 @@ def solicitar(actor, datos):
         raise HTTPException(403, 'Se requiere una cuenta de cliente.')
     try:
         d = devoluciones.crear_devolucion(cliente,actor['id'],datos.venta_id,datos.motivo,None,
-            [{'venta_detalle_id':datos.venta_detalle_id,'cantidad':datos.cantidad}],0,e,str(datos.clave_operacion),'CAMBIO')
+            [{'venta_detalle_id':datos.venta_detalle_id,'cantidad':datos.cantidad}],0,e,str(datos.clave_operacion),'CAMBIO',
+            reemplazo_solicitado_id=datos.reemplazo_id)
     except ValueError as ex:
         raise HTTPException(409,str(ex)) from ex
     with _transaccion() as cur:
         _acceso(cur,actor,d['id'])
         return _detalle(cur,d['id'],e)
+
+
+def opciones_solicitud(actor, venta_id, linea_id, cantidad):
+    """Estimación propia; no aprueba inspección, reserva stock ni inicia pagos."""
+    venta = next((v for v in elegibles(actor) if v['venta_id'] == venta_id), None)
+    linea = next((l for l in (venta or {}).get('detalles', []) if l['venta_detalle_id'] == linea_id), None)
+    if not linea:
+        raise HTTPException(404, 'Compra no encontrada entre tus prendas elegibles.')
+    if cantidad > linea['cantidad_disponible']:
+        raise HTTPException(409, 'La cantidad supera las unidades elegibles.')
+    with _transaccion() as cur:
+        cur.execute('SELECT sucursal_id FROM venta WHERE id=%s AND empresa_id=%s', (venta_id, exigir_empresa_id(actor)))
+        sucursal = cur.fetchone()['sucursal_id']
+        credito = devoluciones._calcular_parcial(devoluciones._subtotal_pagado_cursor(cur, linea_id), linea['cantidad_vendida'], cantidad)
+        return {'credito_estimado': str(credito), 'opciones': _opciones_cursor(cur, sucursal, exigir_empresa_id(actor), cantidad)}
 
 
 def revisar(actor,cid,datos):
@@ -189,6 +206,16 @@ def revisar(actor,cid,datos):
             cur.execute('UPDATE devolucion_detalle SET monto_aprobado=%s WHERE devolucion_id=%s',(credito,cid))
             cur.execute('UPDATE cambio_prenda SET credito=%s WHERE id=%s',(credito,cid))
         _actualizar(cur,cid,'APROBADO' if datos.aceptar else 'RECHAZADO')
+        if datos.aceptar and c['reemplazo_id'] is not None:
+            # La elección inicial se valida después de la inspección, sin reservar ni cobrar.
+            c['credito'] = credito
+            try:
+                _cotizar_cursor(cur,c,cid,Cotizacion(version=c['version'],reemplazo_id=c['reemplazo_id']))
+            except HTTPException as error:
+                if error.status_code != 409:
+                    raise
+                # La inspección se conserva; el cliente puede actualizar o cambiar la opción.
+                pass
         posventa.avisar(cur,c,'revision','La tienda revisó tu solicitud de cambio.')
         return _detalle(cur,cid,c['empresa_id'])
 
@@ -196,17 +223,21 @@ def revisar(actor,cid,datos):
 def opciones(actor, cid, incluir_adicionales=False):
     with _transaccion() as cur:
         c=_acceso(cur,actor,cid)
-        cur.execute('''SELECT v.id,p.nombre producto,COALESCE(t.nombre,'Sin talla') talla,COALESCE(co.nombre,'Sin color') color,
+        return _opciones_cursor(cur, c['sucursal_id'], c['empresa_id'], 1 if incluir_adicionales else c['cantidad'])
+
+
+def _opciones_cursor(cur, sucursal_id, empresa_id, cantidad):
+        cur.execute('''SELECT v.id,p.id producto_id,p.nombre producto,COALESCE(t.nombre,'Sin talla') talla,COALESCE(co.nombre,'Sin color') color,
             i.stock_disponible-i.stock_reservado disponible FROM producto_variante v
             JOIN producto p ON p.id=v.producto_id AND p.empresa_id=v.empresa_id
             JOIN inventario_sucursal i ON i.producto_variante_id=v.id AND i.empresa_id=v.empresa_id AND i.sucursal_id=%s
             LEFT JOIN talla t ON t.id=v.talla_id LEFT JOIN color co ON co.id=v.color_id
             WHERE v.empresa_id=%s AND v.activo AND p.activo AND i.activo
             AND i.stock_disponible-i.stock_reservado>=%s ORDER BY p.nombre,v.id LIMIT 500''',
-            (c['sucursal_id'], c['empresa_id'], 1 if incluir_adicionales else c['cantidad']))
+            (sucursal_id, empresa_id, cantidad))
         opciones=[]
         for o in cur.fetchall():
-            precio=_obtener_precio_final_variante_cursor(cur,o['id'],c['sucursal_id'])
+            precio=_obtener_precio_final_variante_cursor(cur,o['id'],sucursal_id)
             if precio and precio>0:opciones.append({**dict(o),'precio':precio})
         return opciones
 
@@ -235,25 +266,29 @@ def cotizar(actor,cid,datos):
         c=_acceso(cur,actor,cid);_version(c,datos.version)
         if c['estado'] not in ('APROBADO','COTIZADO'):
             raise HTTPException(409,'Primero debe aprobarse e inspeccionarse la prenda original.')
-        c.update(reemplazo_id=datos.reemplazo_id, adicional_id=datos.adicional_id)
-        for variante, cantidad in _lineas(c):
-            _stock(cur, c, variante, cantidad)
-        precio=_obtener_precio_final_variante_cursor(cur,datos.reemplazo_id,c['sucursal_id'])
-        if precio is None or precio<=0:raise HTTPException(409,'El reemplazo no tiene precio vigente.')
-        subtotal = precio * c['cantidad']
-        adicional = None
-        if datos.adicional_id is not None:
-            if subtotal >= c['credito']:
-                raise HTTPException(409, 'La prenda adicional se puede agregar cuando queda saldo a favor.')
-            adicional = _obtener_precio_final_variante_cursor(cur, datos.adicional_id, c['sucursal_id'])
-            if adicional is None or adicional <= 0:
-                raise HTTPException(409, 'La prenda adicional no tiene precio vigente.')
-        diferencia = (subtotal + (adicional or Decimal(0)) - c['credito']).quantize(Decimal('.01'))
-        cur.execute("""UPDATE cambio_prenda SET reemplazo_id=%s,precio_reemplazo=%s,adicional_id=%s,
-            precio_adicional=%s,diferencia=%s,cotizacion_vence=CURRENT_TIMESTAMP+INTERVAL '15 minutes' WHERE id=%s""",
-            (datos.reemplazo_id, precio, datos.adicional_id, adicional, diferencia, cid))
-        _actualizar(cur,cid,'COTIZADO')
+        _cotizar_cursor(cur,c,cid,datos)
         return _detalle(cur,cid,c['empresa_id'])
+
+def _cotizar_cursor(cur,c,cid,datos):
+    c.update(reemplazo_id=datos.reemplazo_id, adicional_id=datos.adicional_id)
+    for variante, cantidad in _lineas(c):
+        _stock(cur, c, variante, cantidad)
+    precio=_obtener_precio_final_variante_cursor(cur,datos.reemplazo_id,c['sucursal_id'])
+    if precio is None or precio<=0:raise HTTPException(409,'El reemplazo no tiene precio vigente.')
+    subtotal = precio * c['cantidad']
+    adicional = None
+    if datos.adicional_id is not None:
+        if subtotal >= c['credito']:
+            raise HTTPException(409, 'La prenda adicional se puede agregar cuando queda saldo a favor.')
+        adicional = _obtener_precio_final_variante_cursor(cur, datos.adicional_id, c['sucursal_id'])
+        if adicional is None or adicional <= 0:
+            raise HTTPException(409, 'La prenda adicional no tiene precio vigente.')
+    diferencia = (subtotal + (adicional or Decimal(0)) - c['credito']).quantize(Decimal('.01'))
+    cur.execute("""UPDATE cambio_prenda SET reemplazo_id=%s,precio_reemplazo=%s,adicional_id=%s,
+        precio_adicional=%s,diferencia=%s,cotizacion_vence=CURRENT_TIMESTAMP+INTERVAL '15 minutes' WHERE id=%s""",
+        (datos.reemplazo_id, precio, datos.adicional_id, adicional, diferencia, cid))
+    _actualizar(cur,cid,'COTIZADO')
+
 
 
 def aceptar(actor,cid,datos):

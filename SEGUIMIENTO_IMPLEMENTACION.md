@@ -4,7 +4,7 @@ Autor: Angeles Rosales Colque.
 
 Este archivo reúne el arranque local, las reparaciones y el avance por bloques. Se actualizará con cada implementación.
 
-## Estado actual — cierre local CU22–CU27 (07/11/2026)
+## Cierre local CU22–CU27 (07/11/2026; registro histórico)
 
 Implementación de los siete bloques completada en web y Flutter, incluida administración SaaS móvil. R2 conectado y verificado con respaldo/restauración reales sobre datos sintéticos: empresa con archivos y aislamiento, y copia global restaurada en otra base vacía. Base de trabajo con 18/18 migraciones. Regresión final: 51 comprobaciones backend aprobadas (48 de integración CU22–27, una adicional de renovación/cambio de empresa y dos con R2 real), 33 web y 83 Flutter. Se retiraron bases, cuentas y objetos de ensayo.
 
@@ -1764,3 +1764,217 @@ Conservar STYLEAR_BACKUP_KEY y las credenciales en un respaldo seguro fuera de G
 
 ### 2026-11-07 — Entorno detenido a petición del usuario
 Se detuvieron el backend local 8000, Angular 4200 y sus procesos descendientes identificados mediante el registro privado de arranque. Se dejó la señal de parada del ayudante de túnel CU27. No se borraron bases, configuración, credenciales, archivos ni datos del teléfono. Los servidores ya no quedan corriendo; para retomar, usar los comandos de desarrollo local de este mismo documento.
+
+
+### 2026-11-07 — Informe consolidado de CU22–CU27
+Por solicitud del usuario se creó ../INFORME_IMPLEMENTACION_CU22_CU27.md. Explica los siete bloques, el alcance web/móvil y SaaS, migraciones, correcciones, respaldos R2 reales, pruebas y límites, junto con comandos para retomar el entorno detenido. Es un informe de entrega; este archivo conserva la bitácora única de seguimiento. Crear el documento no inició servidores ni cambió configuración o datos.
+
+
+### 2026-11-08 — Documento faltante CU16–CU20
+Se creó IMPLEMENTACION_CU16_CU20_2026-11-08.md para cubrir el salto documental entre CU11–CU15 y CU22–CU27. Consolida pagos por empresa, mayoristas, entregas, cambios y devoluciones/reembolsos; CU19 y CU20 incluyen actores, precondiciones, flujo, alternativas, reglas y postcondiciones. Distingue Stripe TEST verificado de QR BCP pendiente, y enlaza las fichas académicas, migraciones y pruebas. No se modificó código, configuración ni datos, no se ejecutaron pruebas nuevas y no se iniciaron servidores. Esta sigue siendo la única bitácora de avance.
+
+
+### 2026-11-08 — Actualización descargada, migraciones y arranque local
+
+Versiones revisadas: backend d87a6fd, frontend 6628f96 y móvil 6aff226. Se conservaron el Markdown CU16–CU20, el seguimiento y las modificaciones preexistentes de registradores de plugins Flutter.
+
+Migraciones aplicadas tras respaldar la base local con pg_dump en formato custom y verificarla mediante pg_restore --list:
+- 2026_11_07_cu26_stripe.
+- 2026_11_08_cu21_offline.
+- 2026_11_08_cu19_prenda_adicional.
+- 2026_11_08_posventa_no_vendible.
+
+Respaldo: .private/antes_actualizacion_20261108_123308.dump. Log privado: .private/migraciones_20261108_123308.log. Se ejecutó init_db.py dos veces, quedando 22/22 versiones y conservando los conteos de empresas, usuarios, productos, ventas, órdenes de pago, inventario, movimientos, devoluciones y cambios. No se restauró ni sustituyó la base de trabajo.
+
+Dependencias: pip check sin incompatibilidades; Flutter pub get aprobado. Faltaba @angular/service-worker en node_modules pese a venir declarado en el nuevo lockfile; npm ci sincronizó 431 paquetes. Se conservan avisos EBADENGINE por Node 25 y CommonJS de leaflet/qrcode; la compilación y las 33 pruebas web aprobaron después de sincronizar. Flutter analyze sin incidencias y 84 pruebas aprobadas. APK release actualizado compilado (70,4 MB) con firebase.defines.local.json y API_URL local; no instalado porque ADB no detectó dispositivos conectados. Gradle/Firebase emite advertencias de futura compatibilidad KGP, sin impedir la compilación actual.
+
+Se añadió environment.local.ts y la configuración build local para compilar mediante npm run build -- --configuration production,local: mantiene producción/Service Worker y conecta exclusivamente con http://127.0.0.1:8000. La configuración de producción original de Railway se conserva.
+
+Backend normal iniciado en 8000 y PWA compilada servida en 4200 mediante .private/servir_pwa_local.py, con fallback de rutas Angular. Procesos registrados en .private/local_procesos.json y logs local_backend/local_frontend. Salud, directorio, página /empresa y manifiesto devolvieron HTTP 200. La web servida es compilada: después de modificar el frontend se debe reconstruir o utilizar npm start para desarrollo (sin acreditar PWA offline).
+
+Comprobación en Edge con perfil temporal: la web consultó la API local y registró el Service Worker, pero la recarga offline falló. Diagnóstico confirmado: Kaspersky añade un script kaspersky-labs al HTML obtenido por las peticiones del Service Worker, alterando la huella frente a ngsw.json; Angular pasa a EXISTING_CLIENTS_ONLY. Las huellas del archivo compilado y del HTTP sin inyección coinciden. No se cambió el antivirus, no se omitió la validación de integridad y no se acredita recarga offline exitosa en este equipo. Queda pendiente resolver esta interferencia en el entorno antes de aceptar la prueba física PWA.
+
+La primera regresión aislada aprobó 72 casos y falló uno de diferencia Stripe simulada: la nueva resolución de credenciales puede usar la clave TEST compartida del .env y el endpoint de confirmación manual la rechazó correctamente. Se aisló STRIPE_SECRET_KEY en la fixture api de CU16 (utilizada por CU19), manteniendo los mocks específicos de las pruebas que sí ejercitan Stripe. No se modificó el servicio comercial de pagos ni se deshabilitó su protección. Repetición final: 73 pruebas aprobadas, con 8 advertencias de deprecación existentes, en 493,78 segundos. Las dos bases desechables se retiraron al terminar.
+
+Comprobación adicional en Edge: directorio y /operaciones-offline renderizados online, cero errores JavaScript no controlados. Para probar offline: ingresar primero con red, abrir Operaciones offline, preparar el acceso local y descargar datos; la recarga PWA todavía requiere resolver la alteración de HTML de Kaspersky. Para móvil, instalar build/app/outputs/flutter-apk/app-release.apk cuando se conecte el USB; el archivo ya contiene SQLite y las nuevas dependencias. ADB no detectó ningún dispositivo en este turno.
+
+Cierre de esta actualización: 22/22 migraciones locales, 73 pruebas backend, 33 web y 84 Flutter aprobadas. API y web siguen corriendo en 8000/4200 para pruebas manuales. APK release disponible para instalar; no se instaló sin dispositivo. PWA offline mantiene el bloqueo externo Kaspersky confirmado; no se declara funcionamiento offline completo en este equipo. No hubo commits, push ni despliegue remoto.
+
+
+### 2026-11-08 — Servidores detenidos después de la actualización
+A petición del usuario se detuvieron el backend 8000, la PWA local 4200 y sus descendientes verificados mediante el registro de procesos. Se conservan migraciones, datos, configuración, compilación web y APK. No quedan activos los servidores iniciados en esta actualización.
+
+
+### 2026-11-08 — Productos, Posventa y selección inicial de talla/color (web y móvil)
+
+Alcance confirmado: web y Flutter; Posventa mediante tarjetas de acceso, solicitudes después de entrar; selección de producto/talla/color durante la solicitud inicial de cambio. La estimación inicial no sustituye la inspección, la validación posterior ni la aceptación económica.
+
+Web:
+- Productos incorpora ocho tarjetas cuadradas sobre el listado: Categorías, Tallas, Colores, Marcas, Temporadas, Colecciones, Variantes y precios y Promociones. Se retiraron esos accesos separados del menú lateral. Los tres enlaces de cada fila (mayoristas, variantes y promociones) se presentan como botones con borde, fondo y foco, conservando el producto en sus parámetros.
+- /devoluciones y /mis-devoluciones son entradas a las tarjetas Devoluciones/Cambios; Políticas posventa aparece solo para ADMINISTRADOR. Las solicitudes se consultan en /devoluciones/solicitudes y /mis-devoluciones/solicitudes. Los enlaces antiguos de notificaciones con seleccion se redirigen conservando el parámetro. Cambios y Políticas dejan de ser opciones independientes del menú; se agregaron accesos de regreso al módulo.
+- Pagos incluye Configurar pagos de prueba para ADMINISTRADOR. La configuración conserva la ruta protegida /pagos-empresa y ofrece regreso a Pagos. No se ampliaron permisos de encargado, cajero o cliente.
+- Selector reutilizable de producto → talla → color, agrupado por ID de producto para separar modelos con el mismo nombre. Solo ofrece combinaciones disponibles y muestra precio y existencias. La prueba detectó y corrigió la selección visual de talla al sustituirse las opciones del producto.
+- La solicitud inicial exige elegir una variante disponible y muestra pagar/reintegrar/sin diferencia estimada. Cambiar cantidades consulta otra vez y descarta respuestas antiguas. Se conserva la variante en la solicitud; después de inspeccionar vuelve a consultarse y cotizarse antes de aceptar.
+
+Backend:
+- Nuevo GET /api/v1/posventa/cambios/opciones-solicitud con venta_id, venta_detalle_id y cantidad, limitado a compras propias elegibles. Devuelve crédito estimado y variantes con producto_id, talla, color, precio y disponibilidad de la sucursal original.
+- Solicitud admite reemplazo_id opcional para compatibilidad con clientes anteriores. Los clientes actualizados lo seleccionan al solicitar. La creación valida empresa, stock y precio dentro de su transacción y guarda la selección y diferencia estimada en los campos existentes de cambio_prenda. La huella de idempotencia incluye la variante; reusar una clave con otra selección devuelve conflicto.
+- La solicitud continúa SOLICITADO, sin crédito inspeccionado, reserva ni orden de pago. La cotización definitiva sigue requiriendo aprobación/inspección y revalida precio/stock; se conservan el pago de diferencias, reintegro por el medio original y comprobante de entrega.
+- No se requirió migración: no se añadieron columnas y no se modificó la base local de trabajo.
+
+Flutter:
+- Gestión de productos sustituye las pestañas por tarjetas antes del listado y reutiliza las secciones existentes de categorías, tallas, colores y variantes. Se completaron pantallas de marcas, temporadas, colecciones y promociones con listado, alta, edición y activación/desactivación mediante las API existentes.
+- Promociones conserva productos, sucursales, período e importe al editar. No permite guardar si no terminaron de cargarse las referencias necesarias. Se ajustan límites de los campos a sus contratos.
+- Perfil agrupa cambios y devoluciones en una entrada. Posventa muestra las tarjetas y la configuración de políticas solo para el administrador. Se agregó el formulario móvil de plazos/condiciones y habilitación, con versión y conservación de campos ante conflicto.
+- Historial de pagos incorpora Pagos de prueba solo para el administrador, con configuración de medios/titular y versión; nunca solicita ni muestra claves privadas. Los errores de guardado se muestran junto al botón para que sean visibles al final del formulario.
+- Diálogo inicial de cambio con cantidad, motivo, producto/talla/color, precio y diferencia estimada. Usa la misma selección por variantes en la cotización posterior y conserva la preferencia guardada.
+
+Verificación:
+- 30 pruebas backend de cambios y posventa aprobadas en PostgreSQL desechable. Dos nuevas comprueban selección inicial persistida, transacción revertida con variante ajena, idempotencia, ausencia de pago/reserva anticipados, recotización con precio nuevo y rechazo de compras ajenas/cantidades excedidas.
+- 34 pruebas web aprobadas, incluida selección de talla/color y productos homónimos. Build de producción con API local aprobado.
+- Dos recorridos Edge/AXE aprobados: tarjetas de Productos y Posventa con permisos, vista estrecha, selección inicial, estimación, inspección, prenda adicional, diferencia pagada y comprobante; y devolución entrando por las tarjetas, inspección no vendible, aceptación e integración QR simulada. Sin incidencias AXE en las pantallas verificadas. Evidencias sintéticas privadas: productos_tarjetas.png y cambio_talla_color.png.
+- Análisis Flutter sin incidencias y 88 pruebas aprobadas. Incluyen selección inicial/precio, tarjetas sin consultas prematuras, ocultación de políticas al cliente, conflicto de política con campos conservados y edición de promoción sin pérdida de vínculos/importe.
+- APK release final generado en tr-mobile/build/app/outputs/flutter-apk/app-release.apk (70,7 MB), con configuración local. No instalado porque ADB no detectó un teléfono. Firma local de pruebas preexistente; no se publicó en tienda.
+- Se cerraron las APIs/servidores de ensayo y se retiraron las bases y cuentas sintéticas junto con sus DSN/fixture/correos. Los puertos 8000, 18127 y 48123 quedaron libres. En 4200 se detectó otro proceso node.exe de Angular (PID 4712), ajeno a las APIs/servidores de este ensayo, y se conservó. Se conservaron los cambios previos de configuración local y los registradores Flutter que ya estaban modificados antes de esta tarea.
+
+No se hicieron commits, push, despliegues ni cambios en credenciales, antivirus o proveedores externos. El bloqueo PWA de Kaspersky registrado en la revisión anterior no se modificó como parte de esta reorganización.
+
+
+### Cliente adicional para pruebas (2026-11-08)
+
+Se creó la cuenta `cliente.prueba` con rol CLIENTE en StyleAR, sin modificar las cuentas existentes. Se verificó el inicio de sesión y se cerró la sesión de verificación. Credenciales guardadas únicamente en `.private/cliente_nuevo_20261108.json`.
+
+
+### Corrección del avance al pago de cambios (2026-11-08)
+
+Al aprobar la inspección, el backend valida y cotiza automáticamente la variante elegida en la solicitud inicial con el crédito reconocido y el precio vigente. No se cobra ni se reserva stock antes de la aceptación del cliente. Si el reemplazo dejó de estar disponible, la inspección se conserva y se permite actualizar la selección.
+
+Web y Flutter permiten confirmar la diferencia sin volver a escoger producto, talla o color. La confirmación muestra las opciones de pago para diferencias positivas; el saldo a favor informa que el reintegro debe procesarlo la tienda por el medio original. La selección posterior queda como modificación opcional o para agregar una prenda con saldo. Las solicitudes aprobadas anteriormente tienen «Continuar con el reemplazo solicitado» y las cotizaciones pueden actualizarse si vencen.
+
+Validación: 22 pruebas de integración CU19 aprobadas en base desechable (incluyen diferencia positiva, negativa y cero desde selección inicial), 6 pruebas Flutter aprobadas (incluye confirmación y acceso a QR/Stripe sin reseleccionar), compilación web production,local correcta. Sin migraciones nuevas ni movimientos de dinero sobre las solicitudes comerciales. Base desechable eliminada al terminar.
+
+
+### Analítica mediante machine learning — bloque 1 (2026-11-08)
+
+Se revisaron los apartados 8.4 y 8.5 de la página 6 del enunciado y se definieron predicción supervisada de ventas semanales y segmentación no supervisada RFM. El diseño, variables, evaluación temporal, aislamiento por empresa, integración prevista y fases están en `ANALITICA_MACHINE_LEARNING.md`.
+
+Se implementó un generador reproducible de datos exclusivamente sintéticos en el módulo inteligencia y su CLI `scripts/generar_datos_analitica.py`. No conecta con PostgreSQL ni proveedores externos, no requiere nuevas dependencias y no altera tablas comerciales. Genera seis CSV y manifiesto con hashes dentro de `.private/analitica/dataset_v1`; rechaza salidas existentes. Importes en centavos, IDs ficticios y origen explícito.
+
+Ejecutado: 49.857 tickets, 30.240 registros diarios, 4.032 muestras semanales y 299 perfiles RFM, de 2 empresas, 24 productos y 300 clientes. Las particiones cronológicas se prepararon sin utilizar objetivos futuros como variables. Cuatro pruebas aprobadas de integridad, reproducibilidad, referencias, ventanas temporales y protección de salida. Los modelos todavía no se entrenaron; siguen pendientes entrenamiento supervisado/no supervisado, API, dashboard web/móvil y documentación ICONIX de esos bloques.
+
+
+### Analítica ML — bloque 2 y aclaración de fuente oficial (2026-11-08)
+
+El usuario indicó que la fuente oficial debe ser la del despliegue y que únicamente tiene acceso a su web. Se solicitó la URL y el rol para determinar una exportación autorizada. No se consultó ni modificó la BD oficial; tampoco se entrenó con la BD local. La preparación para extracción oficial queda pendiente de identificar el acceso disponible.
+
+Se implementaron entrenamiento supervisado por empresa, pipeline categórico + Random Forest, selección entre cuatro configuraciones por validación cronológica, evaluación final con MAE/RMSE contra referencia de semana anterior, métricas por sucursal y persistencia de artefactos locales con origen/versiones/hashes. Las dependencias opcionales y fijadas están en `requirements-ml.txt`; `requirements.txt` y el arranque del servidor no cambian.
+
+Ensayo SINTÉTICO para SYN-E01: MAE 4,470 contra 5,565 de referencia, RMSE 5,785 contra 7,542, con 324 muestras de prueba. No se presenta como precisión sobre el despliegue oficial. Artefactos en `.private/analitica/modelos/sintetico_e01_v1`. Ocho pruebas aprobadas de datos/entrenamiento, integridad, temporalidad, aislamiento y persistencia.
+
+Se actualizó `ANALITICA_MACHINE_LEARNING.md` con comandos, métricas de demostración y plan para exportación oficial, incluida la necesidad de revisar si hay historial de precios y stock antes de reutilizar esas variables. Pendientes: fuente/exportador oficial, modelo no supervisado, API/dashboard, reportes y documentación ICONIX de esos bloques.
+
+
+### ML — auditoría de fuente oficial Railway (2026-11-08)
+
+El usuario configuró `.private/analitica-oficial.env` y autorizó la revisión del historial oficial. Conexión SSL verificada y consultas realizadas en transacciones `REPEATABLE READ READ ONLY`, con tiempos máximos y rollback, limitadas a StyleAR. No se modificaron datos, no se ejecutaron migraciones ni se mostraron credenciales o datos personales.
+
+Resultado definitivo: 8 ventas completadas en 3 días y 1 cliente comprador; 4 ventas con señal de prueba y 2 sin detalle (exclusiones que pueden solaparse). Quedan 4 candidatas con detalle y sin señal de prueba, de un solo cliente, entre 2026-09-21 y 2026-09-29 en America/La_Paz. Todos los pagos conservan modo LEGADO, por lo que no se certifica que las candidatas sean ventas reales. Catálogo: 11 productos, 2 sucursales y 3 clientes registrados.
+
+El usuario confirmó que no existe historial adicional. Se registró estado local HISTORIAL_INSUFICIENTE para predicción/segmentación oficiales y no se entrenó ningún modelo oficial. Se mantiene la demostración académica sintética separada de reportes comerciales oficiales. Evidencia agregada en `.private/analitica/`, sin conexión/contraseñas, y decisión documentada en `ANALITICA_MACHINE_LEARNING.md`. Pendiente implementar el estado en API/dashboard; el JSON local no implica funcionalidad desplegada.
+
+
+### ML — bloque 3, segmentación RFM (2026-11-08)
+
+Implementados servicio y CLI de segmentación no supervisada por empresa en el módulo inteligencia. Pipeline log1p + StandardScaler + K-Means, selección de cantidad de grupos por silhouette, evaluación interna, estabilidad entre semillas mediante ARI y perfiles descriptivos con medias/medianas. No se usan IDs como variables ni se crean etiquetas comerciales predeterminadas. Se validan hashes, origen, empresas, perfiles, mínimos de datos, fecha y ventana. Se rechaza sobrescribir artefactos.
+
+Ensayo SINTÉTICO: SYN-E01 agrupa 149 clientes en 2 grupos (86/63), silhouette 0,453; SYN-E02 agrupa 150 en 2 grupos (81/69), silhouette 0,493. ARI medio 1,000 entre las semillas adicionales de ambos ensayos; esto no demuestra estabilidad temporal ni exactitud comercial. El cliente sin compras recientes se cuenta aparte. Artefactos privados con pipeline, evaluación y asignaciones listos para consumo posterior por la API/dashboard.
+
+También se entrenó la predicción supervisada sintética de SYN-E02 para completar ambas empresas de demostración: MAE 3,758 frente a referencia 4,840. Se conservaron los artefactos anteriores. Dependencias sin cambios respecto al bloque 2 y ninguna conexión a la base oficial en este bloque.
+
+Validación: 20 pruebas aprobadas de datos, predicción y segmentación (12 de segmentación). Documentación única de ML actualizada en `ANALITICA_MACHINE_LEARNING.md`. API, pantallas, exportaciones e ICONIX de esos recorridos siguen pendientes; fuente oficial permanece con historial insuficiente y sin modelos publicados.
+
+
+### ML — bloque 4, API protegida de analítica (2026-11-08)
+
+Se agregaron GET de estado, predicciones históricas, métricas y segmentos bajo `/api/v1/reportes/analitica`, registrados en app.main. Reutilizan sesión activa, permisos y plan de Reportes. El administrador ve su empresa; el encargado solo su sucursal y no segmentos/resúmenes globales. SaaS y demás roles reciben 403. No se permite elegir empresa/dataset/ruta mediante parámetros; filtros tipados rechazan parámetros adicionales y límites inválidos.
+
+La API lee JSON/CSV de resultados previamente calculados, valida registro por código+ID de empresa, hashes, origen, pertenencia y rutas confinadas. No carga joblib/sklearn ni entrena o accede a Railway por petición. El origen predeterminado OFICIAL no se sustituye por DEMOSTRACION. El estado oficial expuesto es la auditoría fechada de historial insuficiente, sin predicciones oficiales ni consulta en vivo. Las predicciones sintéticas se identifican como evaluación histórica, no pronóstico oficial vigente.
+
+Se creó el registrador local `scripts/registrar_analitica_demo.py` y `.private/analitica/registro_api.json`, asociando Suc Banzer 1 y Suc Busch 2 a SYN-E01-S01/S02. La tercera sucursal ficticia no se expone como predicción de una sucursal real. La paginación no altera los totales/series/métricas, calculados sobre todo el filtro autorizado.
+
+Validación: 42 pruebas aprobadas de datos/modelos/API, incluidas 22 de API/registro. Comprobación adicional con app.main y sesiones reales locales: administrador 200 en estado/predicciones/segmentos (216 filas de evaluación), encargado 200 en predicciones (108 filas, solo sucursal 1) y 403 en segmentos; sesiones cerradas después del ensayo. Se verificó importación de la aplicación sin cargar sklearn. Sin migraciones ni publicación de artefactos en Railway.
+
+Documentación única ML actualizada en `ANALITICA_MACHINE_LEARNING.md`. Siguiente bloque: dashboard web/móvil; siguen pendientes exportaciones y trazabilidad ICONIX de las pantallas finales.
+
+
+### ML — bloque 5, dashboard web y móvil (2026-11-08)
+
+Se implementó la ruta Angular diferida `/analitica`, accesible en Reportes, y la pantalla Flutter Analítica inteligente desde la barra de Reportes. Ambas consumen la API ML con origen OFICIAL inicial, estado de historial insuficiente y cambio explícito a DEMOSTRACION sintética.
+
+Incluyen métricas supervisadas, gráfico de unidades observadas/predichas/referencia, valores alternativos accesibles, tabla y filtros por sucursal/producto/fechas; segmentación solo para administrador con barras por grupo, métricas internas, perfiles y detalle RFM. La paginación conserva filtros aplicados. Se aclara que la predicción publicada es evaluación histórica y que silhouette/ARI no son exactitud comercial. No se mezclan datos sintéticos con oficiales.
+
+Servicios/modelos cliente nuevos, manejo de carga/errores/reintentos, descarte de respuestas tardías y limpieza de resultados al cambiar cuenta/empresa. Web cancela solicitudes y Flutter verifica generación/revisión. No se agregaron dependencias gráficas ni persistencia offline para analítica.
+
+Validación: 39 pruebas web, 94 Flutter, análisis Flutter sin observaciones, compilación web local y 2 recorridos Edge/AXE aprobados con administrador y encargado locales. Se probaron anchos de 320 px (Flutter) y 390 px (web), se inspeccionaron capturas y se verificó el alcance por sucursal. En Node 25 se ejecutaron las pruebas web con NODE_OPTIONS=--no-experimental-webstorage para usar localStorage de jsdom.
+
+No se modificaron datos oficiales, no hay migraciones nuevas y no se desplegó en Railway. Sigue pendiente el cierre de exportaciones ML, reportes inteligentes e ICONIX. Se actualizó `ANALITICA_MACHINE_LEARNING.md` con acceso, alcance, comandos y limitaciones.
+
+APK del bloque 5 generado correctamente (70,8 MB) en `tr-mobile/build/app/outputs/flutter-apk/app-release.apk`, con Firebase local y API_URL=http://127.0.0.1:8000. No instalado ni publicado. Hash/tamaño guardados en `.private/analitica_apk_manifest.json`. Validación final: 39 pruebas web, 94 Flutter, 2 Edge/AXE, compilación web y análisis Flutter correctos.
+
+
+### ML — bloque 6, exportaciones y solicitudes de reportes (2026-11-08)
+
+Se integraron PDF y Excel en web/Flutter sobre las consultas ML existentes, con exportación del filtro completo hasta 5.000 filas (422 si supera, sin truncar). Los archivos incluyen origen, empresa, estado, fuente/fecha de auditoría, modelo/dataset, filtros, métricas y gráficos. PDF con origen en todas las páginas, cabeceras repetidas y detalle separado; XLSX con hojas de resumen/métricas/datos/gráfico, números conservados y protección contra fórmulas en textos. OFICIAL insuficiente produce un reporte de disponibilidad, sin sustituir resultados por demostración.
+
+Se agregó solicitud por texto y dictado con vista previa y aplicación explícita, identificada como interpretación local por reglas (no LLM). Admite análisis registrados, origen, sucursal autorizada, producto, cortes ISO y grupo. Pide aclaración ante ambigüedad o pronósticos vigentes no disponibles; no genera SQL ni entrena. Reutiliza permisos de CU22 y funciones del plan para interpretación, voz y formatos. Controla contexto y respuestas tardías; el encargado no accede a segmentos ni otras sucursales.
+
+Validación: 56 pruebas backend, 44 web, 98 Flutter, análisis Flutter y compilación web correctos; 2 recorridos Edge/AXE con descargas reales y aplicación de propuesta. PDF filtrado por Banzer con 108 filas, Excel con los 149 perfiles y gráficos; muestras completas de 216 filas/149 perfiles verificadas mediante pypdf/openpyxl y render visual de resumen/detalle. API sin cambios a tablas ni datos oficiales. APK local actualizado (70,8 MB), sin instalar ni publicar en Railway.
+
+Se actualizó `ANALITICA_MACHINE_LEARNING.md` con comandos, alcance, limitaciones, ficha/robustez/secuencia de la extensión CU22, trazabilidad requisito→componente→prueba y recorrido manual. Pendientes: prueba física de dictado/apertura en Android, publicación autorizada de código/artefactos y traslado al informe/UML global. El bloque funcional de analítica está integrado localmente.
+
+
+### ML — prueba física Android aprobada (2026-11-08)
+
+A solicitud del usuario se probó el APK actualizado en el Redmi conectado por USB (Android 13 / SDK 33), conservando datos y usando exclusivamente la API local por adb reverse tcp:8000. Railway quedó sin cambios y no se utilizó su conexión en la prueba.
+
+MIUI bloqueó inyección de toques; se continuó mediante navegación asistida del usuario, sin alterar ajustes de seguridad. Se verificaron instalación, catálogo local, ingreso como administrador y acceso a analítica; se observó OFICIAL con historial insuficiente y DEMOSTRACION separado.
+
+Confirmado por el usuario en el teléfono: dictado transcrito, vista previa SEGMENTOS/DEMOSTRACION, aplicación a grupos, PDF abierto con grupos, Excel abierto correctamente y métricas/gráfico de tres líneas al volver a predicciones. Resultado físico aprobado sin errores funcionales reportados. El rol encargado mantiene sus verificaciones automatizadas; no se afirma prueba física de ese rol.
+
+Registro privado en `.private/analitica/android_qa.json`; documentación ML actualizada. Se retiró el XML de inspección y se conservaron la sesión manual, los reportes descargados y el enlace local para seguir probando. No se publicó en Railway. Pendientes aparte: publicación autorizada y adaptación del informe/modelo UML global para entrega académica.
+
+
+### ML — interfaz móvil más legible (2026-11-08)
+
+Se reemplazaron los accesos de iconos en Reportes por botones con texto: Analítica inteligente, Reporte por voz y Actualizar. La cabecera y las pestañas usan fondo claro con texto oscuro. Se añadieron espacios entre filtros y secciones, y las explicaciones de auditoría/modelo quedaron desplegables.
+
+Los grupos muestran cantidad, porcentaje de clientes y barras anchas con colores identificables. Los promedios de última compra, frecuencia y gasto se presentan en filas independientes. Silhouette y ARI conservan su significado y se muestran bajo «Ver evaluación del modelo».
+
+El gráfico semanal muestra ventas observadas y predicción; la referencia de semana anterior se activa con un interruptor. La escala vertical se ajusta al rango de valores y sus límites se indican expresamente. Hay cuadrícula, fechas abreviadas, leyenda por serie y valores exactos desplegables. No cambia ningún cálculo ni consulta del backend.
+
+La tabla inferior y su paginación aparecen únicamente al pulsar «Ver detalle del reporte»; se pueden volver a ocultar y se reinicia su visibilidad al aplicar otros filtros. Las exportaciones siguen usando el filtro completo.
+
+Validación: 99 pruebas Flutter aprobadas y flutter analyze sin problemas; incluye pantalla de 320 px, tabla visible solo por petición y rangos del gráfico con valores constantes/cero. Railway no fue modificado. La revisión física previa corresponde al diseño anterior; este cambio no se declara confirmado por el usuario en el teléfono.
+
+APK release actualizado (70.9 MB), instalado en el Redmi mediante `adb install -r` con resultado Success. Se abrió StyleAR y se mantuvo la conexión USB a la API local. No se borraron datos de la app. La comprobación visual del nuevo diseño en el teléfono queda para el usuario.
+
+
+### Web — dashboard, analítica y delivery reorganizados (2026-11-08)
+
+- Dashboard comercial: los primeros resultados son cuatro gráficos de barras (ventas por fecha, importe BOB por fecha, canales de venta y productos más vendidos), con valores exactos y escalas desde cero. Los filtros quedan desplegables y las métricas/tablas permanecen disponibles debajo. Los datos y permisos siguen siendo los del servicio comercial actual.
+- Analítica: gráfico semanal con cuadrícula, escala ajustada y límites expresos; ventas observadas y predicción visibles por defecto, semana anterior opcional mediante casilla. Las series conservan colores y trazos distintos. Grupos con porcentajes y promedios RFM separados; tablas de detalle e identificación del modelo desplegables.
+- Carrito/delivery: el botón abre una ventana superpuesta, fuera del resumen. Dirección, mapa y cotización usan tarjetas independientes; en escritorio tienen altura limitada y desplazamiento propio. En pantalla estrecha se apilan dentro de la ventana. El resumen conserva el destino/costo/aceptación y permite volver a editar. Se mantiene la invalidación al cambiar destino o sucursal.
+- El mapa se libera al cerrar y reconstruye al reabrir, conservando ubicación y ruta cotizada. Un error de cotización ya no elimina el formulario ni cierra la ventana. La aceptación solo aparece con una cotización disponible. El modal mantiene foco, Escape y retorno al botón; bloquea el desplazamiento del fondo y aparece sobre el asistente flotante. El ancho de los demás modales conserva su valor predeterminado.
+
+Validación: compilación de producción correcta; 46 pruebas unitarias aprobadas. Se ejecutaron cuatro recorridos Edge (administrador/encargado en analítica, dashboard y delivery) con verificaciones AXE sin infracciones en los ámbitos probados. Se inspeccionaron capturas de escritorio y de 390 px. La prueba de interfaz de delivery usa carrito y respuesta de cotización simulados en el navegador: no registra compras ni pagos, ni verifica nuevamente el proveedor ORS. Se comprobó conservar dirección/aceptación al reabrir, Escape y retorno del foco. Los tests de analítica verificaron además exportaciones PDF y Excel locales. No se modificaron Railway, modelos ML ni esquema de BD.
+
+El ejecutor Node 25 necesita NODE_OPTIONS=--no-experimental-webstorage para que las pruebas utilicen localStorage de jsdom; con ese ajuste pasan las 46 pruebas. No se alteró la lógica de sesiones para resolver esa diferencia del entorno de pruebas.
+
+
+### Web — gráficos rellenos y con volumen (2026-11-08)
+
+Por preferencia del usuario se retiraron las series de contorno del gráfico de analítica. Cada serie se presenta como un área con degradado relleno en su propia tarjeta, usando la misma escala vertical explícita para facilitar comparación y evitar superposiciones. La semana anterior sigue siendo opcional y los valores exactos permanecen desplegables.
+
+El dashboard usa columnas con degradados, iluminación interior, sombra y etiquetas de valor. Los productos más vendidos tienen un ranking con barras anchas, textura segmentada y colores alternos. Los grupos de clientes adoptan barras rellenas con degradado y tarjetas para sus métricas. Los porcentajes, importes, consultas y cálculos no se alteraron.
+
+Verificación: compilación de producción correcta, 46 pruebas unitarias aprobadas, dos recorridos Edge de analítica/dashboard aprobados con AXE sin infracciones, e inspección visual de las capturas actualizadas. Se conserva la respuesta adaptable a pantalla estrecha. Railway no fue modificado.

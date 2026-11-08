@@ -46,6 +46,7 @@ from app.modules.ventas_inventario.router.delivery_router import router as deliv
 from app.modules.ventas_inventario.router.pago_router import router as pago_router
 from app.modules.ventas_inventario.router.devolucion_router import router as devolucion_router
 from app.modules.inteligencia.router.reporte_router import router as reporte_router
+from app.modules.inteligencia.router.analitica_router import router as analitica_router
 from app.modules.inteligencia.router.recomendacion_router import router as recomendacion_router
 from app.modules.inteligencia.router.asistente_router import router as asistente_router
 from app.modules.autenticacion.router.perfil_router import router as perfil_router
@@ -116,6 +117,7 @@ app.include_router(devolucion_router)
 app.include_router(delivery_router)
 app.include_router(bitacora_router)
 app.include_router(reporte_router)
+app.include_router(analitica_router)
 app.include_router(recomendacion_router)
 app.include_router(asistente_router)
 

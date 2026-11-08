@@ -107,12 +107,16 @@ def crear_devolucion(
     empresa_id: int,
     clave_operacion: str | None = None,
     tipo_operacion: str = "DEVOLUCION",
+    reemplazo_solicitado_id: int | None = None,
 ) -> dict:
     connection = get_connection()
     try:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             bloquear(cursor,empresa_id,usuario_id)
-            huella=hashlib.sha256(json.dumps({'venta':venta_id,'motivo':motivo.strip(),'observacion':observacion,'items':sorted(items,key=lambda i:i['venta_detalle_id'])},sort_keys=True).encode()).hexdigest()
+            contenido={'venta':venta_id,'motivo':motivo.strip(),'observacion':observacion,'items':sorted(items,key=lambda i:i['venta_detalle_id'])}
+            if reemplazo_solicitado_id is not None:
+                contenido['reemplazo_id']=reemplazo_solicitado_id
+            huella=hashlib.sha256(json.dumps(contenido,sort_keys=True).encode()).hexdigest()
             if clave_operacion:
                 cursor.execute('SELECT id,solicitud_huella,tipo_operacion FROM devolucion WHERE empresa_id=%s AND cliente_id=%s AND solicitud_clave=%s',(empresa_id,cliente_id,clave_operacion))
                 previa=cursor.fetchone()
@@ -157,6 +161,14 @@ def crear_devolucion(
                     raise ValueError("La cantidad solicitada supera las unidades todavía disponibles para devolución.")
                 monto_solicitado += _calcular_parcial(_subtotal_pagado_cursor(cursor,detalle_id), int(linea["cantidad"]), cantidad)
 
+            precio_reemplazo = None
+            if cambio and reemplazo_solicitado_id is not None:
+                from ..services.cambio_service import _stock
+                from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
+                _stock(cursor, {'empresa_id':empresa_id,'sucursal_id':venta['sucursal_id']}, reemplazo_solicitado_id, int(items[0]['cantidad']))
+                precio_reemplazo = _obtener_precio_final_variante_cursor(cursor,reemplazo_solicitado_id,venta['sucursal_id'])
+                if precio_reemplazo is None or precio_reemplazo <= 0:
+                    raise ValueError('El reemplazo no tiene precio vigente.')
             codigo = f"DEV-{uuid4().hex[:10].upper()}"
             clave_idempotencia = f"devolucion-{uuid4().hex}"
             cursor.execute(
@@ -172,6 +184,9 @@ def crear_devolucion(
             cursor.execute('UPDATE devolucion SET tipo_operacion=%s WHERE id=%s',(tipo_operacion,devolucion_id))
             if cambio:
                 cursor.execute('INSERT INTO cambio_prenda(id,cantidad) VALUES(%s,%s)',(devolucion_id,int(items[0]['cantidad'])))
+                if reemplazo_solicitado_id is not None:
+                    cursor.execute('UPDATE cambio_prenda SET reemplazo_id=%s,precio_reemplazo=%s,diferencia=%s WHERE id=%s',
+                        (reemplazo_solicitado_id,precio_reemplazo,(precio_reemplazo*int(items[0]['cantidad'])-monto_solicitado).quantize(CENTAVO),devolucion_id))
             avisar(cursor,dict(id=devolucion_id,empresa_id=empresa_id,cliente_id=cliente_id),'solicitud','Solicitud de devolución recibida.')
             for item in items:
                 cursor.execute(

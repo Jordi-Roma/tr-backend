@@ -31,6 +31,9 @@ def es_operacion_nueva(metodo: str, ruta: str) -> bool:
         return False
     if ruta in {'/api/v1/reportes/detalle','/api/v1/reportes/dashboard'}:
         return False
+    if ruta in {'/api/v1/reportes/analitica/interpretar', '/api/v1/reportes/analitica/exportar/pdf',
+                '/api/v1/reportes/analitica/exportar/excel'}:
+        return False
     if re.fullmatch(r"/api/v1/reportes/programados/\d+/ejecutar", ruta):
         return False
     if metodo.upper()=='PATCH' and re.fullmatch(r"/api/v1/reportes/programados/\d+/estado", ruta):

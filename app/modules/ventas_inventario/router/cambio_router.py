@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.autenticacion.repositories.perfil_repository import _transaccion
 from app.modules.ventas_inventario.services import cambio_service as s
 
 router = APIRouter(prefix='/api/v1/posventa/cambios', tags=['Cambios de prendas'])
+
+@router.get('/opciones-solicitud')
+def opciones_solicitud(venta_id:int=Query(gt=0), venta_detalle_id:int=Query(gt=0), cantidad:int=Query(gt=0), actor=Depends(obtener_usuario_actual)):
+    return s.opciones_solicitud(actor, venta_id, venta_detalle_id, cantidad)
 
 @router.get('/elegibles')
 def elegibles(actor=Depends(obtener_usuario_actual)):

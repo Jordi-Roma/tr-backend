@@ -13,6 +13,9 @@ from app.main import app
 @pytest.fixture
 def api(monkeypatch):
     monkeypatch.setenv('STYLEAR_PAGOS_PRUEBA','1')
+    # La configuración local puede contener una clave TEST compartida. Estas
+    # pruebas usan simulaciones; las que requieren Stripe inyectan su propio mock.
+    monkeypatch.setenv('STRIPE_SECRET_KEY','')
     with TestClient(app) as c:yield c
 
 def habilitar(api,e):

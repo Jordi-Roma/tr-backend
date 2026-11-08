@@ -18,6 +18,7 @@ from app.modules.reservas.repositories.reserva_repository import (
 from app.modules.reservas.schemas.reservas.reserva_request import (
     CambiarEstadoReservaRequest,
     CrearReservaDesdeCarritoRequest,
+    CrearReservaLocalRequest,
     FinalizarReservaRequest,
     PagarReservaRequest,
 )
@@ -42,6 +43,10 @@ def crear_desde_carrito(
             request.fecha_cita,
             request.observacion,
             request.clave_operacion,
+            items_locales=(
+                [item.model_dump() for item in request.items]
+                if isinstance(request, CrearReservaLocalRequest) else None
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
@@ -49,21 +54,25 @@ def crear_desde_carrito(
     return ReservaResponse(**reserva)
 
 
-def listar_mis_reservas(usuario_actual: dict[str, object]) -> list[ReservaResponse]:
-    return [ReservaResponse(**reserva) for reserva in listar_reservas_cliente(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual))]
+def listar_mis_reservas(usuario_actual: dict[str, object], limite: int | None = None) -> list[ReservaResponse]:
+    filas = listar_reservas_cliente(int(usuario_actual["id"]), exigir_empresa_id(usuario_actual), limite)
+    return [ReservaResponse(**reserva) for reserva in filas]
 
 
 def listar_todas(
     usuario_actual: dict[str, object],
     estado: str | None = None,
     sucursal_id: int | None = None,
+    limite: int | None = None,
+    incluir_finalizadas: bool = False,
 ) -> list[ReservaResponse]:
     if estado is not None:
         estado = estado.upper()
         _validar_estado(estado)
 
     sucursal_filtrada = _obtener_sucursal_permitida(usuario_actual, sucursal_id)
-    return [ReservaResponse(**reserva) for reserva in listar_reservas_admin(exigir_empresa_id(usuario_actual), estado, sucursal_filtrada)]
+    filas = listar_reservas_admin(exigir_empresa_id(usuario_actual), estado, sucursal_filtrada, limite, incluir_finalizadas)
+    return [ReservaResponse(**reserva) for reserva in filas]
 
 
 def obtener_mi_reserva(usuario_actual: dict[str, object], reserva_id: int) -> ReservaResponse:

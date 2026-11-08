@@ -7,7 +7,7 @@ from psycopg2.extras import RealDictCursor
 from app.database.connection import get_connection
 from app.modules.reservas.repositories.carrito_repository import _obtener_precio_final_variante_cursor
 from app.modules.ventas_inventario.repositories.operacion_repository import (
-    iniciar_operacion, finalizar_operacion, bloquear_existencias, auditar_operacion,
+    iniciar_operacion, finalizar_operacion, bloquear_existencias, auditar_operacion, guardar_rechazo_offline,
 )
 
 TIPOS_SUMA = {"ENTRADA", "AJUSTE_POSITIVO", "TRANSFERENCIA_ENTRADA", "DEVOLUCION_VENTA"}
@@ -412,16 +412,24 @@ def crear_venta_presencial(
     observacion: str | None,
     items: list[dict[str, object]],
     clave_operacion=None,
+    *,
+    efectivo_centavos: int | None = None,
 ) -> dict[str, object]:
     if not items:
         raise ValueError("La venta debe tener al menos un item.")
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
+    guardar_rechazo = False
     try:
         datos = dict(sucursal_id=sucursal_id,cliente_id=cliente_id,metodo_pago=metodo_pago,observacion=observacion,items=items)
+        if efectivo_centavos is not None:
+            datos['efectivo_centavos'] = efectivo_centavos
         previa = iniciar_operacion(cursor,empresa_id,usuario_id,'VENTA',clave_operacion,datos)
         if previa:
             return _obtener_venta_cursor(cursor,previa,empresa_id)
+        if efectivo_centavos is not None:
+            cursor.execute('SAVEPOINT operacion_offline')
+            guardar_rechazo = True
         exigir_operaciones_empresa(empresa_id, cursor=cursor)
         if metodo_pago not in {'EFECTIVO','QR','TARJETA','TRANSFERENCIA'}:
             raise ValueError('Método de pago presencial inválido.')
@@ -464,6 +472,8 @@ def crear_venta_presencial(
             precio = _obtener_precio_final_variante_cursor(cursor, variante_id, sucursal_id)
             if precio is None:
                 raise ValueError("Una variante no tiene precio vigente.")
+            if efectivo_centavos is not None and precio * 100 != item['precio_centavos']:
+                raise ValueError("El precio de una variante cambió. Revisa el efectivo registrado.")
             bruto = precio * cantidad
             if descuento < 0 or descuento > bruto:
                 raise ValueError('El descuento debe estar entre cero y el importe de la línea.')
@@ -498,6 +508,8 @@ def crear_venta_presencial(
                 (venta_id, variante_id, cantidad, precio, descuento, subtotal),
             )
         total = max(Decimal("0.00"), subtotal_total - descuento_total)
+        if efectivo_centavos is not None and total * 100 != efectivo_centavos:
+            raise ValueError("El efectivo recibido debe coincidir con el total de la venta.")
         cursor.execute(
             """
             UPDATE venta
@@ -513,10 +525,18 @@ def crear_venta_presencial(
         finalizar_operacion(cursor,empresa_id,usuario_id,'VENTA',clave_operacion,datos,venta_id)
         auditar_operacion(cursor,usuario_id,empresa_id,'VENTA_PRESENCIAL',f'Venta {codigo}, sucursal {sucursal_id}, total {total}.')
         connection.commit()
+        guardar_rechazo = False
         venta = _obtener_venta_cursor(cursor, venta_id, empresa_id)
         if venta is None:
             raise RuntimeError("No se pudo recuperar la venta creada.")
         return venta
+    except ValueError as error:
+        if guardar_rechazo:
+            guardar_rechazo_offline(cursor, connection, empresa_id, usuario_id, 'VENTA',
+                                    clave_operacion, datos, error)
+        else:
+            connection.rollback()
+        raise
     except Exception:
         connection.rollback()
         raise
@@ -525,7 +545,7 @@ def crear_venta_presencial(
         connection.close()
 
 
-def listar_ventas(empresa_id: int, sucursal_id: int | None = None) -> list[dict[str, object]]:
+def listar_ventas(empresa_id: int, sucursal_id: int | None = None, limite: int | None = None) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
     try:
@@ -539,9 +559,9 @@ def listar_ventas(empresa_id: int, sucursal_id: int | None = None) -> list[dict[
             SELECT id
             FROM venta v
             WHERE {where}
-            ORDER BY fecha_venta DESC, id DESC;
+            ORDER BY fecha_venta DESC, id DESC LIMIT %s;
             """,
-            params,
+            [*params, limite],
         )
         return [
             venta

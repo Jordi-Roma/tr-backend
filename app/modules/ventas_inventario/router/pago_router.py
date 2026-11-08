@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.ventas_inventario.schemas.pago.pago_request import (
@@ -35,8 +35,9 @@ def listar_mis_pagos(
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+    limite: int | None = Query(default=None, ge=1, le=100),
 ) -> list[PagoHistorialItemResponse]:
-    return listar_mis_pagos_service(usuario_actual, estado, fecha_desde, fecha_hasta)
+    return listar_mis_pagos_service(usuario_actual, estado, fecha_desde, fecha_hasta, limite)
 
 
 @router.get("/mis-pagos/{orden_id}", response_model=PagoHistorialDetalleResponse)

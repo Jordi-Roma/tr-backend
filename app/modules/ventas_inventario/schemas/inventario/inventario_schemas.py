@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from decimal import Decimal
 from uuid import UUID
 
@@ -124,6 +125,18 @@ class CrearVentaPresencialRequest(OperacionRequest):
         if len(ids) != len(set(ids)):
             raise ValueError('No repitas una variante en la venta; agrupa su cantidad.')
         return items
+
+
+class VentaLocalItem(VentaItemRequest):
+    descuento: Literal[0] = 0
+    precio_centavos: int = Field(ge=0, le=999999999999)
+
+
+class CrearVentaLocalRequest(CrearVentaPresencialRequest):
+    clave_operacion: UUID
+    metodo_pago: Literal['EFECTIVO']
+    efectivo_centavos: int = Field(ge=0, le=999999999999)
+    items: list[VentaLocalItem] = Field(min_length=1, max_length=100)
 
 
 class VentaDetalleResponse(BaseModel):

@@ -11,23 +11,31 @@ def iniciar_operacion(cur, empresa_id, usuario_id, operacion, clave, datos):
                                        ensure_ascii=False).encode()).hexdigest()
     contexto = f'operacion:{empresa_id}:{usuario_id}:{operacion}:{clave}'
     cur.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))', (contexto,))
-    cur.execute('''SELECT recurso_id,huella FROM operacion_comercial
+    cur.execute('''SELECT recurso_id,huella,error FROM operacion_comercial
         WHERE empresa_id=%s AND usuario_id=%s AND operacion=%s AND clave=%s''',
         (empresa_id, usuario_id, operacion, clave))
     previa = cur.fetchone()
     if previa and previa['huella'] != huella:
         raise ValueError('Esta clave de operación ya se utilizó con otros datos.')
+    if previa and previa['error'] is not None:
+        raise ValueError(previa['error'])
     return int(previa['recurso_id']) if previa else None
 
 
-def finalizar_operacion(cur, empresa_id, usuario_id, operacion, clave, datos, recurso_id):
+def finalizar_operacion(cur, empresa_id, usuario_id, operacion, clave, datos, recurso_id, *, error=None):
     if clave is None:
         return
     huella = hashlib.sha256(json.dumps(datos, sort_keys=True, default=str,
                                        ensure_ascii=False).encode()).hexdigest()
     cur.execute('''INSERT INTO operacion_comercial
-        (empresa_id,usuario_id,operacion,clave,huella,recurso_id) VALUES(%s,%s,%s,%s,%s,%s)''',
-        (empresa_id,usuario_id,operacion,str(clave),huella,recurso_id))
+        (empresa_id,usuario_id,operacion,clave,huella,recurso_id,error) VALUES(%s,%s,%s,%s,%s,%s,%s)''',
+        (empresa_id,usuario_id,operacion,str(clave),huella,recurso_id,error))
+
+
+def guardar_rechazo_offline(cur, conexion, empresa_id, usuario_id, operacion, clave, datos, error):
+    cur.execute('ROLLBACK TO SAVEPOINT operacion_offline')
+    finalizar_operacion(cur, empresa_id, usuario_id, operacion, clave, datos, None, error=str(error))
+    conexion.commit()
 
 
 def bloquear_existencias(cur, empresa_id, pares):

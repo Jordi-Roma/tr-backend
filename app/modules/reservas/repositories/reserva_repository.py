@@ -9,7 +9,7 @@ from psycopg2.extras import RealDictCursor
 
 from app.database.connection import get_connection
 from app.modules.ventas_inventario.repositories.operacion_repository import (
-    iniciar_operacion, finalizar_operacion, bloquear_existencias,
+    iniciar_operacion, finalizar_operacion, bloquear_existencias, guardar_rechazo_offline,
 )
 from app.modules.reservas.repositories.carrito_repository import (
     _armar_carrito_cursor,
@@ -30,15 +30,23 @@ def crear_reserva_desde_carrito(
     fecha_cita: date,
     observacion: str | None,
     clave_operacion=None,
+    *,
+    items_locales: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
+    guardar_rechazo = False
 
     try:
         datos_operacion = {'sucursal_id': sucursal_id, 'fecha_cita': fecha_cita, 'observacion': observacion}
+        if items_locales is not None:
+            datos_operacion['items_locales'] = items_locales
         previa = iniciar_operacion(cursor, empresa_id, usuario_id, 'RESERVA', clave_operacion, datos_operacion)
         if previa:
             return _obtener_reserva_por_id_cursor(cursor, previa, empresa_id)
+        if items_locales is not None:
+            cursor.execute('SAVEPOINT operacion_offline')
+            guardar_rechazo = True
         exigir_operaciones_empresa(empresa_id, cursor=cursor)
         cliente_id = _obtener_cliente_id_por_usuario_cursor(cursor, usuario_id, empresa_id)
 
@@ -52,9 +60,12 @@ def crear_reserva_desde_carrito(
         if cursor.fetchone() is None:
             raise ValueError("La sucursal no pertenece a tu empresa.")
 
-        carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
-        carrito = _armar_carrito_cursor(cursor, carrito_id)
-        items = carrito["items"]
+        carrito_id = None
+        if items_locales is None:
+            carrito_id = _obtener_o_crear_carrito_cursor(cursor, cliente_id)
+            items = _armar_carrito_cursor(cursor, carrito_id)["items"]
+        else:
+            items = [dict(item) for item in items_locales]
 
         if len(items) == 0:
             raise ValueError("El carrito esta vacio.")
@@ -152,15 +163,16 @@ def crear_reserva_desde_carrito(
                 ),
             )
 
-        cursor.execute(
-            """
-            UPDATE carrito_item
-            SET activo = FALSE,
-                fecha_actualizacion = CURRENT_TIMESTAMP
-            WHERE carrito_id = %s AND activo = TRUE;
-            """,
-            (carrito_id,),
-        )
+        if carrito_id is not None:
+            cursor.execute(
+                """
+                UPDATE carrito_item
+                SET activo = FALSE,
+                    fecha_actualizacion = CURRENT_TIMESTAMP
+                WHERE carrito_id = %s AND activo = TRUE;
+                """,
+                (carrito_id,),
+            )
 
         _registrar_bitacora_cursor(
             cursor,
@@ -173,10 +185,18 @@ def crear_reserva_desde_carrito(
         from app.modules.ventas_inventario.services.notificaciones_service import avisar_reserva
         avisar_reserva(cursor,reserva_id,'CREADA')
         connection.commit()
+        guardar_rechazo = False
         reserva = _obtener_reserva_por_id_cursor(cursor, reserva_id, empresa_id)
         if reserva is None:
             raise RuntimeError("No se pudo recuperar la reserva creada.")
         return reserva
+    except ValueError as error:
+        if guardar_rechazo:
+            guardar_rechazo_offline(cursor, connection, empresa_id, usuario_id, 'RESERVA',
+                                    clave_operacion, datos_operacion, error)
+        else:
+            connection.rollback()
+        raise
     except Exception:
         connection.rollback()
         raise
@@ -185,7 +205,7 @@ def crear_reserva_desde_carrito(
         connection.close()
 
 
-def listar_reservas_cliente(usuario_id: int, empresa_id: int) -> list[dict[str, object]]:
+def listar_reservas_cliente(usuario_id: int, empresa_id: int, limite: int | None = None) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
 
@@ -202,9 +222,9 @@ def listar_reservas_cliente(usuario_id: int, empresa_id: int) -> list[dict[str, 
             SELECT id
             FROM reserva
             WHERE cliente_id = %s AND empresa_id = %s AND activo = TRUE
-            ORDER BY fecha_reserva DESC, id DESC;
+            ORDER BY fecha_reserva DESC, id DESC LIMIT %s;
             """,
-            (cliente_id, empresa_id),
+            (cliente_id, empresa_id, limite),
         )
         return [
             reserva
@@ -241,6 +261,8 @@ def listar_reservas_admin(
     empresa_id: int,
     estado: str | None = None,
     sucursal_id: int | None = None,
+    limite: int | None = None,
+    incluir_finalizadas: bool = False,
 ) -> list[dict[str, object]]:
     connection = get_connection()
     cursor = connection.cursor(cursor_factory=RealDictCursor)
@@ -255,7 +277,7 @@ def listar_reservas_admin(
         if estado:
             estado_sql = "AND estado = %s"
             params.append(estado)
-        else:
+        elif not incluir_finalizadas:
             estado_sql = "AND estado IN ('PENDIENTE_ANTICIPO', 'PENDIENTE', 'PREPARADA', 'EN_ATENCION')"
 
         if sucursal_id is not None:
@@ -267,9 +289,9 @@ def listar_reservas_admin(
             SELECT id
             FROM reserva
             WHERE activo = TRUE AND empresa_id = %s {estado_sql} {sucursal_sql}
-            ORDER BY fecha_reserva DESC, id DESC;
+            ORDER BY fecha_reserva DESC, id DESC LIMIT %s;
             """,
-            params,
+            [*params, limite],
         )
         return [
             reserva

@@ -53,6 +53,7 @@ def listar_mis_pagos_service(
     estado: str | None = None,
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
+    limite: int | None = None,
 ) -> list[PagoHistorialItemResponse]:
     empresa_id = exigir_empresa_id(usuario_actual)
     _validar_permiso_historial(usuario_actual, "propios")
@@ -63,6 +64,7 @@ def listar_mis_pagos_service(
         estado=estado,
         fecha_desde=fecha_desde,
         fecha_hasta=fecha_hasta,
+        limite=limite,
     )
     return [_historial_item_response(pago) for pago in pagos]
 

@@ -11,6 +11,23 @@ class CrearReservaDesdeCarritoRequest(BaseModel):
     clave_operacion: UUID | None = None
 
 
+class ReservaLocalItem(BaseModel):
+    producto_variante_id: int = Field(gt=0)
+    cantidad: int = Field(ge=1, le=2)
+
+
+class CrearReservaLocalRequest(CrearReservaDesdeCarritoRequest):
+    clave_operacion: UUID
+    items: list[ReservaLocalItem] = Field(min_length=1, max_length=100)
+
+    @field_validator('items')
+    @classmethod
+    def variantes_distintas(cls, items):
+        if len({item.producto_variante_id for item in items}) != len(items):
+            raise ValueError('Agrupa la cantidad de cada variante.')
+        return items
+
+
 class CambiarEstadoReservaRequest(BaseModel):
     estado: str
 

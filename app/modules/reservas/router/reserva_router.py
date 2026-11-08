@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.administracion.dependencies.empleado_access import requerir_admin_o_encargado_o_cajero
 from app.modules.reservas.schemas.reservas.reserva_request import (
     CambiarEstadoReservaRequest,
     CrearReservaDesdeCarritoRequest,
+    CrearReservaLocalRequest,
     FinalizarReservaRequest,
     PagarReservaRequest,
 )
@@ -36,11 +37,20 @@ def crear_reserva_desde_carrito_endpoint(
     return crear_desde_carrito(usuario_actual, request)
 
 
+@router.post("/offline", response_model=ReservaResponse)
+def sincronizar_reserva_local(
+    request: CrearReservaLocalRequest,
+    usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+) -> ReservaResponse:
+    return crear_desde_carrito(usuario_actual, request)
+
+
 @router.get("/mis-reservas", response_model=list[ReservaResponse])
 def listar_mis_reservas_endpoint(
     usuario_actual: dict[str, object] = Depends(obtener_usuario_actual),
+    limite: int | None = Query(default=None, ge=1, le=100),
 ) -> list[ReservaResponse]:
-    return listar_mis_reservas(usuario_actual)
+    return listar_mis_reservas(usuario_actual, limite)
 
 
 @router.get("", response_model=list[ReservaResponse])
@@ -48,8 +58,10 @@ def listar_reservas_endpoint(
     estado: str | None = None,
     sucursal_id: int | None = None,
     usuario_actual: dict[str, object] = Depends(requerir_admin_o_encargado_o_cajero),
+    limite: int | None = Query(default=None, ge=1, le=100),
+    incluir_finalizadas: bool = False,
 ) -> list[ReservaResponse]:
-    return listar_todas(usuario_actual, estado, sucursal_id)
+    return listar_todas(usuario_actual, estado, sucursal_id, limite, incluir_finalizadas)
 
 
 @router.get("/{reserva_id}", response_model=ReservaResponse)

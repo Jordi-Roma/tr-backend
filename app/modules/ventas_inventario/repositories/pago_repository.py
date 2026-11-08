@@ -309,6 +309,7 @@ def listar_historial_pagos(
     cliente: str | None = None,
     fecha_desde: str | None = None,
     fecha_hasta: str | None = None,
+    limite: int | None = None,
 ) -> list[dict]:
     where = ["op.activo = TRUE", "op.empresa_id = %s", "v.empresa_id = op.empresa_id"]
     params: list[object] = [empresa_id]
@@ -383,9 +384,9 @@ def listar_historial_pagos(
                 LEFT JOIN cliente c ON c.id = op.cliente_id
                 LEFT JOIN usuario u ON u.id = c.usuario_id
                 WHERE {' AND '.join(where)}
-                ORDER BY op.fecha_creacion DESC, op.id DESC;
+                ORDER BY op.fecha_creacion DESC, op.id DESC LIMIT %s;
                 """,
-                params,
+                [*params, limite],
             )
             return [dict(row) for row in cursor.fetchall()]
     finally:

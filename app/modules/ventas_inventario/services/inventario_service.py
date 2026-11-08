@@ -21,6 +21,7 @@ from app.modules.ventas_inventario.schemas.inventario.inventario_schemas import 
     ActualizarStockMinimoRequest,
     CrearTransferenciaRequest,
     CrearVentaPresencialRequest,
+    CrearVentaLocalRequest,
     InventarioResponse,
     MovimientoInventarioRequest,
     MovimientoInventarioResponse,
@@ -159,6 +160,9 @@ def crear_venta_service(
             request.observacion,
             [item.model_dump() for item in request.items],
             request.clave_operacion,
+            efectivo_centavos=(
+                request.efectivo_centavos if isinstance(request, CrearVentaLocalRequest) else None
+            ),
         )
         return VentaPresencialResponse(**venta)
     except ValueError as error:
@@ -168,9 +172,10 @@ def crear_venta_service(
 def listar_ventas_service(
     usuario_actual: dict[str, object],
     sucursal_id: int | None,
+    limite: int | None = None,
 ) -> list[VentaPresencialResponse]:
     sucursal = _sucursal_permitida(usuario_actual, sucursal_id)
-    return [VentaPresencialResponse(**row) for row in listar_ventas(exigir_empresa_id(usuario_actual), sucursal)]
+    return [VentaPresencialResponse(**row) for row in listar_ventas(exigir_empresa_id(usuario_actual), sucursal, limite)]
 
 
 def obtener_venta_service(usuario_actual: dict[str, object], venta_id: int) -> VentaPresencialResponse:

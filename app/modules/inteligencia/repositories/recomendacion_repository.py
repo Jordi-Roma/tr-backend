@@ -9,6 +9,8 @@ def candidatos_disponibles(empresa_id, sucursal_id=None, talla_id=None):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SET LOCAL statement_timeout='5000ms'")
+            # Una empresa recién cargada puede tener muchas más filas de las que estima el planificador.
+            cur.execute("SET LOCAL enable_nestloop=off")
             cur.execute('''SELECT p.id AS producto_id,p.nombre,p.categoria_id,
                 sum(greatest(i.stock_disponible-i.stock_reservado,0))::int AS stock_total
                 FROM producto p JOIN categoria c ON c.id=p.categoria_id AND c.empresa_id=p.empresa_id AND c.activo
@@ -17,9 +19,13 @@ def candidatos_disponibles(empresa_id, sucursal_id=None, talla_id=None):
                 JOIN sucursal s ON s.id=i.sucursal_id AND s.empresa_id=p.empresa_id AND s.activo
                 WHERE p.empresa_id=%s AND p.activo AND i.stock_disponible-i.stock_reservado>0
                 AND (%s::bigint IS NULL OR s.id=%s) AND (%s::bigint IS NULL OR v.talla_id=%s)
-                AND precio_catalogo(v.id,p.empresa_id,%s) IS NOT NULL
+                AND EXISTS (
+                    SELECT 1 FROM precio_producto pp
+                    WHERE pp.producto_variante_id=v.id AND pp.empresa_id=v.empresa_id AND pp.activo
+                    AND CURRENT_DATE BETWEEN pp.fecha_inicio AND coalesce(pp.fecha_fin,CURRENT_DATE)
+                )
                 GROUP BY p.id ORDER BY stock_total DESC,p.id LIMIT 2000''',
-                (empresa_id,sucursal_id,sucursal_id,talla_id,talla_id,sucursal_id))
+                (empresa_id,sucursal_id,sucursal_id,talla_id,talla_id))
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()

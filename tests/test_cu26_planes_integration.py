@@ -1,8 +1,12 @@
 """Solo la base local desechable explicitada; correo y R2 siempre simulados."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+import hashlib
+import hmac
 from io import BytesIO
+import json
 from threading import Lock, Event
+from types import SimpleNamespace
 from uuid import uuid4, UUID
 
 import pytest
@@ -31,6 +35,96 @@ def sin_servicios_externos(monkeypatch):
 def modificar(plan,cambios,actor_id):
     preview=saas.previsualizar_plan(plan['id'],cambios)
     return saas.editar_plan(plan['id'],{**cambios,'token_previsualizacion':preview['token_previsualizacion']},actor_id)
+
+
+def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, monkeypatch):
+    import stripe
+    from app.main import app
+    from test_cuenta_integration import login
+
+    a, b, plan, actor_id = empresas
+    monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_test_cu26')
+    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_cu26')
+    plan = modificar(plan, {'stripe_price_id': 'price_CU26', 'precio': '90.00'}, actor_id)
+    assert plan['stripe_price_id'] == 'price_CU26'
+    assert saas.historial_plan(plan['id'])[0]['despues']['stripe_price_id'] == 'price_CU26'
+    hoy = datetime.now(timezone.utc)
+    sesiones = []
+    stripe_suscripcion = f'sub_stylear_{a["id"]}'
+    stripe_cliente = f'cus_stylear_{a["id"]}'
+    precio = {
+        'active': True, 'livemode': False, 'currency': 'bob', 'unit_amount': 9000,
+        'recurring': {'interval': 'month', 'interval_count': 1, 'usage_type': 'licensed'},
+    }
+    monkeypatch.setattr(stripe.Price, 'retrieve', lambda *args, **kwargs: precio)
+
+    def crear_sesion(**datos):
+        sesiones.append(datos)
+        return SimpleNamespace(
+            id=f'cs_test_plan_{a["id"]}', url='https://checkout.stripe.com/test',
+            expires_at=int((hoy + timedelta(hours=1)).timestamp()),
+        )
+
+    monkeypatch.setattr(stripe.checkout.Session, 'create', crear_sesion)
+    monkeypatch.setattr(stripe.billing_portal.Session, 'create',
+                        lambda **kwargs: SimpleNamespace(url='https://billing.stripe.com/test'))
+    base = '/api/v1/mi-empresa/suscripcion/stripe'
+    with TestClient(app) as api:
+        headers = login(api, a, a['codigo'])
+        assert api.get(base, headers=headers).json()['puede_pagar']
+        precio['unit_amount'] = 8000
+        assert api.post(base + '/checkout', headers=headers).status_code == 422
+        precio['unit_amount'] = 9000
+        assert api.post(base + '/checkout', headers=headers).json()['url'].endswith('/test')
+        assert api.post(base + '/checkout', headers=headers).json()['url'].endswith('/test')
+        assert len(sesiones) == 1
+        assert sesiones[0]['mode'] == 'subscription'
+        assert sesiones[0]['line_items'] == [{'price': 'price_CU26', 'quantity': 1}]
+        metadata = sesiones[0]['subscription_data']['metadata']
+        assert metadata == sesiones[0]['metadata']
+        assert api.get(base, headers=headers).json()['estado'] == 'PENDIENTE'
+
+        def enviar(tipo, objeto, secreto='whsec_cu26'):
+            payload = json.dumps({'id': 'evt_cu26', 'type': tipo, 'livemode': False,
+                                  'data': {'object': objeto}}).encode()
+            timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+            firma = hmac.new(secreto.encode(), timestamp.encode() + b'.' + payload, hashlib.sha256).hexdigest()
+            return api.post('/api/v1/pagos/stripe/webhook', content=payload,
+                            headers={'stripe-signature': f't={timestamp},v1={firma}'})
+
+        def factura(dias, meta=metadata, price_id='price_CU26'):
+            return {
+                'status': 'paid', 'customer': stripe_cliente,
+                'parent': {'subscription_details': {'subscription': stripe_suscripcion, 'metadata': meta}},
+                'lines': {'data': [{
+                    'pricing': {'price_details': {'price': price_id}},
+                    'period': {'end': int((hoy + timedelta(days=dias)).timestamp())},
+                }]},
+            }
+
+        antes_a = saas.obtener_plan_empresa(a['id'])['fecha_vencimiento']
+        antes_b = saas.obtener_plan_empresa(b['id'])['fecha_vencimiento']
+        assert enviar('invoice.paid', factura(30), secreto='whsec_incorrecto').status_code == 400
+        assert enviar('invoice.paid', factura(30, {**metadata, 'empresa_id': str(b['id'])})).status_code == 200
+        assert enviar('invoice.paid', factura(30, price_id='price_Otro')).status_code == 409
+        assert saas.obtener_plan_empresa(a['id'])['fecha_vencimiento'] == antes_a
+        for dias in (30, 60, 30, 60):
+            respuesta = enviar('invoice.paid', factura(dias))
+            assert respuesta.status_code == 200, respuesta.text
+        vence = saas.obtener_plan_empresa(a['id'])['fecha_vencimiento']
+        assert vence >= hoy.date() + timedelta(days=59)
+        assert saas.obtener_plan_empresa(b['id'])['fecha_vencimiento'] == antes_b
+        assert api.get(base, headers=headers).json()['estado'] == 'ACTIVA'
+        assert api.post(base + '/checkout', headers=headers).status_code == 409
+        assert api.post(base + '/portal', headers=headers).json()['url'].endswith('/test')
+        with pytest.raises(HTTPException) as error:
+            saas.asignar_plan_empresa(a['id'], plan['id'], hoy.date(), None, actor_id)
+        assert error.value.status_code == 409
+        assert enviar('customer.subscription.deleted', {
+            'id': stripe_suscripcion, 'metadata': metadata,
+        }).status_code == 200
+        assert api.get(base, headers=headers).json()['estado'] is None
+        assert saas.obtener_plan_empresa(a['id'])['fecha_vencimiento'] == vence
 
 
 def programar(empresa,titulo='Ventas',**datos):

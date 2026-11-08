@@ -188,6 +188,74 @@ def test_stripe_claves_por_empresa_y_evento_oficial_verificado(api,empresas,monk
     assert consulta('SELECT estado FROM orden_pago WHERE id=%s',(ob['id'],),True)['estado']=='PAGADO'
     assert api.post(f'/api/v1/pagos-empresa/bcp/webhook/{a["id"]}').status_code==503
 
+def test_stripe_compartido_confirma_compras_de_dos_empresas(api, empresas, monkeypatch):
+    import stripe
+
+    a, b, _, _ = empresas
+    clave = 'sk_test_compartida'
+    firma_webhook = 'whsec_compartido'
+    monkeypatch.setenv('STRIPE_SECRET_KEY', clave)
+    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', firma_webhook)
+    llamadas = []
+
+    def sesion(**kwargs):
+        llamadas.append(kwargs)
+        orden = kwargs['metadata']['orden_id']
+        return SimpleNamespace(
+            id=f'cs_test_compartida_{orden}',
+            url='https://checkout.stripe.com/test',
+            payment_intent=f'pi_compartida_{orden}',
+        )
+
+    monkeypatch.setattr(stripe.checkout.Session, 'create', sesion)
+    ordenes = []
+    for empresa in (a, b):
+        monkeypatch.delenv(f'STYLEAR_PAGOS_{empresa["id"]}_STRIPE_SECRET_KEY', raising=False)
+        admin, cliente_headers, sucursal, _, _ = preparar(api, empresa)
+        config = api.get('/api/v1/pagos-empresa/configuracion', headers=admin).json()
+        assert config['stripe_conexion'] == 'STRIPE_TEST'
+        assert config['stripe_webhook_configurado'] is True
+        orden, _ = checkout(api, cliente_headers, sucursal, 'stripe')
+        ordenes.append(consulta('SELECT * FROM orden_pago WHERE id=%s', (orden['orden_id'],), True))
+        assert orden['confirmacion_prueba'] is False
+    assert [llamada['api_key'] for llamada in llamadas] == [clave, clave]
+    assert [llamada['metadata']['empresa_id'] for llamada in llamadas] == [str(a['id']), str(b['id'])]
+    assert llamadas[0]['idempotency_key'] != llamadas[1]['idempotency_key']
+
+    def notificar(orden, empresa_id, secret=firma_webhook, livemode=False):
+        obj = {
+            'id': orden['proveedor_session_id'],
+            'payment_status': 'paid',
+            'payment_intent': orden['proveedor_payment_intent_id'],
+            'amount_total': 5000,
+            'currency': 'bob',
+            'metadata': {'orden_id': str(orden['id']), 'empresa_id': str(empresa_id)},
+        }
+        payload = json.dumps({
+            'id': f'evt_compartido_{orden["id"]}',
+            'type': 'checkout.session.completed',
+            'livemode': livemode,
+            'data': {'object': obj},
+        }).encode()
+        ts = str(int(time.time()))
+        firma = hmac.new(secret.encode(), ts.encode() + b'.' + payload, hashlib.sha256).hexdigest()
+        return api.post(
+            '/api/v1/pagos/stripe/webhook',
+            content=payload,
+            headers={'stripe-signature': f't={ts},v1={firma}'},
+        )
+
+    assert notificar(ordenes[0], b['id']).status_code == 409
+    assert notificar(ordenes[0], a['id'], secret='whsec_invalido').status_code == 400
+    assert notificar(ordenes[0], a['id'], livemode=True).status_code == 403
+    for orden in ordenes:
+        respuesta = notificar(orden, orden['empresa_id'])
+        assert respuesta.status_code == 200, respuesta.text
+        assert notificar(orden, orden['empresa_id']).status_code == 200
+        assert consulta('SELECT estado FROM orden_pago WHERE id=%s', (orden['id'],), True)['estado'] == 'PAGADO'
+        assert consulta('SELECT count(*) AS total FROM evento_pago WHERE orden_id=%s', (orden['id'],), True)['total'] == 1
+
+
 def test_pago_multiple_falla_revierte_todos_los_movimientos(api,empresas):
     a,_,_,_=empresas;_,h,sid,vid,_=preparar(api,a)
     pid=consulta('SELECT producto_id FROM producto_variante WHERE id=%s',(vid,),True)['producto_id']

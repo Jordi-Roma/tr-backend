@@ -12,6 +12,7 @@ from psycopg2 import IntegrityError
 from app.core.contexto_empresa import exigir_empresa_id, normalizar_codigo_empresa
 from app.core.security import hashear_password
 from app.core.plan_empresa import LIMITES_ADMITIDOS, FUNCIONES_ADMITIDAS, catalogo_capacidades, capacidades_empresa
+from app.modules.administracion.services import suscripcion_stripe_service
 from app.modules.autenticacion.dependencies.usuario_actual import obtener_usuario_actual
 from app.modules.autenticacion.dependencies.admin_required import requerir_admin, requerir_admin_saas
 from app.modules.administracion.repositories.empresa_saas_repository import (
@@ -34,6 +35,7 @@ class PlanAlta(BaseModel):
     precio: Decimal = Field(default=Decimal('0'), ge=0, max_digits=12, decimal_places=2)
     moneda: str = Field(default='BOB', pattern=r'^[A-Z]{3}$')
     condiciones: str = Field(default='', max_length=10000)
+    stripe_price_id: str | None = Field(default=None, max_length=255)
 
     @model_validator(mode='after')
     def validar_publicacion(self):
@@ -75,6 +77,7 @@ class PlanEdicion(BaseModel):
     precio: Decimal | None = Field(default=None,ge=0,max_digits=12,decimal_places=2)
     moneda: str | None = None
     condiciones: str | None = Field(default=None,max_length=10000)
+    stripe_price_id: str | None = Field(default=None, max_length=255)
     limites: dict[str, StrictInt] | None = None
     funciones: dict[str, StrictBool] | None = None
     publico: StrictBool | None = None
@@ -151,7 +154,8 @@ def listar_planes_endpoint(_: dict[str, object] = Depends(requerir_admin_saas)):
 def crear_plan_endpoint(request: PlanAlta, actor: dict[str, object] = Depends(requerir_admin_saas)):
     try:
         return crear_plan(request.codigo, request.nombre.strip(), request.limites, request.funciones, int(actor["id"]), request.publico,
-                          descripcion=request.descripcion,precio=request.precio,moneda=request.moneda,condiciones=request.condiciones)
+                          descripcion=request.descripcion,precio=request.precio,moneda=request.moneda,
+                          condiciones=request.condiciones,stripe_price_id=request.stripe_price_id)
     except ValueError as error:
         raise HTTPException(422,str(error)) from error
     except IntegrityError as error:
@@ -221,6 +225,21 @@ def consultar_mi_plan(usuario: dict[str, object] = Depends(requerir_admin)):
     if plan is None:
         raise HTTPException(status_code=404, detail="Empresa no encontrada.")
     return plan
+
+
+@router.get('/mi-empresa/suscripcion/stripe')
+def consultar_suscripcion_stripe(usuario=Depends(requerir_admin)):
+    return suscripcion_stripe_service.estado(exigir_empresa_id(usuario))
+
+
+@router.post('/mi-empresa/suscripcion/stripe/checkout')
+def checkout_suscripcion_stripe(usuario=Depends(requerir_admin)):
+    return suscripcion_stripe_service.checkout(exigir_empresa_id(usuario))
+
+
+@router.post('/mi-empresa/suscripcion/stripe/portal')
+def portal_suscripcion_stripe(usuario=Depends(requerir_admin)):
+    return suscripcion_stripe_service.portal(exigir_empresa_id(usuario))
 
 
 @router.put("/saas/planes/{plan_id}", response_model=PlanRespuesta)

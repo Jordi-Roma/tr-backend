@@ -33,10 +33,10 @@ def crear_plan(codigo: str, nombre: str, limites: dict, funciones: dict, actor_i
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """INSERT INTO plan (codigo,nombre,limites,funciones,publico,descripcion,precio,moneda,condiciones)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                """INSERT INTO plan (codigo,nombre,limites,funciones,publico,descripcion,precio,moneda,condiciones,stripe_price_id)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
                 (datos['codigo'],datos['nombre'],Json(datos['limites']),Json(datos['funciones']),publico,
-                 datos['descripcion'],datos['precio'],datos['moneda'],datos['condiciones']),
+                 datos['descripcion'],datos['precio'],datos['moneda'],datos['condiciones'],datos['stripe_price_id']),
             )
             row = dict(cur.fetchone())
             auditar(cur, actor_id, "CREAR_PLAN", recurso_id=str(row["id"]))
@@ -124,6 +124,13 @@ def crear_empresa_con_admin(datos: dict[str, object], password_hash: str, actor_
         conn.close()
 
 
+def _exigir_sin_facturacion_stripe(cur, empresa_id):
+    cur.execute("""SELECT 1 FROM suscripcion_stripe
+        WHERE empresa_id=%s AND estado IN ('PENDIENTE','ACTIVA')""", (empresa_id,))
+    if cur.fetchone():
+        raise HTTPException(409, 'Cierra primero la sesión de pago o la suscripción activa en Stripe.')
+
+
 def cambiar_estado_empresa(empresa_id: int, estado: str, actor_id: int) -> dict[str, object] | None:
     conn = get_connection()
     try:
@@ -131,6 +138,8 @@ def cambiar_estado_empresa(empresa_id: int, estado: str, actor_id: int) -> dict[
             cur.execute('SELECT pg_advisory_xact_lock_shared(%s)',(LOCK_PLANES,))
             cur.execute('SELECT estado FROM empresa WHERE id=%s FOR UPDATE', (empresa_id,))
             actual = cur.fetchone()
+            if actual and estado == 'CANCELADA':
+                _exigir_sin_facturacion_stripe(cur, empresa_id)
             if actual and actual['estado'] == 'PENDIENTE' and estado != 'CANCELADA':
                 raise ValueError('Activa esta empresa asignando su plan y vigencia desde la suscripción.')
             if actual and actual['estado'] == 'PENDIENTE' and estado == 'CANCELADA':
@@ -163,6 +172,7 @@ def asignar_plan_empresa(
             empresa = cur.fetchone()
             if empresa is None:
                 return None
+            _exigir_sin_facturacion_stripe(cur, empresa_id)
             cur.execute("SELECT * FROM plan WHERE id=%s AND activo=TRUE FOR SHARE", (plan_id,))
             plan = cur.fetchone()
             if plan is None:
@@ -261,11 +271,11 @@ def editar_plan(plan_id: int, datos: dict, actor_id: int):
                 raise HTTPException(409, {"codigo": "PREVISUALIZACION_REQUERIDA", "mensaje": "Previsualiza nuevamente: la configuración o el uso de las empresas cambió."})
             cur.execute(
                 """UPDATE plan SET codigo=%s,nombre=%s,limites=%s,funciones=%s,activo=%s,publico=%s,
-                    descripcion=%s,precio=%s,moneda=%s,condiciones=%s,revision=revision+1
+                    descripcion=%s,precio=%s,moneda=%s,condiciones=%s,stripe_price_id=%s,revision=revision+1
                     WHERE id=%s RETURNING *""",
                 (propuesta['codigo'],propuesta['nombre'],Json(propuesta['limites']),Json(propuesta['funciones']),
                  propuesta['activo'],propuesta['publico'],propuesta['descripcion'],propuesta['precio'],
-                 propuesta['moneda'],propuesta['condiciones'],plan_id),
+                 propuesta['moneda'],propuesta['condiciones'],propuesta['stripe_price_id'],plan_id),
             )
             row = dict(cur.fetchone())
             for empresa in impacto['empresas']:
@@ -312,10 +322,10 @@ def _json_adaptado(valor):
 
 
 def _configurar_plan(actual, cambios):
-    permitidas = {'codigo','nombre','descripcion','precio','moneda','condiciones','activo','publico','limites','funciones','token_previsualizacion'}
+    permitidas = {'codigo','nombre','descripcion','precio','moneda','condiciones','stripe_price_id','activo','publico','limites','funciones','token_previsualizacion'}
     if set(cambios) - permitidas:
         raise ValueError('Campos de plan desconocidos.')
-    datos = {'descripcion':'','precio':Decimal('0'),'moneda':'BOB','condiciones':'','activo':True,'publico':False, **actual}
+    datos = {'descripcion':'','precio':Decimal('0'),'moneda':'BOB','condiciones':'','stripe_price_id':None,'activo':True,'publico':False, **actual}
     datos.update({k:v for k,v in cambios.items() if k not in {'limites','funciones','token_previsualizacion'}})
     for k, minimo, maximo in (('codigo',2,50),('nombre',2,120),('descripcion',0,4000),('condiciones',0,10000)):
         if not isinstance(datos.get(k),str) or not minimo <= len(datos[k].strip()) <= maximo:
@@ -335,6 +345,9 @@ def _configurar_plan(actual, cambios):
         datos['precio'] = precio.quantize(Decimal('.01'))
     except (InvalidOperation, ValueError):
         raise ValueError('Precio inválido; admite como máximo dos decimales.') from None
+    price_id = datos['stripe_price_id']
+    if price_id is not None and (not re.fullmatch(r'price_[A-Za-z0-9]+', price_id) or not precio):
+        raise ValueError('Stripe requiere un ID de precio price_ y un importe mayor a cero.')
     for clave in ('activo','publico'):
         if type(datos[clave]) is not bool:
             raise ValueError(f'{clave} requiere un booleano.')

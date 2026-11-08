@@ -85,6 +85,10 @@ async def stripe_webhook(empresa:int,request:Request):
     try:evento=stripe.Webhook.construct_event(await request.body(),request.headers.get('stripe-signature',''),secret)
     except Exception:raise HTTPException(400,'Firma Stripe inválida.')
     if evento.get('livemode') is not False:raise HTTPException(403,'Este bloque sólo admite Stripe de prueba.')
+    return procesar_evento_stripe(empresa, evento)
+
+
+def procesar_evento_stripe(empresa, evento):
     tipo=evento.get('type');obj=evento.get('data',{}).get('object',{})
     if tipo in ('refund.created','refund.updated','refund.failed'):
         if (obj.get('metadata') or {}).get('devolucion_id'):

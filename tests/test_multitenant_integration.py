@@ -5,6 +5,7 @@ stylear_test_* en localhost. Nunca se utiliza la configuración .env como destin
 """
 
 import asyncio
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from decimal import Decimal
@@ -37,6 +38,25 @@ from app.modules.autenticacion.repositories.usuario_admin_repository import crea
 from app.modules.autenticacion.schemas.sesion.sesion_request import LoginRequest
 from app.modules.autenticacion.services.sesion_service import iniciar_sesion
 from app.modules.administracion.services import respaldo_service as respaldos
+
+
+@pytest.fixture
+def respaldos_r2_simulado(monkeypatch):
+    objetos = {}
+    cifrador = Fernet(Fernet.generate_key())
+
+    class R2Memoria:
+        def put_object(self, *, Bucket, Key, Body, **metadata):
+            objetos[Bucket, Key] = Body
+
+        def get_object(self, *, Bucket, Key):
+            return {'Body': BytesIO(objetos[Bucket, Key])}
+
+        def delete_object(self, *, Bucket, Key):
+            objetos.pop((Bucket, Key), None)
+
+    monkeypatch.setattr(respaldos, 'configuracion', lambda: (R2Memoria(), 'pruebas', cifrador, 7))
+    return objetos
 
 
 def consulta(query, params=(), una=False):
@@ -221,12 +241,9 @@ def test_reserva_concurrente_ultima_unidad(empresas):
     assert consulta('SELECT stock_reservado FROM inventario_sucursal WHERE empresa_id=%s',(a['id'],),True)['stock_reservado']==1
 
 
-def test_respaldo_empresa_restauracion_y_otra_empresa_intacta(empresas,tmp_path,monkeypatch):
+def test_respaldo_empresa_restauracion_y_otra_empresa_intacta(empresas,tmp_path,monkeypatch,respaldos_r2_simulado):
     a,b,_,actor=empresas
     mercaderia(a);mercaderia(b);cliente(a);cliente(b)
-    monkeypatch.setenv('STYLEAR_BACKUP_DIR',str(tmp_path/'privado'))
-    monkeypatch.setenv('STYLEAR_BACKUP_KEY',Fernet.generate_key().decode())
-    monkeypatch.setenv('STYLEAR_BACKUP_RETENTION_DAYS','7')
     static=tmp_path/'static'
     static.mkdir()
     (static/'prenda.jpg').write_bytes(b'imagen-ficticia')
@@ -234,8 +251,9 @@ def test_respaldo_empresa_restauracion_y_otra_empresa_intacta(empresas,tmp_path,
     consulta("INSERT INTO imagen_producto(producto_id,url,empresa_id) SELECT id,'/static/prenda.jpg',empresa_id FROM producto WHERE empresa_id=%s",(a['id'],))
     antes_b=consulta('SELECT to_jsonb(p) AS fila FROM producto p WHERE empresa_id=%s ORDER BY id',(b['id'],))
     copia=respaldos.crear_respaldo(actor,a['id']);rid=UUID(str(copia['id']))
-    assert len(list((tmp_path/'privado').glob('*.fernet')))==1
+    assert len(respaldos_r2_simulado)==1
     previa=respaldos.previsualizar_restauracion(rid,actor)
+    consulta('DELETE FROM imagen_producto WHERE empresa_id=%s',(a['id'],))
     (static/'prenda.jpg').unlink()
     consulta("UPDATE producto SET nombre='MODIFICADO' WHERE empresa_id=%s",(a['id'],))
     saas.cambiar_estado_empresa(a['id'],'SUSPENDIDA',actor)
@@ -246,7 +264,7 @@ def test_respaldo_empresa_restauracion_y_otra_empresa_intacta(empresas,tmp_path,
     assert consulta("SELECT count(*) AS n FROM evento_plataforma WHERE accion='RESTAURAR_RESPALDO' AND empresa_id=%s",(a['id'],),True)['n']==1
 
 
-def test_respaldo_global_restaurable_en_destino_vacio(empresas,tmp_path,monkeypatch):
+def test_respaldo_global_restaurable_en_destino_vacio(empresas,tmp_path,monkeypatch,respaldos_r2_simulado):
     from psycopg2.extensions import make_dsn
     _,_,_,actor=empresas
     destino='stylear_test_restore_'+uuid4().hex[:8]
@@ -254,9 +272,6 @@ def test_respaldo_global_restaurable_en_destino_vacio(empresas,tmp_path,monkeypa
     try:
         with admin.cursor() as c:c.execute('CREATE DATABASE '+destino)
         dsn_destino=make_dsn(DSN,dbname=destino)
-        monkeypatch.setenv('STYLEAR_BACKUP_DIR',str(tmp_path/'privado'))
-        monkeypatch.setenv('STYLEAR_BACKUP_KEY',Fernet.generate_key().decode())
-        monkeypatch.setenv('STYLEAR_BACKUP_RETENTION_DAYS','7')
         monkeypatch.setenv('STYLEAR_RESTORE_DATABASE_URL',dsn_destino)
         monkeypatch.setenv('STYLEAR_RESTORE_ASSETS_DIR',str(tmp_path/'assets'))
         # Evita copiar las fotos históricas: el ensayo usa un directorio de assets ficticios.
@@ -291,8 +306,11 @@ def test_api_catalogos_planes_y_separacion_saas(empresas):
             assert (await c.get('/api/v1/categorias/'+str(rb.json()['id']),headers=ha)).status_code==404
             assert (await c.get('/api/v1/saas/empresas',headers=ha)).status_code==403
             assert (await c.get('/api/v1/saas/respaldos',headers=ha)).status_code==403
-            consulta("UPDATE plan SET funciones=jsonb_set(funciones,'{reportes}','false') WHERE id=%s",(plan['id'],))
-            r=await c.post('/api/v1/reportes/generar',headers=ha,json={'tipo':'VENTAS','fecha_desde':'2026-01-01','fecha_hasta':'2026-10-22'})
+            consulta("UPDATE plan SET funciones=funciones || '{\"reportes\":false,\"reportes_pdf\":false}'::jsonb WHERE id=%s",(plan['id'],))
+            filtros={'tipo':'VENTAS','fecha_desde':'2026-01-01','fecha_hasta':'2026-10-22'}
+            r=await c.post('/api/v1/reportes/generar',headers=ha,json=filtros)
+            assert r.status_code==200,r.text
+            r=await c.post('/api/v1/reportes/exportar/pdf',headers=ha,json=filtros)
             assert r.status_code==403,r.text
     asyncio.run(verificar())
 

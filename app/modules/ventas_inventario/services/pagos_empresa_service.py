@@ -46,7 +46,19 @@ def habilitado_pruebas():
 
 def secreto(empresa, nombre):
     # Cada secreto tiene un nombre derivado por el servidor, nunca elegido por el cliente.
-    return os.getenv(f'STYLEAR_PAGOS_{empresa}_{nombre}','').strip()
+    especifico = os.getenv(f'STYLEAR_PAGOS_{empresa}_{nombre}', '').strip()
+    if nombre == 'STRIPE_SECRET_KEY' and not especifico:
+        compartido = os.getenv('STRIPE_SECRET_KEY', '').strip()
+        if compartido.startswith('sk_test_') and not compartido.startswith('sk_test_placeholder'):
+            return compartido
+    return especifico
+
+
+def usa_stripe_compartido(empresa):
+    return (
+        not os.getenv(f'STYLEAR_PAGOS_{empresa}_STRIPE_SECRET_KEY', '').strip()
+        and bool(secreto(empresa, 'STRIPE_SECRET_KEY'))
+    )
 
 
 def configuracion(empresa):
@@ -61,7 +73,10 @@ def configuracion_publica(empresa):
     return {**cfg,'confirmacion_prueba':habilitado_pruebas(),
             'stripe_conexion':'STRIPE_TEST' if secreto(empresa,'STRIPE_SECRET_KEY').startswith('sk_test_') else 'SIMULADO',
             'qr_conexion':'SIMULADO_BCP_PENDIENTE_DE_INTEGRACION',
-            'stripe_webhook_configurado':bool(secreto(empresa,'STRIPE_WEBHOOK_SECRET')),
+            'stripe_webhook_configurado':bool(
+                os.getenv('STRIPE_WEBHOOK_SECRET', '').strip()
+                if usa_stripe_compartido(empresa) else secreto(empresa, 'STRIPE_WEBHOOK_SECRET')
+            ),
             'eventos_prueba_configurados':bool(secreto(empresa,'EVENTOS_PRUEBA_SECRET'))}
 
 

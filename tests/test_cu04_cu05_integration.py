@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
-from test_multitenant_integration import actor, empresas, cliente, consulta, mercaderia
+from test_multitenant_integration import actor, empresas, cliente, consulta, mercaderia, respaldos_r2_simulado
 from test_cuenta_integration import login, PASSWORD
 from app.main import app
 from app.modules.autenticacion.repositories import (
@@ -658,17 +658,13 @@ def test_repetir_operacion_no_revoca_de_nuevo_ni_duplica_eventos(api, empresas):
 
 
 def test_restauracion_empresa_conserva_auditoria_as_de_cuentas(
-    api, empresas, tmp_path, monkeypatch
+    api, empresas, tmp_path, monkeypatch, respaldos_r2_simulado
 ):
     from uuid import UUID
-    from cryptography.fernet import Fernet
     from app.modules.administracion.services import respaldo_service as respaldos
 
     a, b, _, actor = empresas
     h = as_headers(api, actor)
-    monkeypatch.setenv("STYLEAR_BACKUP_DIR", str(tmp_path / "privado"))
-    monkeypatch.setenv("STYLEAR_BACKUP_KEY", Fernet.generate_key().decode())
-    monkeypatch.setenv("STYLEAR_BACKUP_RETENTION_DAYS", "7")
     monkeypatch.setattr(respaldos, "STATIC", tmp_path / "static")
     # La cuenta y su evento AS se crean antes de la copia de empresa.
     r = api.post(

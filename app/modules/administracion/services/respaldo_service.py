@@ -32,7 +32,7 @@ from app.modules.administracion.repositories.empresa_saas_repository import audi
 
 STATIC = Path(__file__).resolve().parents[4] / "static"
 LOGGER = logging.getLogger(__name__)
-PLATAFORMA = {"empresa", "plan", "suscripcion", "plan_historial", "evento_plataforma", "respaldo", "respaldo_programacion", "schema_migrations", "solicitud_registro_empresa"}
+PLATAFORMA = {"empresa", "plan", "suscripcion", "suscripcion_stripe", "plan_historial", "evento_plataforma", "respaldo", "respaldo_programacion", "schema_migrations", "solicitud_registro_empresa"}
 
 
 def configuracion():

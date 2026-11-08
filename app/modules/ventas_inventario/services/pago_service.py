@@ -146,27 +146,44 @@ def obtener_pago_service(
 
 
 async def webhook_stripe_service(request: Request) -> dict[str, str]:
-    # Compatibilidad de reservas previas en Stripe test. Las compras CU16 requieren
-    # el webhook específico del comercio; una firma global nunca las confirma.
     import stripe
+    from .pagos_empresa_service import usa_stripe_compartido
+    from ..router.pagos_empresa_router import procesar_evento_stripe
+
     secret = os.getenv('STRIPE_WEBHOOK_SECRET','')
     if not secret:
-        raise HTTPException(503,'Configure el webhook Stripe de la empresa para las compras nuevas.')
+        raise HTTPException(503,'Configure la firma del webhook Stripe de pruebas.')
     try:
         event = stripe.Webhook.construct_event(await request.body(),request.headers.get('stripe-signature',''),secret)
     except Exception:
         raise HTTPException(400,'Firma Stripe inválida.')
     if event.get('livemode') is not False:
         raise HTTPException(403,'Sólo se admite Stripe de prueba.')
-    if event.get('type') in ('refund.created','refund.updated','refund.failed'):
-        obj=event.get('data',{}).get('object',{})
-        meta=obj.get('metadata') or {}
+    tipo = event.get('type')
+    obj = event.get('data', {}).get('object', {})
+    from app.modules.administracion.services.suscripcion_stripe_service import procesar_evento
+    suscripcion = procesar_evento(tipo, obj)
+    if suscripcion is not None:
+        return suscripcion
+    meta = obj.get('metadata') or {}
+    if tipo in ('refund.created','refund.updated','refund.failed'):
+        if 'reembolso_pago_id' in meta and 'empresa_id' in meta:
+            try:
+                empresa = int(meta['empresa_id'])
+            except (ValueError, TypeError):
+                raise HTTPException(409,'Empresa inválida en el reembolso Stripe.')
+            if usa_stripe_compartido(empresa):
+                return procesar_evento_stripe(empresa, event)
         if 'devolucion_id' in meta and 'empresa_id' in meta:
             from app.modules.autenticacion.repositories.perfil_repository import _transaccion
             with _transaccion() as cur:
                 cur.execute('SELECT politica_snapshot FROM devolucion WHERE id=%s AND empresa_id=%s',(meta['devolucion_id'],meta['empresa_id']))
                 nueva=cur.fetchone()
-                if nueva and nueva['politica_snapshot'] is not None:raise HTTPException(409,'Use el webhook Stripe específico de la empresa.')
+            if nueva and nueva['politica_snapshot'] is not None:
+                empresa = int(meta['empresa_id'])
+                if usa_stripe_compartido(empresa):
+                    return procesar_evento_stripe(empresa, event)
+                return {'status':'ignorado'}
             from .devolucion_service import procesar_evento_refund_stripe
             try:
                 procesar_evento_refund_stripe(str(obj['id']),str(obj.get('status') or 'pending'),
@@ -174,13 +191,18 @@ async def webhook_stripe_service(request: Request) -> dict[str, str]:
             except (ValueError,KeyError,TypeError):
                 raise HTTPException(409,'Metadatos de devolución inválidos.')
         return {'status':'recibido'}
-    if event.get('type') not in ('checkout.session.completed','checkout.session.expired'):
+    if tipo not in ('checkout.session.completed','checkout.session.expired',
+                    'checkout.session.async_payment_succeeded','checkout.session.async_payment_failed'):
         return {'status':'ignorado'}
-    obj=event.get('data',{}).get('object',{})
     orden=repo.obtener_orden_por_session(obj.get('id',''))
-    if not orden or orden.get('modo_pago')!='LEGADO' or orden.get('concepto') not in ('RESERVA_ANTICIPO','RESERVA_SALDO'):
-        raise HTTPException(409,'La compra requiere el webhook específico de su empresa.')
-    meta=obj.get('metadata') or {}
+    if not orden:
+        return {'status':'ignorado'}
+    if orden.get('modo_pago') == 'PRUEBA':
+        if orden.get('proveedor') == 'STRIPE' and usa_stripe_compartido(orden['empresa_id']):
+            return procesar_evento_stripe(orden['empresa_id'], event)
+        return {'status':'ignorado'}
+    if orden.get('modo_pago')!='LEGADO' or orden.get('concepto') not in ('RESERVA_ANTICIPO','RESERVA_SALDO'):
+        return {'status':'ignorado'}
     if (str(meta.get('empresa_id'))!=str(orden['empresa_id']) or str(meta.get('orden_id'))!=str(orden['id'])
         or obj.get('amount_total')!=int(Decimal(orden['monto_total'])*100) or str(obj.get('currency','')).upper()!=orden['moneda']):
         raise HTTPException(409,'La confirmación no corresponde a la reserva, empresa, moneda o importe.')

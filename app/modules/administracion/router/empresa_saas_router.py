@@ -232,9 +232,13 @@ def consultar_suscripcion_stripe(usuario=Depends(requerir_admin)):
     return suscripcion_stripe_service.estado(exigir_empresa_id(usuario))
 
 
+class CheckoutPlanRequest(BaseModel):
+    plan_id: int | None = Field(default=None, gt=0)
+
+
 @router.post('/mi-empresa/suscripcion/stripe/checkout')
-def checkout_suscripcion_stripe(usuario=Depends(requerir_admin)):
-    return suscripcion_stripe_service.checkout(exigir_empresa_id(usuario))
+def checkout_suscripcion_stripe(datos: CheckoutPlanRequest | None = None, usuario=Depends(requerir_admin)):
+    return suscripcion_stripe_service.checkout(exigir_empresa_id(usuario), datos.plan_id if datos else None)
 
 
 @router.post('/mi-empresa/suscripcion/stripe/portal')

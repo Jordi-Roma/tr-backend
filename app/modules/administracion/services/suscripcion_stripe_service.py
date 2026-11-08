@@ -1,14 +1,17 @@
-"""Facturación mensual en Stripe de prueba para el plan asignado a la empresa."""
+"""Contratación y renovación mensual de planes en Stripe de prueba."""
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import os
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 import stripe
 
+from app.core.plan_empresa import normalizar_politica
+from app.modules.administracion.repositories.empresa_saas_repository import _ajustar_programaciones
 from app.modules.autenticacion.repositories.perfil_repository import _transaccion
 
 
@@ -37,7 +40,7 @@ def _frontend():
 
 
 def _plan_actual(cur, empresa):
-    cur.execute("""SELECT s.id AS suscripcion_id, s.estado, s.fecha_inicio,
+    cur.execute("""SELECT s.id AS suscripcion_id, s.plan_id, s.estado, s.fecha_inicio,
                           p.activo, p.stripe_price_id, p.precio, p.moneda, e.estado AS empresa_estado
                    FROM suscripcion s JOIN plan p ON p.id=s.plan_id
                    JOIN empresa e ON e.id=s.empresa_id
@@ -51,29 +54,65 @@ def _abierta(cur, empresa):
     return cur.fetchone()
 
 
-def _puede_iniciar(plan):
-    return bool(plan and plan['stripe_price_id'] and plan['activo']
-                and plan['empresa_estado'] == 'ACTIVA' and plan['estado'] in ('ACTIVA', 'VENCIDA')
+def _empresa_elegible(plan):
+    return bool(plan and plan['empresa_estado'] == 'ACTIVA' and plan['estado'] in ('ACTIVA', 'VENCIDA')
                 and plan['fecha_inicio'] <= datetime.now(ZONA_EMPRESA).date())
 
 
+def _precio_contratable(plan):
+    return bool(plan and plan['activo'] and plan['stripe_price_id'] and plan['precio'] > 0)
+
+
 def estado(empresa):
-    with _transaccion() as cur:
+    with _transaccion(isolation_level='REPEATABLE READ', readonly=True) as cur:
         plan = _plan_actual(cur, empresa)
         abierta = _abierta(cur, empresa)
+        actual_id = plan['plan_id'] if plan else None
+        pendiente_id = None
+        if abierta and abierta['estado'] == 'PENDIENTE':
+            pendiente_id = abierta['plan_destino_id'] or actual_id
+        cur.execute("""SELECT id,codigo,nombre,descripcion,precio,moneda,limites,funciones,activo,stripe_price_id
+                       FROM plan WHERE id IN (%s,%s) OR (activo AND codigo <> 'STYLEAR_LEGADO' AND
+                           (codigo IN ('BASICO','INTERMEDIO','PREMIUM') OR (precio>0 AND stripe_price_id IS NOT NULL)))
+                       ORDER BY CASE codigo WHEN 'BASICO' THEN 0 WHEN 'INTERMEDIO' THEN 1
+                                            WHEN 'PREMIUM' THEN 2 ELSE 3 END, id""", (actual_id, pendiente_id))
+        opciones = cur.fetchall()
+        cur.execute("""SELECT comprobante_url FROM suscripcion_stripe WHERE empresa_id=%s
+                       AND comprobante_url IS NOT NULL ORDER BY pagado_hasta DESC LIMIT 1""", (empresa,))
+        comprobante = cur.fetchone()
+    habilitado = _stripe_configurado() and _empresa_elegible(plan)
+    puede_continuar = habilitado and pendiente_id is not None and not abierta['stripe_suscripcion_id']
+    planes = []
+    for opcion in opciones:
+        id_plan = opcion['id']
+        puede_elegir = (puede_continuar and id_plan == pendiente_id) if abierta else (
+            habilitado and _precio_contratable(opcion)
+        )
+        planes.append({
+            **{clave: opcion[clave] for clave in ('id', 'codigo', 'nombre', 'descripcion', 'moneda')},
+            **normalizar_politica(opcion),
+            'precio': str(opcion['precio']),
+            'es_actual': id_plan == actual_id,
+            'puede_elegir': puede_elegir,
+        })
     precio = abierta['importe'] if abierta else plan['precio'] if plan else None
     moneda = abierta['moneda'] if abierta else plan['moneda'] if plan else None
     return {
         'estado': abierta['estado'] if abierta else None,
         'importe': str(precio) if precio is not None else None,
         'moneda': moneda,
-        'puede_pagar': _stripe_configurado() and _puede_iniciar(plan)
-                       and (not abierta or abierta['estado'] == 'PENDIENTE'),
-        'puede_gestionar': bool(_clave() and abierta and abierta['stripe_cliente_id']),
+        'puede_pagar': habilitado and (
+            puede_continuar if abierta else _precio_contratable(plan)
+        ),
+        'puede_gestionar': bool(_clave() and abierta and abierta['estado'] == 'ACTIVA'
+                                and abierta['stripe_cliente_id']),
+        'planes': planes,
+        'plan_pendiente_id': pendiente_id,
+        'comprobante_url': comprobante['comprobante_url'] if comprobante else None,
     }
 
 
-def checkout(empresa):
+def checkout(empresa, plan_id=None):
     if not _stripe_configurado():
         raise HTTPException(503, 'Configura Stripe de prueba y su webhook para cobrar la suscripción.')
     clave = _clave()
@@ -81,20 +120,32 @@ def checkout(empresa):
     with _transaccion() as cur:
         cur.execute('SELECT id FROM empresa WHERE id=%s FOR UPDATE', (empresa,))
         plan = _plan_actual(cur, empresa)
+        if not _empresa_elegible(plan):
+            raise HTTPException(409, 'La empresa necesita un plan asignado y estar activa para contratar.')
         intento = _abierta(cur, empresa)
         if intento and intento['estado'] == 'ACTIVA':
             raise HTTPException(409, 'Esta empresa ya tiene una suscripción mensual en Stripe.')
         if intento and intento['checkout_expira'] and intento['checkout_expira'] <= ahora:
             # Sólo el webhook de expiración puede cerrar un intento que Stripe pudo cobrar.
             raise HTTPException(409, 'Stripe todavía está confirmando el cierre de la sesión anterior.')
-        if not _puede_iniciar(plan):
-            raise HTTPException(409, 'El plan asignado no está habilitado para cobro mensual.')
+        if intento and intento['stripe_suscripcion_id']:
+            raise HTTPException(409, 'Stripe está confirmando el pago de la suscripción.')
+        if intento and plan_id is not None and plan_id != (intento['plan_destino_id'] or plan['plan_id']):
+            raise HTTPException(409, 'Ya hay un pago pendiente para otro plan.')
         if not intento:
+            destino_id = plan_id if plan_id is not None and plan_id != plan['plan_id'] else None
+            destino = plan
+            if destino_id is not None:
+                cur.execute("""SELECT activo,stripe_price_id,precio,moneda FROM plan
+                               WHERE id=%s AND codigo <> 'STYLEAR_LEGADO'""", (destino_id,))
+                destino = cur.fetchone()
+            if not _precio_contratable(destino):
+                raise HTTPException(409, 'El plan elegido no está habilitado para cobro mensual.')
             cur.execute("""INSERT INTO suscripcion_stripe
-                           (id,empresa_id,suscripcion_id,stripe_price_id,importe,moneda)
-                           VALUES (%s,%s,%s,%s,%s,%s) RETURNING *""",
-                        (str(uuid4()), empresa, plan['suscripcion_id'], plan['stripe_price_id'],
-                         plan['precio'], plan['moneda']))
+                           (id,empresa_id,suscripcion_id,plan_destino_id,stripe_price_id,importe,moneda)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                        (str(uuid4()), empresa, plan['suscripcion_id'], destino_id,
+                         destino['stripe_price_id'], destino['precio'], destino['moneda']))
             intento = cur.fetchone()
     if intento['checkout_url']:
         return {'url': intento['checkout_url']}
@@ -203,6 +254,35 @@ def procesar_evento(tipo, objeto):
     return {'status': 'ok'}
 
 
+def _activar_plan_destino(cur, intento, vigencia):
+    empresa = intento['empresa_id']
+    actual = _plan_actual(cur, empresa)
+    cur.execute('SELECT id,activo,limites,funciones,codigo FROM plan WHERE id=%s',
+                (intento['plan_destino_id'],))
+    destino = cur.fetchone()
+    hoy = datetime.now(ZONA_EMPRESA).date()
+    if (not actual or actual['suscripcion_id'] != intento['suscripcion_id']
+            or actual['estado'] not in ('ACTIVA', 'VENCIDA') or not destino or not destino['activo']
+            or vigencia < hoy):
+        raise HTTPException(409, 'El pago no coincide con el cambio de plan pendiente.')
+    cur.execute("UPDATE suscripcion SET estado='CANCELADA' WHERE id=%s", (actual['suscripcion_id'],))
+    cur.execute("""INSERT INTO suscripcion (empresa_id,plan_id,fecha_inicio,fecha_vencimiento,estado)
+                   VALUES (%s,%s,%s,%s,'ACTIVA') RETURNING id""",
+                (empresa, destino['id'], hoy, vigencia))
+    nueva = cur.fetchone()['id']
+    _ajustar_programaciones(cur, empresa, normalizar_politica(destino))
+    return nueva
+
+
+def _comprobante(factura):
+    url = factura.get('hosted_invoice_url')
+    if isinstance(url, str):
+        partes = urlsplit(url)
+        if partes.scheme == 'https' and partes.netloc in ('invoice.stripe.com', 'pay.stripe.com'):
+            return url
+    return None
+
+
 def _aplicar_periodo(cur, intento, suscripcion, factura):
     lineas = (factura.get('lines') or {}).get('data', [])
     finales = []
@@ -227,12 +307,24 @@ def _aplicar_periodo(cur, intento, suscripcion, factura):
     if cur.fetchone()['id'] != intento['id']:
         return
     vigencia = (hasta - timedelta(microseconds=1)).astimezone(ZONA_EMPRESA).date()
-    cur.execute("""UPDATE suscripcion SET estado='ACTIVA', fecha_vencimiento=%s
-                   WHERE id=%s AND empresa_id=%s AND estado IN ('ACTIVA','VENCIDA')
-                     AND fecha_inicio<=%s""",
-                (vigencia, intento['suscripcion_id'], intento['empresa_id'], vigencia))
-    if not cur.rowcount:
-        raise HTTPException(409, 'El periodo pagado no corresponde a la suscripción asignada.')
+    suscripcion_id = intento['suscripcion_id']
+    if intento['plan_destino_id'] and not anterior:
+        moneda = intento['moneda'].lower()
+        multiplicador = 1 if moneda in MONEDAS_SIN_DECIMALES else 100
+        pagado = factura.get('amount_paid')
+        if (factura.get('currency') != moneda or not isinstance(pagado, int)
+                or pagado < Decimal(intento['importe']) * multiplicador):
+            raise HTTPException(409, 'El importe o la moneda de la factura no corresponde al plan contratado.')
+        suscripcion_id = _activar_plan_destino(cur, intento, vigencia)
+    else:
+        cur.execute("""UPDATE suscripcion SET estado='ACTIVA', fecha_vencimiento=%s
+                       WHERE id=%s AND empresa_id=%s AND estado IN ('ACTIVA','VENCIDA')
+                         AND fecha_inicio<=%s""",
+                    (vigencia, suscripcion_id, intento['empresa_id'], vigencia))
+        if not cur.rowcount:
+            raise HTTPException(409, 'El periodo pagado no corresponde a la suscripción asignada.')
     cur.execute("""UPDATE suscripcion_stripe SET stripe_suscripcion_id=%s,stripe_cliente_id=COALESCE(%s,stripe_cliente_id),
-                   pagado_hasta=%s,estado=CASE WHEN estado='CERRADA' THEN estado ELSE 'ACTIVA' END
-                   WHERE id=%s""", (suscripcion, factura.get('customer'), hasta, intento['id']))
+                   suscripcion_id=%s,pagado_hasta=%s,comprobante_url=COALESCE(%s,comprobante_url),
+                   estado=CASE WHEN estado='CERRADA' THEN estado ELSE 'ACTIVA' END
+                   WHERE id=%s""", (suscripcion, factura.get('customer'), suscripcion_id, hasta,
+                                    _comprobante(factura), intento['id']))

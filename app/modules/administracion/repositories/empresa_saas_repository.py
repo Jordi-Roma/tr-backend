@@ -265,6 +265,11 @@ def editar_plan(plan_id: int, datos: dict, actor_id: int):
             if actual is None:
                 return None
             propuesta = _configurar_plan(dict(actual), datos)
+            if actual['activo'] and not propuesta['activo']:
+                cur.execute("""SELECT 1 FROM suscripcion_stripe
+                    WHERE plan_destino_id=%s AND estado='PENDIENTE' LIMIT 1""", (plan_id,))
+                if cur.fetchone():
+                    raise HTTPException(409, 'Hay una contratación pendiente para este plan en Stripe.')
             impacto = _impacto_plan(cur, plan_id, propuesta)
             esperado = _token_impacto(dict(actual), propuesta, impacto)
             if not datos.get('token_previsualizacion') or datos['token_previsualizacion'] != esperado:

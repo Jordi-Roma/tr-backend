@@ -37,7 +37,8 @@ def modificar(plan,cambios,actor_id):
     return saas.editar_plan(plan['id'],{**cambios,'token_previsualizacion':preview['token_previsualizacion']},actor_id)
 
 
-def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, monkeypatch):
+@pytest.mark.parametrize('cambiar_plan', [False, True], ids=['renovacion', 'contratacion'])
+def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, monkeypatch, cambiar_plan):
     import stripe
     from app.main import app
     from test_cuenta_integration import login
@@ -45,7 +46,15 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
     a, b, plan, actor_id = empresas
     monkeypatch.setenv('STRIPE_SECRET_KEY', 'sk_test_cu26')
     monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_cu26')
-    plan = modificar(plan, {'stripe_price_id': 'price_CU26', 'precio': '90.00'}, actor_id)
+    origen = plan
+    if cambiar_plan:
+        plan = saas.crear_plan(
+            'UP_' + uuid4().hex[:10], 'Premium de prueba', {'sucursales': 100},
+            {'reportes': True, 'reportes_voz': True}, actor_id,
+        )
+    plan = modificar(plan, {
+        'stripe_price_id': 'price_CU26', 'precio': '90.00', 'moneda': 'USD', 'publico': False,
+    }, actor_id)
     assert plan['stripe_price_id'] == 'price_CU26'
     assert saas.historial_plan(plan['id'])[0]['despues']['stripe_price_id'] == 'price_CU26'
     hoy = datetime.now(timezone.utc)
@@ -53,7 +62,7 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
     stripe_suscripcion = f'sub_stylear_{a["id"]}'
     stripe_cliente = f'cus_stylear_{a["id"]}'
     precio = {
-        'active': True, 'livemode': False, 'currency': 'bob', 'unit_amount': 9000,
+        'active': True, 'livemode': False, 'currency': 'usd', 'unit_amount': 9000,
         'recurring': {'interval': 'month', 'interval_count': 1, 'usage_type': 'licensed'},
     }
     monkeypatch.setattr(stripe.Price, 'retrieve', lambda *args, **kwargs: precio)
@@ -69,20 +78,34 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
     monkeypatch.setattr(stripe.billing_portal.Session, 'create',
                         lambda **kwargs: SimpleNamespace(url='https://billing.stripe.com/test'))
     base = '/api/v1/mi-empresa/suscripcion/stripe'
+    seleccion = {'plan_id': plan['id']} if cambiar_plan else None
+    comprobante = 'https://invoice.stripe.com/i/test'
     with TestClient(app) as api:
         headers = login(api, a, a['codigo'])
-        assert api.get(base, headers=headers).json()['puede_pagar']
+        estado = api.get(base, headers=headers).json()
+        assert estado['puede_pagar'] is not cambiar_plan
+        tarjeta = next(t for t in estado['planes'] if t['id'] == plan['id'])
+        assert tarjeta['puede_elegir'] and tarjeta['es_actual'] is not cambiar_plan
+        assert 'stripe_price_id' not in tarjeta
         precio['unit_amount'] = 8000
-        assert api.post(base + '/checkout', headers=headers).status_code == 422
+        assert api.post(base + '/checkout', headers=headers, json=seleccion).status_code == 422
         precio['unit_amount'] = 9000
-        assert api.post(base + '/checkout', headers=headers).json()['url'].endswith('/test')
-        assert api.post(base + '/checkout', headers=headers).json()['url'].endswith('/test')
+        assert api.post(base + '/checkout', headers=headers, json=seleccion).json()['url'].endswith('/test')
+        assert api.post(base + '/checkout', headers=headers, json=seleccion).json()['url'].endswith('/test')
+        if cambiar_plan:
+            assert api.post(base + '/checkout', headers=headers, json={'plan_id': origen['id']}).status_code == 409
+            with pytest.raises(HTTPException) as bloqueo:
+                modificar(plan, {'activo': False}, actor_id)
+            assert bloqueo.value.status_code == 409
         assert len(sesiones) == 1
         assert sesiones[0]['mode'] == 'subscription'
         assert sesiones[0]['line_items'] == [{'price': 'price_CU26', 'quantity': 1}]
         metadata = sesiones[0]['subscription_data']['metadata']
         assert metadata == sesiones[0]['metadata']
-        assert api.get(base, headers=headers).json()['estado'] == 'PENDIENTE'
+        pendiente = api.get(base, headers=headers).json()
+        assert pendiente['estado'] == 'PENDIENTE'
+        assert pendiente['plan_pendiente_id'] == plan['id']
+        assert pendiente['comprobante_url'] is None
 
         def enviar(tipo, objeto, secreto='whsec_cu26'):
             payload = json.dumps({'id': 'evt_cu26', 'type': tipo, 'livemode': False,
@@ -95,6 +118,7 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
         def factura(dias, meta=metadata, price_id='price_CU26'):
             return {
                 'status': 'paid', 'customer': stripe_cliente,
+                'currency': 'usd', 'amount_paid': 9000, 'hosted_invoice_url': comprobante,
                 'parent': {'subscription_details': {'subscription': stripe_suscripcion, 'metadata': meta}},
                 'lines': {'data': [{
                     'pricing': {'price_details': {'price': price_id}},
@@ -104,9 +128,17 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
 
         antes_a = saas.obtener_plan_empresa(a['id'])['fecha_vencimiento']
         antes_b = saas.obtener_plan_empresa(b['id'])['fecha_vencimiento']
+        assert enviar('checkout.session.completed', {
+            'mode': 'subscription', 'metadata': metadata, 'id': f'cs_test_plan_{a["id"]}',
+            'subscription': stripe_suscripcion, 'customer': stripe_cliente,
+        }).status_code == 200
+        assert api.get(base, headers=headers).json()['estado'] == 'PENDIENTE'
         assert enviar('invoice.paid', factura(30), secreto='whsec_incorrecto').status_code == 400
         assert enviar('invoice.paid', factura(30, {**metadata, 'empresa_id': str(b['id'])})).status_code == 200
         assert enviar('invoice.paid', factura(30, price_id='price_Otro')).status_code == 409
+        if cambiar_plan:
+            assert enviar('invoice.paid', {**factura(30), 'amount_paid': 100}).status_code == 409
+        assert capacidades_empresa(a['id'])['plan']['id'] == origen['id']
         assert saas.obtener_plan_empresa(a['id'])['fecha_vencimiento'] == antes_a
         for dias in (30, 60, 30, 60):
             respuesta = enviar('invoice.paid', factura(dias))
@@ -114,7 +146,14 @@ def test_stripe_cobra_plan_mensual_y_renueva_solo_la_empresa_correcta(empresas, 
         vence = saas.obtener_plan_empresa(a['id'])['fecha_vencimiento']
         assert vence >= hoy.date() + timedelta(days=59)
         assert saas.obtener_plan_empresa(b['id'])['fecha_vencimiento'] == antes_b
-        assert api.get(base, headers=headers).json()['estado'] == 'ACTIVA'
+        estado = api.get(base, headers=headers).json()
+        assert estado['estado'] == 'ACTIVA' and estado['comprobante_url'] == comprobante
+        assert capacidades_empresa(a['id'])['plan']['id'] == plan['id']
+        if cambiar_plan:
+            assert exigir_funcion_empresa(a['id'], 'reportes_voz') is None
+            historial = consulta('SELECT estado FROM suscripcion WHERE empresa_id=%s ORDER BY id', (a['id'],))
+            assert historial == [{'estado': 'CANCELADA'}, {'estado': 'ACTIVA'}]
+        assert api.get(base, headers=login(api, b, b['codigo'])).json()['comprobante_url'] is None
         assert api.post(base + '/checkout', headers=headers).status_code == 409
         assert api.post(base + '/portal', headers=headers).json()['url'].endswith('/test')
         with pytest.raises(HTTPException) as error:
